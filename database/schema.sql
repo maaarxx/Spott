@@ -1,0 +1,256 @@
+-- Enable UUID extension
+CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+
+-- Drop existing tables to recreate
+DROP TABLE IF EXISTS public.reports CASCADE;
+DROP TABLE IF EXISTS public.notifications CASCADE;
+DROP TABLE IF EXISTS public.saved_events CASCADE;
+DROP TABLE IF EXISTS public.user_interests CASCADE;
+DROP TABLE IF EXISTS public.registrations CASCADE;
+DROP TABLE IF EXISTS public.event_category CASCADE;
+DROP TABLE IF EXISTS public.events CASCADE;
+DROP TABLE IF EXISTS public.categories CASCADE;
+DROP TABLE IF EXISTS public.locations CASCADE;
+DROP TABLE IF EXISTS public.organizers CASCADE;
+DROP TABLE IF EXISTS public.users CASCADE;
+
+-- 1. users
+CREATE TABLE public.users (
+  user_id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  name VARCHAR(100) NOT NULL,
+  email VARCHAR(150) UNIQUE NOT NULL,
+  auth_provider VARCHAR(30) NOT NULL DEFAULT 'local',
+  role VARCHAR(20) DEFAULT 'user',
+  avatar_url TEXT,
+  created_at TIMESTAMP DEFAULT now()
+);
+
+-- 2. organizers
+CREATE TABLE public.organizers (
+  organizer_id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  user_id UUID NOT NULL REFERENCES public.users(user_id) ON DELETE CASCADE,
+  organization_name VARCHAR(150) NOT NULL,
+  description TEXT,
+  verification_status VARCHAR(20) DEFAULT 'unverified'
+);
+
+-- 3. locations
+CREATE TABLE public.locations (
+  location_id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  venue_name VARCHAR(150),
+  address TEXT NOT NULL,
+  city VARCHAR(100),
+  latitude DECIMAL(9,6),
+  longitude DECIMAL(9,6)
+);
+
+-- 4. categories
+CREATE TABLE public.categories (
+  category_id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  category_name VARCHAR(50) UNIQUE NOT NULL,
+  description TEXT
+);
+
+-- 5. events
+CREATE TABLE public.events (
+  event_id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  organizer_id UUID NOT NULL REFERENCES public.organizers(organizer_id) ON DELETE CASCADE,
+  location_id UUID REFERENCES public.locations(location_id),
+  title VARCHAR(150) NOT NULL,
+  description TEXT,
+  start_datetime TIMESTAMP NOT NULL,
+  end_datetime TIMESTAMP,
+  price DECIMAL(10,2) DEFAULT 0,
+  status VARCHAR(20) DEFAULT 'active',
+  is_still_happening_confirmed_at TIMESTAMP,
+  created_at TIMESTAMP DEFAULT now(),
+  updated_at TIMESTAMP DEFAULT now()
+);
+
+-- 6. event_category (junction)
+CREATE TABLE public.event_category (
+  event_id UUID REFERENCES public.events(event_id) ON DELETE CASCADE,
+  category_id UUID REFERENCES public.categories(category_id) ON DELETE CASCADE,
+  PRIMARY KEY (event_id, category_id)
+);
+
+-- 7. registrations
+CREATE TABLE public.registrations (
+  registration_id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  user_id UUID NOT NULL REFERENCES public.users(user_id) ON DELETE CASCADE,
+  event_id UUID NOT NULL REFERENCES public.events(event_id) ON DELETE CASCADE,
+  registration_date TIMESTAMP DEFAULT now(),
+  status VARCHAR(20) DEFAULT 'registered',
+  UNIQUE(user_id, event_id)
+);
+
+-- 8. saved_events
+CREATE TABLE public.saved_events (
+  user_id UUID NOT NULL REFERENCES public.users(user_id) ON DELETE CASCADE,
+  event_id UUID NOT NULL REFERENCES public.events(event_id) ON DELETE CASCADE,
+  saved_at TIMESTAMP DEFAULT now(),
+  PRIMARY KEY (user_id, event_id)
+);
+
+-- 9. user_interests (junction)
+CREATE TABLE public.user_interests (
+  user_id UUID REFERENCES public.users(user_id) ON DELETE CASCADE,
+  category_id UUID REFERENCES public.categories(category_id) ON DELETE CASCADE,
+  PRIMARY KEY (user_id, category_id)
+);
+
+-- 10. reports
+CREATE TABLE public.reports (
+  report_id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  event_id UUID NOT NULL REFERENCES public.events(event_id) ON DELETE CASCADE,
+  reported_by UUID NOT NULL REFERENCES public.users(user_id) ON DELETE CASCADE,
+  reason TEXT,
+  status VARCHAR(20) DEFAULT 'open',
+  created_at TIMESTAMP DEFAULT now()
+);
+
+-- 11. notifications
+CREATE TABLE public.notifications (
+  notification_id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  user_id UUID NOT NULL REFERENCES public.users(user_id) ON DELETE CASCADE,
+  type VARCHAR(30) NOT NULL DEFAULT 'update',
+  title VARCHAR(255) NOT NULL,
+  message TEXT,
+  is_read BOOLEAN DEFAULT false,
+  related_event_id UUID REFERENCES public.events(event_id) ON DELETE SET NULL,
+  created_at TIMESTAMP DEFAULT now()
+);
+
+-- ============================================================
+-- SEED DATA
+-- ============================================================
+
+-- Users
+INSERT INTO public.users (user_id, name, email, role) VALUES
+('11111111-1111-1111-1111-111111111111', 'John Doe', 'john.doe@example.com', 'user'),
+('22222222-2222-2222-2222-222222222222', 'Metro Creative Group', 'org@example.com', 'organizer'),
+('33333333-3333-3333-3333-333333333333', 'Admin User', 'admin@spott.com', 'admin'),
+('44444444-0000-0000-0000-000000000001', 'City Arts Society', 'arts@example.com', 'organizer'),
+('44444444-0000-0000-0000-000000000002', 'PH Sports League', 'sports@example.com', 'organizer'),
+('44444444-0000-0000-0000-000000000003', 'Indie Festivals PH', 'indie@example.com', 'organizer'),
+('44444444-0000-0000-0000-000000000004', 'Pop & Indie Festivals', 'pop@example.com', 'organizer');
+
+-- Organizers
+INSERT INTO public.organizers (organizer_id, user_id, organization_name, description, verification_status) VALUES
+('44444444-4444-4444-4444-444444444444', '22222222-2222-2222-2222-222222222222', 'Metro Creative Group', 'Premier event organizer in Metro Manila.', 'verified'),
+('55555555-0000-0000-0000-000000000001', '44444444-0000-0000-0000-000000000001', 'City Arts Society', 'Community arts and culture collective.', 'verified'),
+('55555555-0000-0000-0000-000000000002', '44444444-0000-0000-0000-000000000002', 'PH Sports League', 'Amateur sports and community fitness.', 'verified'),
+('55555555-0000-0000-0000-000000000003', '44444444-0000-0000-0000-000000000003', 'Indie Festivals PH', 'Independent music and arts festivals.', 'unverified'),
+('55555555-0000-0000-0000-000000000004', '44444444-0000-0000-0000-000000000004', 'Pop & Indie Festivals', 'Pop culture and indie music events.', 'verified');
+
+-- Locations (with lat/lng for Google Maps)
+INSERT INTO public.locations (location_id, venue_name, address, city, latitude, longitude) VALUES
+('55555555-5555-5555-5555-555555555555', 'Rizal Park', 'Rizal Park, Ermita', 'Manila', 14.5831, 120.9794),
+('66666666-6666-6666-6666-666666666666', 'UP Diliman Sunken Garden', 'UP Diliman, Quezon City', 'Quezon City', 14.6538, 121.0685),
+('77777777-0000-0000-0000-000000000001', 'Route 196', 'Katipunan Ave, Quezon City', 'Katipunan', 14.6312, 121.0745),
+('77777777-0000-0000-0000-000000000002', 'Quezon Memorial Circle', 'Elliptical Road, Quezon City', 'Quezon City', 14.6517, 121.0490),
+('77777777-0000-0000-0000-000000000003', 'SM City North EDSA', 'North Avenue, Quezon City', 'Quezon City', 14.6567, 121.0302),
+('77777777-0000-0000-0000-000000000004', 'BGC Activity Center', '5th Ave, Taguig', 'Taguig', 14.5515, 121.0497),
+('77777777-0000-0000-0000-000000000005', 'Makati Circuit', 'Circuit Lane, Makati', 'Makati', 14.5533, 121.0195),
+('77777777-0000-0000-0000-000000000006', 'Intramuros Plaza', 'General Luna St, Intramuros', 'Manila', 14.5896, 120.9750);
+
+-- Categories
+INSERT INTO public.categories (category_id, category_name, description) VALUES
+('88888888-0000-0000-0000-000000000001', 'Music', 'Concerts and live performances'),
+('88888888-0000-0000-0000-000000000002', 'Sports', 'Sports and fitness events'),
+('88888888-0000-0000-0000-000000000003', 'Food', 'Food fairs and markets'),
+('88888888-0000-0000-0000-000000000004', 'Art', 'Art exhibits and galleries'),
+('88888888-0000-0000-0000-000000000005', 'Tech', 'Tech meetups and conferences'),
+('88888888-0000-0000-0000-000000000006', 'Comedy', 'Comedy shows and standup'),
+('88888888-0000-0000-0000-000000000007', 'Outdoor', 'Outdoor and nature events'),
+('88888888-0000-0000-0000-000000000008', 'Networking', 'Professional networking events'),
+('77777777-7777-7777-7777-777777777777', 'Night Markets', 'Night food and goods markets'),
+('88888888-8888-8888-8888-888888888888', 'School Events', 'University and school events'),
+('99999999-9999-9999-9999-999999999999', 'Concerts', 'Major concerts and gigs'),
+('00000000-0000-0000-0000-000000000000', 'Workshops', 'Learning and skill-building'),
+('88888888-0000-0000-0000-000000000009', 'Community', 'Community meetups and gatherings'),
+('88888888-0000-0000-0000-000000000010', 'Food & Drink', 'Food festivals and tastings');
+
+-- Events (with varied dates, prices, and locations)
+INSERT INTO public.events (event_id, organizer_id, location_id, title, description, start_datetime, end_datetime, price, status, is_still_happening_confirmed_at) VALUES
+('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', '44444444-4444-4444-4444-444444444444', '55555555-5555-5555-5555-555555555555',
+ 'Rizal Park Night Market & Food Bazaar',
+ 'Experience the best of Filipino street food and artisan goods at the iconic Rizal Park. Over 50 vendors, live acoustic music, and family-friendly activities.',
+ '2026-09-14 17:00:00', '2026-09-14 23:00:00', 0, 'active', now()),
+
+('bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb', '44444444-4444-4444-4444-444444444444', '66666666-6666-6666-6666-666666666666',
+ 'UP College Fair 2026: Dawn',
+ 'Annual university fair featuring student organizations, academic booths, cultural performances, and campus tours. Open to all prospective students.',
+ '2026-09-20 08:00:00', '2026-09-20 17:00:00', 0, 'active', now()),
+
+('cccccccc-cccc-cccc-cccc-cccccccccccc', '55555555-0000-0000-0000-000000000003', '77777777-0000-0000-0000-000000000001',
+ 'Indie Folk Sessions: Escolta',
+ 'An intimate evening of indie folk music featuring up-and-coming Filipino artists. Limited seating for an exclusive acoustic experience.',
+ '2026-09-15 19:00:00', '2026-09-15 22:30:00', 200, 'active', null),
+
+('dddddddd-dddd-dddd-dddd-dddddddddddd', '55555555-0000-0000-0000-000000000001', '77777777-0000-0000-0000-000000000004',
+ 'UI/UX Design Workshop',
+ 'Hands-on workshop covering modern UI/UX principles, Figma prototyping, and user research methods. Perfect for beginners and intermediate designers.',
+ '2026-09-17 13:00:00', '2026-09-17 17:00:00', 500, 'active', null),
+
+('eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee', '55555555-0000-0000-0000-000000000002', '77777777-0000-0000-0000-000000000002',
+ 'Barangay Sports Fest',
+ 'Community sports day featuring basketball, volleyball, fun runs, and family relay races. Free entry, open to all ages. Medals and prizes for winners.',
+ '2026-09-21 06:00:00', '2026-09-21 18:00:00', 0, 'active', now()),
+
+('ffffffff-ffff-ffff-ffff-ffffffffffff', '44444444-4444-4444-4444-444444444444', '77777777-0000-0000-0000-000000000005',
+ 'Street Food Bazaar',
+ 'Weekend food crawl featuring the best street food vendors from across Metro Manila. From sisig to halo-halo, discover your new favorite flavors.',
+ '2026-09-19 16:00:00', '2026-09-19 22:00:00', 0, 'active', null),
+
+('11111111-0000-0000-0000-000000000001', '55555555-0000-0000-0000-000000000004', '77777777-0000-0000-0000-000000000003',
+ 'Lakeside Farmers Market',
+ 'Fresh produce, organic goods, artisan crafts, and farm-to-table delights. Support local farmers and sustainable agriculture.',
+ '2026-10-04 08:00:00', '2026-10-04 14:00:00', 0, 'active', now()),
+
+('11111111-0000-0000-0000-000000000002', '55555555-0000-0000-0000-000000000004', '77777777-0000-0000-0000-000000000001',
+ 'Riverside Open Mic Night',
+ 'Bring your guitar, your poems, or just your ears. Open mic night for musicians, poets, and storytellers. Sign up on the night.',
+ '2026-10-07 19:00:00', '2026-10-07 23:00:00', 15, 'active', null),
+
+('11111111-0000-0000-0000-000000000003', '55555555-0000-0000-0000-000000000001', '77777777-0000-0000-0000-000000000006',
+ 'Urban Sketching Fundamentals',
+ 'Learn the basics of urban sketching with professional artists. All materials provided. Suitable for complete beginners.',
+ '2026-10-20 10:00:00', '2026-10-20 14:00:00', 0, 'active', null);
+
+-- Event-Category links
+INSERT INTO public.event_category (event_id, category_id) VALUES
+('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', '77777777-7777-7777-7777-777777777777'),
+('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', '88888888-0000-0000-0000-000000000003'),
+('bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb', '88888888-8888-8888-8888-888888888888'),
+('cccccccc-cccc-cccc-cccc-cccccccccccc', '99999999-9999-9999-9999-999999999999'),
+('cccccccc-cccc-cccc-cccc-cccccccccccc', '88888888-0000-0000-0000-000000000001'),
+('dddddddd-dddd-dddd-dddd-dddddddddddd', '00000000-0000-0000-0000-000000000000'),
+('dddddddd-dddd-dddd-dddd-dddddddddddd', '88888888-0000-0000-0000-000000000005'),
+('eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee', '88888888-0000-0000-0000-000000000002'),
+('eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee', '88888888-0000-0000-0000-000000000009'),
+('ffffffff-ffff-ffff-ffff-ffffffffffff', '88888888-0000-0000-0000-000000000010'),
+('11111111-0000-0000-0000-000000000001', '88888888-0000-0000-0000-000000000003'),
+('11111111-0000-0000-0000-000000000001', '88888888-0000-0000-0000-000000000007'),
+('11111111-0000-0000-0000-000000000002', '88888888-0000-0000-0000-000000000001'),
+('11111111-0000-0000-0000-000000000002', '99999999-9999-9999-9999-999999999999'),
+('11111111-0000-0000-0000-000000000003', '00000000-0000-0000-0000-000000000000'),
+('11111111-0000-0000-0000-000000000003', '88888888-0000-0000-0000-000000000004');
+
+-- Registrations
+INSERT INTO public.registrations (user_id, event_id) VALUES
+('11111111-1111-1111-1111-111111111111', 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'),
+('11111111-1111-1111-1111-111111111111', 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb');
+
+-- Saved Events
+INSERT INTO public.saved_events (user_id, event_id) VALUES
+('11111111-1111-1111-1111-111111111111', 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'),
+('11111111-1111-1111-1111-111111111111', 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb');
+
+-- Notifications
+INSERT INTO public.notifications (user_id, type, title, message, is_read, related_event_id) VALUES
+('11111111-1111-1111-1111-111111111111', 'update', 'Your event Jazz Night has been updated', 'The organizer changed the venue for Jazz Night. Check the new details.', false, 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'),
+('11111111-1111-1111-1111-111111111111', 'reminder', 'Reminder: Yoga in the Park starts in 1 hour', 'Don''t forget your mat! Yoga in the Park begins at 6:00 AM.', false, 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb'),
+('11111111-1111-1111-1111-111111111111', 'cancellation', 'Art Walk has been cancelled', 'Unfortunately, the Art Walk event has been cancelled due to weather conditions.', true, null),
+('11111111-1111-1111-1111-111111111111', 'update', 'New attendee registered for Metro Tech Summit', '4 new attendees registered for your event.', true, 'dddddddd-dddd-dddd-dddd-dddddddddddd'),
+('11111111-1111-1111-1111-111111111111', 'announcement', 'Weekly update from Spott team: System maintenance scheduled', 'We will perform scheduled maintenance on Oct 1, 2026 from 2-4 AM.', true, null);
