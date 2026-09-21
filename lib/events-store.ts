@@ -1,6 +1,7 @@
 "use client";
 
 import type { EventData } from "@/components/EventCard";
+import { removeNotificationsForEvent } from "@/lib/notifications-store";
 
 const STORAGE_KEY_EVENTS = "spott_events_directory";
 
@@ -30,9 +31,17 @@ export function deleteStoredEvent(id: string) {
   if (typeof window === "undefined") return;
   try {
     const existing = getStoredEvents();
+    const target = existing.find((e) => e.id === id);
     const updated = existing.filter((e) => e.id !== id);
     localStorage.setItem(STORAGE_KEY_EVENTS, JSON.stringify(updated));
     window.dispatchEvent(new Event("spott_events_updated"));
+
+    // Also remove notifications related to this removed event
+    if (target) {
+      removeNotificationsForEvent(target.id, target.title);
+    } else {
+      removeNotificationsForEvent(id);
+    }
   } catch {}
 }
 

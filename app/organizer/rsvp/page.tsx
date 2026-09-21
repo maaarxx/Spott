@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect } from "react";
 import {
   Download,
   Search,
@@ -17,6 +17,7 @@ import {
   UserCheck,
   FileSpreadsheet,
 } from "lucide-react";
+import { getStoredEvents } from "@/lib/events-store";
 
 interface Attendee {
   id: string;
@@ -29,24 +30,55 @@ interface Attendee {
   notes?: string;
 }
 
-const eventGuestLists: Record<string, { title: string; attendees: Attendee[] }> = {};
-
 export default function RsvpManagementPage() {
+  const [availableEvents, setAvailableEvents] = useState<{ id: string; title: string }[]>([]);
   const [selectedEventKey, setSelectedEventKey] = useState<string>("");
   const [attendees, setAttendees] = useState<Attendee[]>([]);
   const [searchQuery, setSearchQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState<string>("All");
   const [selectedAttendee, setSelectedAttendee] = useState<Attendee | null>(null);
 
+  useEffect(() => {
+    const loadEvents = () => {
+      const stored = getStoredEvents();
+      const list = stored.map((e) => ({ id: e.id, title: e.title }));
+      setAvailableEvents(list);
+      if (list.length > 0 && !selectedEventKey) {
+        setSelectedEventKey(list[0].id);
+      }
+    };
+    loadEvents();
+    window.addEventListener("spott_events_updated", loadEvents);
+    return () => window.removeEventListener("spott_events_updated", loadEvents);
+  }, [selectedEventKey]);
+
   // Switch event handler
   const handleEventChange = (key: string) => {
     setSelectedEventKey(key);
-    if (eventGuestLists[key]) {
-      setAttendees(eventGuestLists[key].attendees);
-    } else {
+    try {
+      const raw = localStorage.getItem("spott_guest_lists");
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        setAttendees(parsed[key] || []);
+        return;
+      }
+    } catch {}
+    setAttendees([]);
+  };
+
+  useEffect(() => {
+    if (selectedEventKey) {
+      try {
+        const raw = localStorage.getItem("spott_guest_lists");
+        if (raw) {
+          const parsed = JSON.parse(raw);
+          setAttendees(parsed[selectedEventKey] || []);
+          return;
+        }
+      } catch {}
       setAttendees([]);
     }
-  };
+  }, [selectedEventKey]);
 
   // Stats calculation
   const totalRsvps = attendees.length;
@@ -67,7 +99,8 @@ export default function RsvpManagementPage() {
 
   // CSV export function
   const handleExportCSV = () => {
-    const currentEvent = eventGuestLists[selectedEventKey];
+    const currentEvent = availableEvents.find((e) => e.id === selectedEventKey);
+    const eventTitle = currentEvent ? currentEvent.title : "Event";
     const headers = ["Name", "Email", "RSVP Status", "Date Registered", "Ticket Type", "Notes"];
     const rows = attendees.map((a) => [
       `"${a.name}"`,
@@ -87,7 +120,7 @@ export default function RsvpManagementPage() {
     link.setAttribute("href", encodedUri);
     link.setAttribute(
       "download",
-      `RSVP_${currentEvent.title.replace(/\s+/g, "_")}_Guestlist.csv`
+      `RSVP_${eventTitle.replace(/\s+/g, "_")}_Guestlist.csv`
     );
     document.body.appendChild(link);
     link.click();
@@ -120,12 +153,12 @@ export default function RsvpManagementPage() {
                 onChange={(e) => handleEventChange(e.target.value)}
                 className="appearance-none bg-white border border-[#e6e1d8] hover:border-[#ff6b35] text-[#171717] font-bold text-sm rounded-xl py-1 pl-3 pr-8 focus:outline-none cursor-pointer transition-colors shadow-2xs"
               >
-                {Object.keys(eventGuestLists).length === 0 ? (
+                {availableEvents.length === 0 ? (
                   <option value="">No Active Event Selected</option>
                 ) : (
-                  Object.entries(eventGuestLists).map(([k, v]) => (
-                    <option key={k} value={k}>
-                      {v.title}
+                  availableEvents.map((ev) => (
+                    <option key={ev.id} value={ev.id}>
+                      {ev.title}
                     </option>
                   ))
                 )}
@@ -247,7 +280,9 @@ export default function RsvpManagementPage() {
               {filteredAttendees.length === 0 ? (
                 <tr>
                   <td colSpan={5} className="py-12 text-center text-[#888888] text-sm">
-                    No attendees match your search.
+                    {attendees.length === 0
+                      ? "No RSVPs recorded yet. When guests register for your events, they will appear here in real-time."
+                      : "No attendees match your search."}
                   </td>
                 </tr>
               ) : (

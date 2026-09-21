@@ -37,16 +37,22 @@ import {
   RotateCcw,
   Clock,
   Inbox,
+  PieChart,
+  MapPin,
 } from "lucide-react";
 import {
   getVerificationState,
   defaultVerificationState,
   setApprovalStatus,
   resetVerificationState,
+  getRealTimeDate,
+  get30DaysExpiryDate,
   VerificationState,
+  VerificationDocument,
 } from "@/lib/verification-store";
-import { addNotification } from "@/lib/notifications-store";
 import PdfViewerModal from "@/components/PdfViewerModal";
+import { addNotification, removeNotificationsForEvent } from "@/lib/notifications-store";
+import { getStoredEvents, deleteStoredEvent } from "@/lib/events-store";
 
 interface Report {
   id: string;
@@ -54,7 +60,7 @@ interface Report {
   event: string;
   reason: string;
   status: "open" | "resolved";
-  details?: string;
+  details: string;
 }
 
 interface VerificationReq {
@@ -74,7 +80,7 @@ interface AdminUser {
   id: string;
   name: string;
   email: string;
-  role: "SuperAdmin" | "Organizer" | "Student";
+  role: "Student" | "Organizer" | "SuperAdmin";
   status: "Active" | "Pending" | "Suspended";
   joined: string;
 }
@@ -96,32 +102,7 @@ interface MonthlyData {
   heightPercent: number;
 }
 
-const initialReports: Report[] = [
-  {
-    id: "rep-1",
-    reporter: "Sara S.",
-    event: "Campus Rally",
-    reason: "Noise Violation",
-    status: "open",
-    details: "Amplified sound exceeded decibel guidelines during study hours in Arts Quad.",
-  },
-  {
-    id: "rep-2",
-    reporter: "Mark K.",
-    event: "Intro to Python",
-    reason: "Spam Listing",
-    status: "open",
-    details: "Commercial external coding academy masquerading as a student-led session.",
-  },
-  {
-    id: "rep-3",
-    reporter: "Alex M.",
-    event: "Downtown Beat",
-    reason: "Inappropriate content",
-    status: "open",
-    details: "Unlicensed alcohol sponsor mentioned on public promotional flyer.",
-  },
-];
+const initialReports: Report[] = [];
 
 const now = new Date();
 const currentYear = now.getFullYear();
@@ -130,59 +111,25 @@ const formatDate = (daysOffset: number = 0) => {
   return d.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
 };
 
-const initialVerifications: VerificationReq[] = [
-  {
-    id: "ver-1",
-    organizer: "Beta Tech Club",
-    submitted: formatDate(-3),
-    category: "Academic & Tech",
-    status: "pending",
-    documents: ["Beta_Tech_Accreditation.pdf", "Faculty_Endorsement_Signed.pdf"],
-  },
-  {
-    id: "ver-2",
-    organizer: "Local Foodies",
-    submitted: formatDate(-2),
-    category: "Culinary Arts",
-    status: "pending",
-    documents: ["Foodies_Charter.pdf", "Sanitation_Permit_Compliance.pdf"],
-  },
-  {
-    id: "ver-3",
-    organizer: "Metro Creative Group",
-    submitted: formatDate(0),
-    category: "Arts & Culture",
-    status: "pending",
-    documents: ["Metro_Creative_Registration.pdf", "Adviser_Signoff_Signed.pdf"],
-  },
-];
+const initialVerifications: VerificationReq[] = [];
 
 const monthlyActivity: MonthlyData[] = [
-  { month: "May", events: 34, rsvps: 210, heightPercent: 32 },
-  { month: "Jun", events: 58, rsvps: 450, heightPercent: 55 },
-  { month: "Jul", events: 65, rsvps: 580, heightPercent: 62 },
-  { month: "Aug", events: 45, rsvps: 390, heightPercent: 44 },
-  { month: "Sep", events: 92, rsvps: 820, heightPercent: 88 },
-  { month: "Oct", events: 118, rsvps: 1040, heightPercent: 100 },
-  { month: "Nov", events: 72, rsvps: 610, heightPercent: 68 },
+  { month: "May", events: 0, rsvps: 0, heightPercent: 4 },
+  { month: "Jun", events: 0, rsvps: 0, heightPercent: 4 },
+  { month: "Jul", events: 0, rsvps: 0, heightPercent: 4 },
+  { month: "Aug", events: 0, rsvps: 0, heightPercent: 4 },
+  { month: "Sep", events: 0, rsvps: 0, heightPercent: 4 },
+  { month: "Oct", events: 0, rsvps: 0, heightPercent: 4 },
+  { month: "Nov", events: 0, rsvps: 0, heightPercent: 4 },
 ];
 
 const initialUsersList: AdminUser[] = [
-  { id: "u-1", name: "John Doe", email: "john.doe@spott.edu", role: "SuperAdmin", status: "Active", joined: `Jan 12, ${currentYear}` },
-  { id: "u-2", name: "Metro Creative Group", email: "contact@metrocreative.org", role: "Organizer", status: "Active", joined: `Feb 03, ${currentYear}` },
-  { id: "u-3", name: "Alice Green", email: "alice.g@university.edu", role: "Student", status: "Active", joined: `Mar 19, ${currentYear}` },
-  { id: "u-4", name: "Bob Miller", email: "bob.m@university.edu", role: "Student", status: "Active", joined: `Mar 22, ${currentYear}` },
-  { id: "u-5", name: "Beta Tech Club", email: "leads@betatech.edu", role: "Organizer", status: "Pending", joined: formatDate(-3) },
-  { id: "u-6", name: "Spam Bot 404", email: "bot99@suspicious.io", role: "Student", status: "Suspended", joined: formatDate(-1) },
+  { id: "u-1", name: "SuperAdmin", email: "admin@spott.ph", role: "SuperAdmin", status: "Active", joined: `Jan 01, ${currentYear}` },
+  { id: "u-2", name: "Metro Creative Group", email: "organizer@spott.ph", role: "Organizer", status: "Active", joined: `Jan 01, ${currentYear}` },
+  { id: "u-3", name: "Juan Dela Cruz", email: "user@spott.ph", role: "Student", status: "Active", joined: `Jan 01, ${currentYear}` },
 ];
 
-const initialEventsList: AdminEvent[] = [
-  { id: "e-1", title: "Downtown Jazz Sessions", organizer: "Metro Creative Group", category: "Concerts", date: `Oct 24, ${currentYear}`, rsvps: 84, status: "Active" },
-  { id: "e-2", title: "Winter Arts & Crafts Fair", organizer: "Metro Creative Group", category: "Workshops", date: `Dec 10, ${currentYear}`, rsvps: 0, status: "Draft" },
-  { id: "e-3", title: "Tech Startup Panel", organizer: "Metro Creative Group", category: "School Events", date: `Sep 05, ${currentYear}`, rsvps: 112, status: "Past" },
-  { id: "e-4", title: "Midnight Night Market", organizer: "Local Foodies", category: "Night Markets", date: `Nov 02, ${currentYear}`, rsvps: 240, status: "Active" },
-  { id: "e-5", title: `Hackathon ${currentYear}`, organizer: "Beta Tech Club", category: "School Events", date: `Nov 15, ${currentYear}`, rsvps: 310, status: "Active" },
-];
+const initialEventsList: AdminEvent[] = [];
 
 function AdminContent() {
   const searchParams = useSearchParams();
@@ -201,38 +148,48 @@ function AdminContent() {
 
   useEffect(() => {
     // Sync with client localStorage on mount to prevent SSR hydration mismatch
-    const initial = getVerificationState();
-    setVerState(initial);
-    setVerifications((prev) =>
-      prev.map((v) =>
-        v.organizer === "Metro Creative Group"
-          ? {
-              ...v,
-              status: initial.status,
-              documents: initial.documents.map((d) => d.name),
-            }
-          : v
-      )
-    );
-
-    const handleUpdate = () => {
-      const updated = getVerificationState();
-      setVerState(updated);
-      setVerifications((prev) =>
-        prev.map((v) =>
-          v.organizer === "Metro Creative Group"
-            ? {
-                ...v,
-                status: updated.status,
-                documents: updated.documents.map((d) => d.name),
-              }
-            : v
-        )
-      );
+    const syncVerifications = () => {
+      const current = getVerificationState();
+      setVerState(current);
+      if (current.documents && current.documents.length > 0) {
+        setVerifications([
+          {
+            id: "ver-metro",
+            organizer: "Metro Creative Group",
+            submitted: formatDate(0),
+            category: "Arts & Culture",
+            status: current.status,
+            documents: current.documents.map((d) => d.name),
+          },
+        ]);
+      } else {
+        setVerifications([]);
+      }
     };
-    handleUpdate();
-    window.addEventListener("spott_verification_updated", handleUpdate);
-    return () => window.removeEventListener("spott_verification_updated", handleUpdate);
+
+    const syncAdminEvents = () => {
+      const stored = getStoredEvents();
+      const mapped: AdminEvent[] = stored.map((e) => ({
+        id: e.id,
+        title: e.title,
+        organizer: e.organizer || "Metro Creative Group",
+        category: e.categories?.[0] || "General",
+        date: e.date,
+        rsvps: e.registrations || 0,
+        status: (e.status === "active" ? "Active" : e.status === "draft" ? "Draft" : "Past") as any,
+      }));
+      setEventsList(mapped);
+    };
+
+    syncVerifications();
+    syncAdminEvents();
+
+    window.addEventListener("spott_verification_updated", syncVerifications);
+    window.addEventListener("spott_events_updated", syncAdminEvents);
+    return () => {
+      window.removeEventListener("spott_verification_updated", syncVerifications);
+      window.removeEventListener("spott_events_updated", syncAdminEvents);
+    };
   }, []);
 
   // Search filters
@@ -282,6 +239,8 @@ function AdminContent() {
   };
 
   const handleDeleteEvent = (id: string, title: string) => {
+    deleteStoredEvent(id);
+    removeNotificationsForEvent(id, title);
     setEventsList((prev) => prev.filter((e) => e.id !== id));
     setSelectedEvent(null);
     showNotice(`Event "${title}" has been taken down and removed.`);
@@ -478,9 +437,9 @@ function AdminContent() {
                   </div>
                 </div>
                 <div className="flex items-baseline gap-2">
-                  <span className="text-3xl sm:text-4xl font-black text-[#171717]">{usersList.length * 240}</span>
+                  <span className="text-3xl sm:text-4xl font-black text-[#171717]">{usersList.length}</span>
                 </div>
-                <p className="text-[11px] text-emerald-600 font-semibold mt-2">↑ 14% new signups</p>
+                <p className="text-[11px] text-[#888888] font-semibold mt-2">{usersList.length} registered account{usersList.length !== 1 ? 's' : ''}</p>
               </div>
             </Link>
 
@@ -495,9 +454,11 @@ function AdminContent() {
                   </div>
                 </div>
                 <div className="flex items-baseline gap-2">
-                  <span className="text-3xl sm:text-4xl font-black text-[#171717]">{eventsList.length * 9 + 3}</span>
+                  <span className="text-3xl sm:text-4xl font-black text-[#171717]">{eventsList.length}</span>
                 </div>
-                <p className="text-[11px] text-[#ff6b35] font-semibold mt-2">Across 8 categories</p>
+                <p className="text-[11px] text-[#ff6b35] font-semibold mt-2">
+                  {eventsList.length === 0 ? "No events published yet" : `Across campus categories`}
+                </p>
               </div>
             </Link>
 
@@ -572,35 +533,43 @@ function AdminContent() {
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-[#e6e1d8]">
-                      {reports.map((rep) => (
-                        <tr key={rep.id} className="hover:bg-[#faf8f3]/60 transition-colors">
-                          <td className="py-3.5 px-5 font-bold text-[#171717] whitespace-nowrap">
-                            {rep.reporter}
-                          </td>
-                          <td className="py-3.5 px-5 text-[#444444] font-medium whitespace-nowrap">
-                            {rep.event}
-                          </td>
-                          <td className="py-3.5 px-5 text-[#666666] whitespace-nowrap">
-                            <span className="text-xs px-2 py-0.5 bg-gray-100 rounded-md">
-                              {rep.reason}
-                            </span>
-                          </td>
-                          <td className="py-3.5 px-5 text-right whitespace-nowrap">
-                            {rep.status === "open" ? (
-                              <button
-                                onClick={() => setSelectedReport(rep)}
-                                className="text-xs font-black text-[#ff6b35] hover:text-[#e0531f] hover:underline cursor-pointer"
-                              >
-                                Resolve
-                              </button>
-                            ) : (
-                              <span className="inline-flex items-center gap-1 text-xs font-bold text-emerald-600">
-                                <Check className="w-3.5 h-3.5" /> Resolved
-                              </span>
-                            )}
+                      {reports.length === 0 ? (
+                        <tr>
+                          <td colSpan={4} className="py-8 text-center text-xs text-[#888888]">
+                            No reports submitted. All campus listings are in good standing.
                           </td>
                         </tr>
-                      ))}
+                      ) : (
+                        reports.map((rep) => (
+                          <tr key={rep.id} className="hover:bg-[#faf8f3]/60 transition-colors">
+                            <td className="py-3.5 px-5 font-bold text-[#171717] whitespace-nowrap">
+                              {rep.reporter}
+                            </td>
+                            <td className="py-3.5 px-5 text-[#444444] font-medium whitespace-nowrap">
+                              {rep.event}
+                            </td>
+                            <td className="py-3.5 px-5 text-[#666666] whitespace-nowrap">
+                              <span className="text-xs px-2 py-0.5 bg-gray-100 rounded-md">
+                                {rep.reason}
+                              </span>
+                            </td>
+                            <td className="py-3.5 px-5 text-right whitespace-nowrap">
+                              {rep.status === "open" ? (
+                                <button
+                                  onClick={() => setSelectedReport(rep)}
+                                  className="text-xs font-black text-[#ff6b35] hover:text-[#e0531f] hover:underline cursor-pointer"
+                                >
+                                  Resolve
+                                </button>
+                              ) : (
+                                <span className="inline-flex items-center gap-1 text-xs font-bold text-emerald-600">
+                                  <Check className="w-3.5 h-3.5" /> Resolved
+                                </span>
+                              )}
+                            </td>
+                          </tr>
+                        ))
+                      )}
                     </tbody>
                   </table>
                 </div>
@@ -639,43 +608,51 @@ function AdminContent() {
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-[#e6e1d8]">
-                      {verifications.map((ver) => (
-                        <tr key={ver.id} className="hover:bg-[#faf8f3]/60 transition-colors">
-                          <td className="py-3.5 px-5">
-                            <div className="font-bold text-[#171717]">{ver.organizer}</div>
-                            <div className="text-[11px] text-[#888888]">{ver.category}</div>
-                          </td>
-                          <td className="py-3.5 px-5 text-xs text-[#555555] font-semibold whitespace-nowrap">
-                            {ver.submitted}
-                          </td>
-                          <td className="py-3.5 px-5 text-right whitespace-nowrap">
-                            {ver.status === "pending" ? (
-                              <div className="inline-flex items-center gap-3">
-                                <button
-                                  onClick={() => setSelectedVerification(ver)}
-                                  className="text-xs font-bold text-emerald-600 hover:text-emerald-700 hover:underline cursor-pointer"
-                                >
-                                  Review & Approve
-                                </button>
-                                <button
-                                  onClick={() => handleRejectVerification(ver.id, ver.organizer)}
-                                  className="text-xs font-bold text-rose-600 hover:text-rose-700 hover:underline cursor-pointer"
-                                >
-                                  Reject
-                                </button>
-                              </div>
-                            ) : ver.status === "approved" ? (
-                              <span className="inline-flex items-center gap-1 text-xs font-bold text-emerald-600">
-                                <CheckCircle2 className="w-3.5 h-3.5" /> Approved
-                              </span>
-                            ) : (
-                              <span className="inline-flex items-center gap-1 text-xs font-bold text-rose-600">
-                                <XCircle className="w-3.5 h-3.5" /> Rejected
-                              </span>
-                            )}
+                      {verifications.length === 0 ? (
+                        <tr>
+                          <td colSpan={3} className="py-8 text-center text-xs text-[#888888]">
+                            No verification requests pending review.
                           </td>
                         </tr>
-                      ))}
+                      ) : (
+                        verifications.map((ver) => (
+                          <tr key={ver.id} className="hover:bg-[#faf8f3]/60 transition-colors">
+                            <td className="py-3.5 px-5">
+                              <div className="font-bold text-[#171717]">{ver.organizer}</div>
+                              <div className="text-[11px] text-[#888888]">{ver.category}</div>
+                            </td>
+                            <td className="py-3.5 px-5 text-xs text-[#555555] font-semibold whitespace-nowrap">
+                              {ver.submitted}
+                            </td>
+                            <td className="py-3.5 px-5 text-right whitespace-nowrap">
+                              {ver.status === "pending" ? (
+                                <div className="inline-flex items-center gap-3">
+                                  <button
+                                    onClick={() => setSelectedVerification(ver)}
+                                    className="text-xs font-bold text-emerald-600 hover:text-emerald-700 hover:underline cursor-pointer"
+                                  >
+                                    Review & Approve
+                                  </button>
+                                  <button
+                                    onClick={() => handleRejectVerification(ver.id, ver.organizer)}
+                                    className="text-xs font-bold text-rose-600 hover:text-rose-700 hover:underline cursor-pointer"
+                                  >
+                                    Reject
+                                  </button>
+                                </div>
+                              ) : ver.status === "approved" ? (
+                                <span className="inline-flex items-center gap-1 text-xs font-bold text-emerald-600">
+                                  <CheckCircle2 className="w-3.5 h-3.5" /> Approved
+                                </span>
+                              ) : (
+                                <span className="inline-flex items-center gap-1 text-xs font-bold text-rose-600">
+                                  <XCircle className="w-3.5 h-3.5" /> Rejected
+                                </span>
+                              )}
+                            </td>
+                          </tr>
+                        ))
+                      )}
                     </tbody>
                   </table>
                 </div>
@@ -751,11 +728,15 @@ function AdminContent() {
               </div>
 
               <div className="flex items-center justify-between text-xs text-[#888888] font-medium pt-3 px-2">
-                <span>May 2025</span>
-                <span className="flex items-center gap-1.5 text-xs font-bold text-[#ff6b35]">
-                  <TrendingUp className="w-3.5 h-3.5" /> October reached all-time high (118 events)
+                <span>May {currentYear}</span>
+                <span className="flex items-center gap-1.5 text-xs font-bold text-[#888888]">
+                  {eventsList.length > 0 ? (
+                    <><TrendingUp className="w-3.5 h-3.5 text-[#ff6b35]" /> Event data accumulates as organizers publish listings</>
+                  ) : (
+                    "No event data yet — chart will populate when events are published"
+                  )}
                 </span>
-                <span>Nov 2025</span>
+                <span>Nov {currentYear}</span>
               </div>
             </div>
           </div>
@@ -770,7 +751,9 @@ function AdminContent() {
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
             <div>
               <h1 className="text-2xl sm:text-3xl font-black text-[#171717]">User Management</h1>
-              <p className="text-sm text-[#666666] mt-0.5">Manage 1,420 registered university accounts and roles.</p>
+              <p className="text-sm text-[#666666] mt-0.5">
+                Manage registered university accounts and roles ({usersList.length} active).
+              </p>
             </div>
             <div className="relative w-full sm:w-72">
               <Search className="w-4 h-4 text-[#888888] absolute left-3.5 top-1/2 -translate-y-1/2" />
@@ -840,7 +823,9 @@ function AdminContent() {
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
             <div>
               <h1 className="text-2xl sm:text-3xl font-black text-[#171717]">Campus Events Moderation</h1>
-              <p className="text-sm text-[#666666] mt-0.5">Monitoring all 48 active and scheduled campus events.</p>
+              <p className="text-sm text-[#666666] mt-0.5">
+                Monitoring all {eventsList.length} active and scheduled campus events.
+              </p>
             </div>
             <div className="relative w-full sm:w-72">
               <Search className="w-4 h-4 text-[#888888] absolute left-3.5 top-1/2 -translate-y-1/2" />
@@ -867,31 +852,39 @@ function AdminContent() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-[#e6e1d8]">
-                {eventsList
-                  .filter((e) => e.title.toLowerCase().includes(eventSearch.toLowerCase()))
-                  .map((e) => (
-                    <tr key={e.id} className="hover:bg-[#faf8f3]/60 transition-colors">
-                      <td className="py-4 px-6 font-bold text-[#171717]">{e.title}</td>
-                      <td className="py-4 px-6 text-xs text-[#555555]">{e.organizer}</td>
-                      <td className="py-4 px-6 text-xs text-[#666666]">{e.date}</td>
-                      <td className="py-4 px-6 font-bold">{e.rsvps}</td>
-                      <td className="py-4 px-6">
-                        <span className={`text-xs font-bold px-2.5 py-0.5 rounded-full ${
-                          e.status === "Active" ? "bg-emerald-50 text-emerald-700" : e.status === "Draft" ? "bg-amber-50 text-amber-700" : e.status === "Flagged" ? "bg-rose-50 text-rose-700" : "bg-gray-100 text-gray-700"
-                        }`}>
-                          {e.status}
-                        </span>
-                      </td>
-                      <td className="py-4 px-6 text-right">
-                        <button
-                          onClick={() => setSelectedEvent(e)}
-                          className="px-3 py-1 bg-gray-100 hover:bg-[#ff6b35] hover:text-white rounded-lg text-xs font-bold transition-colors cursor-pointer"
-                        >
-                          Review
-                        </button>
-                      </td>
-                    </tr>
-                  ))}
+                {eventsList.length === 0 ? (
+                  <tr>
+                    <td colSpan={6} className="py-12 text-center text-xs text-[#888888]">
+                      No events currently listed across campus. When organizers publish events, they will appear here for moderation.
+                    </td>
+                  </tr>
+                ) : (
+                  eventsList
+                    .filter((e) => e.title.toLowerCase().includes(eventSearch.toLowerCase()))
+                    .map((e) => (
+                      <tr key={e.id} className="hover:bg-[#faf8f3]/60 transition-colors">
+                        <td className="py-4 px-6 font-bold text-[#171717]">{e.title}</td>
+                        <td className="py-4 px-6 text-xs text-[#555555]">{e.organizer}</td>
+                        <td className="py-4 px-6 text-xs text-[#666666]">{e.date}</td>
+                        <td className="py-4 px-6 font-bold">{e.rsvps}</td>
+                        <td className="py-4 px-6">
+                          <span className={`text-xs font-bold px-2.5 py-0.5 rounded-full ${
+                            e.status === "Active" ? "bg-emerald-50 text-emerald-700" : e.status === "Draft" ? "bg-amber-50 text-amber-700" : e.status === "Flagged" ? "bg-rose-50 text-rose-700" : "bg-gray-100 text-gray-700"
+                          }`}>
+                            {e.status}
+                          </span>
+                        </td>
+                        <td className="py-4 px-6 text-right">
+                          <button
+                            onClick={() => setSelectedEvent(e)}
+                            className="px-3 py-1 bg-gray-100 hover:bg-[#ff6b35] hover:text-white rounded-lg text-xs font-bold transition-colors cursor-pointer"
+                          >
+                            Review
+                          </button>
+                        </td>
+                      </tr>
+                    ))
+                )}
               </tbody>
             </table>
           </div>
@@ -1322,183 +1315,186 @@ function AdminContent() {
             </div>
             <span className="text-xs font-bold px-3 py-1.5 bg-emerald-50 text-emerald-700 rounded-xl border border-emerald-200 flex items-center gap-1.5 self-start sm:self-auto">
               <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
-              Real-Time Campus Telemetry
+              Live Data
             </span>
           </div>
 
-          {/* Top 4 KPI Metrics */}
+          {/* Top 4 KPI Metrics — all derived from real state */}
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
             <div className="bg-white border border-[#e6e1d8] rounded-2xl p-5 shadow-sm">
-              <span className="text-xs font-bold text-[#666666] uppercase block mb-1">Monthly Active Users</span>
-              <p className="text-3xl sm:text-4xl font-black text-[#171717]">1,420</p>
-              <p className="text-xs text-emerald-600 font-bold mt-2">↑ 28% from last month</p>
+              <span className="text-xs font-bold text-[#666666] uppercase block mb-1">Registered Users</span>
+              <p className="text-3xl sm:text-4xl font-black text-[#171717]">{usersList.length}</p>
+              <p className="text-xs text-[#888888] font-medium mt-2">
+                {usersList.length === 0 ? "No accounts yet" : `${usersList.filter(u => u.role === "Student").length} students, ${usersList.filter(u => u.role === "Organizer").length} organizers`}
+              </p>
             </div>
             <div className="bg-white border border-[#e6e1d8] rounded-2xl p-5 shadow-sm">
-              <span className="text-xs font-bold text-[#666666] uppercase block mb-1">Total RSVP Reservations</span>
-              <p className="text-3xl sm:text-4xl font-black text-[#ff6b35]">3,840</p>
-              <p className="text-xs text-[#666666] font-medium mt-2">89% verified check-in rate</p>
+              <span className="text-xs font-bold text-[#666666] uppercase block mb-1">Total Events</span>
+              <p className="text-3xl sm:text-4xl font-black text-[#ff6b35]">{eventsList.length}</p>
+              <p className="text-xs text-[#666666] font-medium mt-2">
+                {eventsList.length === 0 ? "No events published yet" : `${eventsList.filter(e => e.status === "Active").length} active, ${eventsList.filter(e => e.status === "Draft").length} draft`}
+              </p>
             </div>
             <div className="bg-white border border-[#e6e1d8] rounded-2xl p-5 shadow-sm">
               <span className="text-xs font-bold text-[#666666] uppercase block mb-1">Verified Organizations</span>
-              <p className="text-3xl sm:text-4xl font-black text-[#171717]">41</p>
-              <p className="text-xs text-emerald-600 font-bold mt-2">5 under review</p>
+              <p className="text-3xl sm:text-4xl font-black text-[#171717]">
+                {verifications.filter(v => v.status === "approved").length}
+              </p>
+              <p className="text-xs text-[#888888] font-medium mt-2">
+                {verifications.filter(v => v.status === "pending").length > 0
+                  ? `${verifications.filter(v => v.status === "pending").length} pending review`
+                  : "No pending verifications"}
+              </p>
             </div>
             <div className="bg-white border border-[#e6e1d8] rounded-2xl p-5 shadow-sm">
-              <span className="text-xs font-bold text-[#666666] uppercase block mb-1">Avg Resolution Time</span>
-              <p className="text-3xl sm:text-4xl font-black text-emerald-600">1.1 hrs</p>
-              <p className="text-xs text-[#666666] font-medium mt-2">Down from 4.2 hrs</p>
+              <span className="text-xs font-bold text-[#666666] uppercase block mb-1">Open Reports</span>
+              <p className="text-3xl sm:text-4xl font-black text-emerald-600">{reports.filter(r => r.status === "open").length}</p>
+              <p className="text-xs text-[#666666] font-medium mt-2">
+                {reports.length === 0 ? "No reports filed" : `${reports.filter(r => r.status === "resolved").length} resolved`}
+              </p>
             </div>
           </div>
 
-          {/* Chart Grid 1: Dual-Bar Growth Chart (Users vs Events) */}
+          {/* Monthly Growth chart — real data, empty state when no events */}
           <div className="bg-white border border-[#e6e1d8] rounded-2xl p-6 shadow-sm space-y-4">
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
               <div>
-                <h3 className="text-base sm:text-lg font-black text-[#171717]">Monthly Growth: User Signups vs Event Listings</h3>
-                <p className="text-xs text-[#666666]">Comparison of student adoption volume and event creation velocity</p>
+                <h3 className="text-base sm:text-lg font-black text-[#171717]">Platform Snapshot: Users vs Events</h3>
+                <p className="text-xs text-[#666666]">Current registered users and published events on the platform</p>
               </div>
               <div className="flex items-center gap-4 text-xs font-bold">
                 <div className="flex items-center gap-1.5">
                   <span className="w-3 h-3 rounded-md bg-[#171717]" />
-                  <span>New Users</span>
+                  <span>Users</span>
                 </div>
                 <div className="flex items-center gap-1.5">
                   <span className="w-3 h-3 rounded-md bg-[#ff6b35]" />
-                  <span>Events Created</span>
+                  <span>Events</span>
                 </div>
               </div>
             </div>
 
-            {/* Dual Bar Chart */}
-            <div className="pt-6 pb-2">
-              <div className="h-48 flex items-end justify-between gap-2 sm:gap-6 px-4 border-b border-[#e6e1d8]">
-                {[
-                  { m: "May", users: 140, evts: 34, uh: 35, eh: 24 },
-                  { m: "Jun", users: 210, evts: 58, uh: 52, eh: 41 },
-                  { m: "Jul", users: 260, evts: 65, uh: 65, eh: 46 },
-                  { m: "Aug", users: 190, evts: 45, uh: 47, eh: 32 },
-                  { m: "Sep", users: 340, evts: 92, uh: 85, eh: 65 },
-                  { m: "Oct", users: 400, evts: 118, uh: 100, eh: 84 },
-                  { m: "Nov", users: 280, evts: 72, uh: 70, eh: 51 },
-                ].map((item) => (
-                  <div key={item.m} className="flex-1 flex flex-col items-center gap-2 group h-full justify-end cursor-pointer">
-                    <div className="opacity-0 group-hover:opacity-100 transition-opacity text-[10px] font-black text-[#171717] bg-white border px-1.5 py-0.5 rounded shadow-xs whitespace-nowrap mb-1">
-                      {item.users} users • {item.evts} evts
-                    </div>
-                    <div className="flex items-end gap-1 sm:gap-1.5 w-full justify-center">
-                      <div
-                        style={{ height: `${item.uh}%` }}
-                        className="w-3 sm:w-5 bg-[#171717] rounded-t-md group-hover:brightness-125 transition-all"
-                      />
-                      <div
-                        style={{ height: `${item.eh}%` }}
-                        className="w-3 sm:w-5 bg-[#ff6b35] rounded-t-md group-hover:brightness-110 transition-all"
-                      />
-                    </div>
-                    <span className="text-xs font-bold text-[#666666] group-hover:text-[#171717]">
-                      {item.m}
-                    </span>
-                  </div>
-                ))}
+            {eventsList.length === 0 && usersList.length <= 3 ? (
+              <div className="h-48 flex flex-col items-center justify-center text-center gap-3 border border-dashed border-[#e6e1d8] rounded-2xl bg-[#faf8f3]">
+                <BarChart2 className="w-8 h-8 text-[#cccccc]" />
+                <p className="text-sm font-bold text-[#888888]">No activity data yet</p>
+                <p className="text-xs text-[#aaaaaa] max-w-xs">
+                  Chart will populate as organizers publish events and users register on the platform.
+                </p>
               </div>
-              <div className="flex justify-between text-xs text-[#888888] pt-2 px-2 font-medium">
-                <span>Start of Summer Term (May)</span>
-                <span className="text-[#ff6b35] font-bold">Fall Semester Peak: October (+400 signups)</span>
-                <span>November 2025</span>
+            ) : (
+              <div className="pt-4 pb-2">
+                <div className="h-48 flex items-end justify-around gap-8 px-8 border-b border-[#e6e1d8]">
+                  {[
+                    { label: "Users", value: usersList.length, color: "#171717" },
+                    { label: "Events", value: eventsList.length, color: "#ff6b35" },
+                  ].map((item) => {
+                    const maxVal = Math.max(usersList.length, eventsList.length, 1);
+                    const barH = Math.max(Math.round((item.value / maxVal) * 160), 6);
+                    return (
+                      <div key={item.label} className="flex flex-col items-center gap-2 group cursor-pointer">
+                        <span className="text-xs font-black text-[#171717] group-hover:text-[#ff6b35] transition-colors">{item.value}</span>
+                        <div
+                          style={{ height: `${barH}px`, backgroundColor: item.color, width: "56px" }}
+                          className="rounded-t-xl transition-all group-hover:brightness-125"
+                        />
+                        <span className="text-xs font-bold text-[#666666]">{item.label}</span>
+                      </div>
+                    );
+                  })}
+                </div>
+                <p className="text-center text-xs text-[#888888] pt-3 font-medium">
+                  {usersList.length} user{usersList.length !== 1 ? "s" : ""} · {eventsList.length} event{eventsList.length !== 1 ? "s" : ""} currently on platform
+                </p>
               </div>
-            </div>
+            )}
           </div>
 
-          {/* Chart Grid 2 */}
+          {/* Chart Grid 2 — Category Popularity & Top Venues from real eventsList */}
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+            {/* Campus Category Popularity */}
             <div className="bg-white border border-[#e6e1d8] rounded-2xl p-6 shadow-sm space-y-4">
               <div>
                 <h3 className="text-base font-black text-[#171717]">Campus Category Popularity</h3>
                 <p className="text-xs text-[#666666]">Distribution of active listings across event genres</p>
               </div>
-              <div className="space-y-3 pt-2">
-                <div className="h-4 w-full flex rounded-full overflow-hidden shadow-inner">
-                  <div style={{ width: "34%" }} className="bg-[#ff6b35]" title="Concerts (34%)" />
-                  <div style={{ width: "26%" }} className="bg-indigo-600" title="Workshops (26%)" />
-                  <div style={{ width: "22%" }} className="bg-emerald-500" title="School Events (22%)" />
-                  <div style={{ width: "18%" }} className="bg-amber-500" title="Night Markets (18%)" />
+              {eventsList.length === 0 ? (
+                <div className="py-10 flex flex-col items-center gap-2 text-center">
+                  <PieChart className="w-8 h-8 text-[#cccccc]" />
+                  <p className="text-sm font-bold text-[#888888]">No events to categorize</p>
+                  <p className="text-xs text-[#aaaaaa]">Category breakdown will appear once organizers publish events.</p>
                 </div>
-                <div className="grid grid-cols-2 gap-3 pt-2">
-                  <div className="p-3 bg-[#faf8f3] rounded-xl border border-[#e6e1d8]">
-                    <div className="flex items-center gap-2">
-                      <span className="w-2.5 h-2.5 rounded-full bg-[#ff6b35]" />
-                      <span className="text-xs font-bold text-[#171717]">Concerts & Gigs</span>
+              ) : (() => {
+                const cats: Record<string, number> = {};
+                eventsList.forEach(e => { const c = e.category || "General"; cats[c] = (cats[c] || 0) + 1; });
+                const total = eventsList.length;
+                const sorted = Object.entries(cats).sort((a, b) => b[1] - a[1]).slice(0, 4);
+                const colors = ["bg-[#ff6b35]", "bg-indigo-600", "bg-emerald-500", "bg-amber-500"];
+                const barColors = ["#ff6b35", "#4f46e5", "#10b981", "#f59e0b"];
+                return (
+                  <div className="space-y-3 pt-2">
+                    <div className="h-4 w-full flex rounded-full overflow-hidden shadow-inner">
+                      {sorted.map(([cat, cnt], i) => (
+                        <div key={cat} style={{ width: `${Math.round((cnt / total) * 100)}%`, backgroundColor: barColors[i] }} title={`${cat}: ${Math.round((cnt / total) * 100)}%`} />
+                      ))}
                     </div>
-                    <span className="text-lg font-black text-[#171717] mt-1 block">34% (16 evts)</span>
-                  </div>
-                  <div className="p-3 bg-[#faf8f3] rounded-xl border border-[#e6e1d8]">
-                    <div className="flex items-center gap-2">
-                      <span className="w-2.5 h-2.5 rounded-full bg-indigo-600" />
-                      <span className="text-xs font-bold text-[#171717]">Workshops & Tech</span>
+                    <div className="grid grid-cols-2 gap-3 pt-2">
+                      {sorted.map(([cat, cnt], i) => (
+                        <div key={cat} className="p-3 bg-[#faf8f3] rounded-xl border border-[#e6e1d8]">
+                          <div className="flex items-center gap-2">
+                            <span className={`w-2.5 h-2.5 rounded-full ${colors[i]}`} />
+                            <span className="text-xs font-bold text-[#171717] truncate">{cat}</span>
+                          </div>
+                          <span className="text-lg font-black text-[#171717] mt-1 block">
+                            {Math.round((cnt / total) * 100)}% ({cnt} evt{cnt !== 1 ? "s" : ""})
+                          </span>
+                        </div>
+                      ))}
                     </div>
-                    <span className="text-lg font-black text-[#171717] mt-1 block">26% (12 evts)</span>
                   </div>
-                  <div className="p-3 bg-[#faf8f3] rounded-xl border border-[#e6e1d8]">
-                    <div className="flex items-center gap-2">
-                      <span className="w-2.5 h-2.5 rounded-full bg-emerald-500" />
-                      <span className="text-xs font-bold text-[#171717]">School & Campus</span>
-                    </div>
-                    <span className="text-lg font-black text-[#171717] mt-1 block">22% (11 evts)</span>
-                  </div>
-                  <div className="p-3 bg-[#faf8f3] rounded-xl border border-[#e6e1d8]">
-                    <div className="flex items-center gap-2">
-                      <span className="w-2.5 h-2.5 rounded-full bg-amber-500" />
-                      <span className="text-xs font-bold text-[#171717]">Night Markets</span>
-                    </div>
-                    <span className="text-lg font-black text-[#171717] mt-1 block">18% (9 evts)</span>
-                  </div>
-                </div>
-              </div>
+                );
+              })()}
             </div>
 
+            {/* Top Active Campus Venues */}
             <div className="bg-white border border-[#e6e1d8] rounded-2xl p-6 shadow-sm space-y-4">
               <div>
                 <h3 className="text-base font-black text-[#171717]">Top Active Campus Venues</h3>
-                <p className="text-xs text-[#666666]">Locations hosting the highest concentration of student gatherings</p>
+                <p className="text-xs text-[#666666]">Locations hosting the highest concentration of events</p>
               </div>
-              <div className="space-y-3.5 pt-2">
-                <div>
-                  <div className="flex justify-between text-xs font-bold mb-1">
-                    <span className="text-[#171717]">1. Metro Amphitheater & Arts Hall</span>
-                    <span className="text-[#ff6b35]">18 Events • 1,240 RSVPs</span>
-                  </div>
-                  <div className="h-2.5 bg-gray-100 rounded-full overflow-hidden">
-                    <div style={{ width: "85%" }} className="h-full bg-[#ff6b35] rounded-full" />
-                  </div>
+              {eventsList.length === 0 ? (
+                <div className="py-10 flex flex-col items-center gap-2 text-center">
+                  <MapPin className="w-8 h-8 text-[#cccccc]" />
+                  <p className="text-sm font-bold text-[#888888]">No venue data yet</p>
+                  <p className="text-xs text-[#aaaaaa]">Venue rankings will populate as events are published.</p>
                 </div>
-                <div>
-                  <div className="flex justify-between text-xs font-bold mb-1">
-                    <span className="text-[#171717]">2. Campus Quadrangle & Central Plaza</span>
-                    <span className="text-[#171717]">14 Events • 980 RSVPs</span>
+              ) : (() => {
+                const venues: Record<string, { events: number; rsvps: number }> = {};
+                eventsList.forEach(e => {
+                  const v = (e as any).location || "Campus Venue";
+                  if (!venues[v]) venues[v] = { events: 0, rsvps: 0 };
+                  venues[v].events += 1;
+                  venues[v].rsvps += (e as any).rsvps || 0;
+                });
+                const sorted = Object.entries(venues).sort((a, b) => b[1].events - a[1].events).slice(0, 4);
+                const maxEvents = sorted[0]?.[1].events || 1;
+                const barCols = ["#ff6b35", "#171717", "#10b981", "#8b5cf6"];
+                return (
+                  <div className="space-y-3.5 pt-2">
+                    {sorted.map(([venue, data], i) => (
+                      <div key={venue}>
+                        <div className="flex justify-between text-xs font-bold mb-1">
+                          <span className="text-[#171717] truncate max-w-[60%]">{i + 1}. {venue}</span>
+                          <span style={{ color: barCols[i] }}>{data.events} Event{data.events !== 1 ? "s" : ""} • {data.rsvps} RSVPs</span>
+                        </div>
+                        <div className="h-2.5 bg-gray-100 rounded-full overflow-hidden">
+                          <div style={{ width: `${Math.round((data.events / maxEvents) * 100)}%`, backgroundColor: barCols[i] }} className="h-full rounded-full" />
+                        </div>
+                      </div>
+                    ))}
                   </div>
-                  <div className="h-2.5 bg-gray-100 rounded-full overflow-hidden">
-                    <div style={{ width: "68%" }} className="h-full bg-[#171717] rounded-full" />
-                  </div>
-                </div>
-                <div>
-                  <div className="flex justify-between text-xs font-bold mb-1">
-                    <span className="text-[#171717]">3. Innovation & Engineering Hub</span>
-                    <span className="text-[#171717]">10 Events • 740 RSVPs</span>
-                  </div>
-                  <div className="h-2.5 bg-gray-100 rounded-full overflow-hidden">
-                    <div style={{ width: "52%" }} className="h-full bg-emerald-500 rounded-full" />
-                  </div>
-                </div>
-                <div>
-                  <div className="flex justify-between text-xs font-bold mb-1">
-                    <span className="text-[#171717]">4. Student Activity Center Pavilion</span>
-                    <span className="text-[#171717]">6 Events • 410 RSVPs</span>
-                  </div>
-                  <div className="h-2.5 bg-gray-100 rounded-full overflow-hidden">
-                    <div style={{ width: "35%" }} className="h-full bg-purple-500 rounded-full" />
-                  </div>
-                </div>
-              </div>
+                );
+              })()}
             </div>
           </div>
         </div>

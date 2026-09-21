@@ -5,7 +5,7 @@ import { useSearchParams } from "next/navigation";
 import { Search, SlidersHorizontal, MapPin, X } from "lucide-react";
 import EventCard, { type EventData } from "@/components/EventCard";
 import MapView from "@/components/MapView";
-import { DEFAULT_EVENTS } from "@/lib/default-events";
+import { getStoredEvents } from "@/lib/events-store";
 
 function DiscoverContent() {
   const searchParams = useSearchParams();
@@ -14,8 +14,7 @@ function DiscoverContent() {
   const initialFilter = searchParams.get("filter") || "";
   const initialNearMe = searchParams.get("nearMe") === "true";
 
-  // Instant render from DEFAULT_EVENTS - zero buffering!
-  const [events, setEvents] = useState<EventData[]>(DEFAULT_EVENTS);
+  const [events, setEvents] = useState<EventData[]>([]);
   const [loading, setLoading] = useState(false);
   const [searchQuery, setSearchQuery] = useState(initialQuery);
   const [selectedCategory, setSelectedCategory] = useState(initialCategory);
@@ -25,13 +24,33 @@ function DiscoverContent() {
   const [showFilterModal, setShowFilterModal] = useState(false);
   const [showMapMobile, setShowMapMobile] = useState(false);
 
+  const loadAllEvents = async () => {
+    const local = getStoredEvents();
+    try {
+      const res = await fetch("/api/events");
+      if (res.ok) {
+        const apiData = await res.json();
+        if (Array.isArray(apiData)) {
+          const existingIds = new Set(local.map((e) => e.id));
+          const merged = [...local, ...apiData.filter((e: any) => !existingIds.has(e.id))];
+          setEvents(merged);
+          return;
+        }
+      }
+    } catch {}
+    setEvents(local);
+  };
 
   useEffect(() => {
     try {
       const stored = localStorage.getItem("spott_saved_events");
       if (stored) setSavedIds(JSON.parse(stored).map(String));
     } catch {}
-    fetchEvents();
+    loadAllEvents();
+
+    const handleUpdate = () => loadAllEvents();
+    window.addEventListener("spott_events_updated", handleUpdate);
+    return () => window.removeEventListener("spott_events_updated", handleUpdate);
   }, []);
 
   // Update when URL search parameters change

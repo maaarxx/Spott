@@ -55,7 +55,6 @@ const navItems: NavItem[] = [
     href: "/organizer/rsvp",
     label: "RSVP",
     icon: Users,
-    badge: "84",
   },
   {
     id: "analytics",

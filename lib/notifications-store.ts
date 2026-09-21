@@ -103,3 +103,31 @@ export function clearAllNotifications() {
     window.dispatchEvent(new Event("spott_notifications_updated"));
   } catch {}
 }
+
+export function removeNotificationsForEvent(eventId: string, eventTitle?: string) {
+  if (typeof window === "undefined") return;
+  try {
+    const list = getNotifications("all");
+    const idClean = eventId ? eventId.trim().toLowerCase() : "";
+    const titleClean = eventTitle ? eventTitle.trim().toLowerCase() : "";
+
+    const updated = list.filter((n) => {
+      const linkMatch = Boolean(idClean && n.link && n.link.toLowerCase().includes(idClean));
+      const titleMatch = Boolean(
+        (titleClean && n.title.toLowerCase().includes(titleClean)) ||
+        (idClean && n.title.toLowerCase().includes(idClean))
+      );
+      const messageMatch = Boolean(
+        (titleClean && n.message.toLowerCase().includes(titleClean)) ||
+        (idClean && n.message.toLowerCase().includes(idClean))
+      );
+
+      // Filter out notifications associated with this removed event
+      return !(linkMatch || titleMatch || messageMatch);
+    });
+
+    localStorage.setItem(STORAGE_KEY_NOTIFS, JSON.stringify(updated));
+    window.dispatchEvent(new Event("spott_notifications_updated"));
+  } catch {}
+}
+

@@ -42,24 +42,18 @@ const navItems: AdminNavItem[] = [
     href: "/admin?tab=users",
     label: "Users",
     icon: Users,
-    badge: "1.4k",
-    badgeStyle: "bg-gray-100 text-[#444444]",
   },
   {
     id: "events",
     href: "/admin?tab=events",
     label: "Events",
     icon: Calendar,
-    badge: "48",
-    badgeStyle: "bg-gray-100 text-[#444444]",
   },
   {
     id: "reports",
     href: "/admin?tab=reports",
     label: "Reports",
     icon: Flag,
-    badge: "3",
-    badgeStyle: "bg-rose-100 text-rose-700 font-black",
   },
   {
     id: "moderation",
@@ -72,8 +66,6 @@ const navItems: AdminNavItem[] = [
     href: "/admin?tab=verifications",
     label: "Verification Requests",
     icon: FileCheck,
-    badge: "5",
-    badgeStyle: "bg-[#fff0e8] text-[#ff6b35] font-black",
   },
   {
     id: "analytics",

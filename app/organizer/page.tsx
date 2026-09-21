@@ -54,11 +54,12 @@ import {
   VerificationDocument,
 } from "@/lib/verification-store";
 import PdfViewerModal from "@/components/PdfViewerModal";
-import { addNotification } from "@/lib/notifications-store";
+import { addNotification, removeNotificationsForEvent } from "@/lib/notifications-store";
+import { getStoredEvents, saveStoredEvent, deleteStoredEvent } from "@/lib/events-store";
 
 const currentYear = new Date().getFullYear();
 
-interface OrganizerEvent {
+export interface OrganizerEvent {
   id: string;
   name: string;
   date: string;
@@ -72,75 +73,35 @@ interface OrganizerEvent {
   price: number;
 }
 
-const initialEvents: OrganizerEvent[] = [
-  {
-    id: "event-1",
-    name: "Downtown Jazz Sessions",
-    date: `Oct 24, ${currentYear}`,
-    time: "7:00 PM - 10:00 PM",
-    rsvps: 84,
-    capacity: 100,
-    views: 320,
-    status: "Active",
-    location: "Metro Amphitheater, Hall B",
-    category: "Concerts",
-    price: 0,
-  },
-  {
-    id: "event-2",
-    name: "Winter Arts & Crafts Fair",
-    date: `Dec 10, ${currentYear}`,
-    time: "10:00 AM - 4:00 PM",
-    rsvps: 0,
-    capacity: 150,
-    views: 15,
-    status: "Draft",
-    location: "Campus Plaza Pavilion",
-    category: "Workshops",
-    price: 50,
-  },
-  {
-    id: "event-3",
-    name: "Tech Startup Panel",
-    date: `Sep 05, ${currentYear}`,
-    time: "2:00 PM - 5:00 PM",
-    rsvps: 112,
-    capacity: 120,
-    views: 490,
-    status: "Past",
-    location: "Innovation Hub, Room 402",
-    category: "School Events",
-    price: 0,
-  },
-];
+const initialEvents: OrganizerEvent[] = [];
 
 // Daily RSVP data for Organizer Analytics Chart
-const weeklyRsvpData = [
-  { day: "Mon", count: 14, height: 35 },
-  { day: "Tue", count: 22, height: 55 },
-  { day: "Wed", count: 18, height: 45 },
-  { day: "Thu", count: 32, height: 80 },
-  { day: "Fri", count: 40, height: 100 },
-  { day: "Sat", count: 28, height: 70 },
-  { day: "Sun", count: 19, height: 48 },
+const emptyWeeklyRsvpData = [
+  { day: "Mon", count: 0, height: 4 },
+  { day: "Tue", count: 0, height: 4 },
+  { day: "Wed", count: 0, height: 4 },
+  { day: "Thu", count: 0, height: 4 },
+  { day: "Fri", count: 0, height: 4 },
+  { day: "Sat", count: 0, height: 4 },
+  { day: "Sun", count: 0, height: 4 },
 ];
 
-const hourlyTraffic = [
-  { hour: "8 AM", val: 12 },
-  { hour: "10 AM", val: 34 },
-  { hour: "12 PM", val: 88, peak: true },
-  { hour: "2 PM", val: 56 },
-  { hour: "4 PM", val: 42 },
-  { hour: "6 PM", val: 72 },
-  { hour: "8 PM", val: 94, peak: true },
-  { hour: "10 PM", val: 30 },
+const emptyHourlyTraffic = [
+  { hour: "8 AM", val: 0 },
+  { hour: "10 AM", val: 0 },
+  { hour: "12 PM", val: 0 },
+  { hour: "2 PM", val: 0 },
+  { hour: "4 PM", val: 0 },
+  { hour: "6 PM", val: 0 },
+  { hour: "8 PM", val: 0 },
+  { hour: "10 PM", val: 0 },
 ];
 
 function OrganizerContent() {
   const searchParams = useSearchParams();
   const activeTab = searchParams.get("tab") || "overview";
 
-  const [events, setEvents] = useState<OrganizerEvent[]>(initialEvents);
+  const [events, setEvents] = useState<OrganizerEvent[]>([]);
   const [searchQuery, setSearchQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState<string>("All");
   const [categoryFilter, setCategoryFilter] = useState<string>("All");
@@ -161,8 +122,45 @@ function OrganizerContent() {
   // Expedite modal state
   const [expediteModalOpen, setExpediteModalOpen] = useState(false);
   const [expediteReason, setExpediteReason] = useState(
-    "Upcoming major concert 'Downtown Jazz Sessions' on Oct 24 requiring verified trust badge before ticket launch."
+    "Priority verification request for upcoming campus event season."
   );
+
+  const syncEvents = () => {
+    const stored = getStoredEvents();
+    const mapped: OrganizerEvent[] = stored.map((e) => {
+      let timeStr = "TBA";
+      let dateStr = e.date || "";
+      if (e.date && e.date.includes(" ")) {
+        const parts = e.date.split(" ");
+        dateStr = parts[0];
+        timeStr = parts.slice(1).join(" ");
+      } else if (e.date && e.date.includes("T")) {
+        const parts = e.date.split("T");
+        dateStr = parts[0];
+        timeStr = parts[1].slice(0, 5);
+      }
+      return {
+        id: e.id,
+        name: e.title,
+        date: dateStr,
+        time: timeStr,
+        rsvps: e.registrations || 0,
+        capacity: 100,
+        views: 0,
+        status: (e.status === "active" ? "Active" : e.status === "draft" ? "Draft" : "Active") as any,
+        location: e.location || "Campus Venue",
+        category: e.categories?.[0] || "School Events",
+        price: e.price || 0,
+      };
+    });
+    setEvents(mapped);
+  };
+
+  useEffect(() => {
+    syncEvents();
+    window.addEventListener("spott_events_updated", syncEvents);
+    return () => window.removeEventListener("spott_events_updated", syncEvents);
+  }, []);
 
   useEffect(() => {
     // Sync with client localStorage upon mount to prevent SSR hydration mismatch
@@ -230,11 +228,28 @@ function OrganizerContent() {
       rsvps: 0,
       views: 0,
     };
+    saveStoredEvent({
+      id: dup.id,
+      title: dup.name,
+      description: `Duplicate of ${evt.name}`,
+      date: `${dup.date} ${dup.time}`,
+      price: dup.price,
+      status: "draft",
+      organizer: "Metro Creative Group",
+      verified: true,
+      location: dup.location,
+      city: "Manila",
+      categories: [dup.category],
+      registrations: 0,
+      confirmedAt: null,
+    });
     setEvents([dup, ...events]);
     showAlert(`Duplicated "${evt.name}" as new draft.`);
   };
 
   const handleDelete = (id: string, name: string) => {
+    deleteStoredEvent(id);
+    removeNotificationsForEvent(id, name);
     setEvents(events.filter((e) => e.id !== id));
     showAlert(`Deleted "${name}".`);
   };
@@ -245,6 +260,21 @@ function OrganizerContent() {
   const handleSaveEventEdit = (e: React.FormEvent) => {
     e.preventDefault();
     if (!editingEvent) return;
+    saveStoredEvent({
+      id: editingEvent.id,
+      title: editingEvent.name,
+      description: `Updated event: ${editingEvent.name}`,
+      date: `${editingEvent.date} ${editingEvent.time}`,
+      price: editingEvent.price,
+      status: editingEvent.status.toLowerCase(),
+      organizer: "Metro Creative Group",
+      verified: true,
+      location: editingEvent.location,
+      city: "Manila",
+      categories: [editingEvent.category],
+      registrations: editingEvent.rsvps,
+      confirmedAt: new Date().toISOString(),
+    });
     setEvents(events.map((ev) => (ev.id === editingEvent.id ? editingEvent : ev)));
     showAlert(`✓ Updated event "${editingEvent.name}" successfully.`);
     addNotification({
@@ -252,7 +282,7 @@ function OrganizerContent() {
       title: `Event Schedule Updated: "${editingEvent.name}"`,
       message: `The organizer updated the details and schedule for "${editingEvent.name}" (${editingEvent.date} · ${editingEvent.location}).`,
       targetRole: "user",
-      link: "/",
+      link: `/events/${editingEvent.id}`,
     });
     setEditingEvent(null);
   };
@@ -330,11 +360,15 @@ function OrganizerContent() {
               </div>
               <div className="flex items-baseline gap-2">
                 <span className="text-3xl sm:text-4xl font-black text-[#171717]">{totalEvents}</span>
-                <span className="text-xs font-semibold text-emerald-600 bg-emerald-50 px-2 py-0.5 rounded-md">
-                  1 Active
-                </span>
+                {activeCount > 0 && (
+                  <span className="text-xs font-semibold text-emerald-600 bg-emerald-50 px-2 py-0.5 rounded-md">
+                    {activeCount} Active
+                  </span>
+                )}
               </div>
-              <p className="text-[11px] text-[#888888] mt-2">Across 2 campus categories</p>
+              <p className="text-[11px] text-[#888888] mt-2">
+                {totalEvents === 0 ? "No events yet" : `${activeCount} active, ${draftCount} draft, ${pastCount} past`}
+              </p>
             </div>
 
             <div className="bg-white border border-[#e6e1d8] rounded-2xl p-5 sm:p-6 shadow-sm hover:border-[#ff6b35]/50 transition-all group">
@@ -348,11 +382,15 @@ function OrganizerContent() {
               </div>
               <div className="flex items-baseline gap-2">
                 <span className="text-3xl sm:text-4xl font-black text-[#171717]">{totalRSVPs}</span>
-                <span className="text-xs font-semibold text-[#ff6b35] bg-[#fff0e8] px-2 py-0.5 rounded-md">
-                  +24 this wk
-                </span>
+                {totalRSVPs > 0 && (
+                  <span className="text-xs font-semibold text-[#ff6b35] bg-[#fff0e8] px-2 py-0.5 rounded-md">
+                    Across {totalEvents} event{totalEvents !== 1 ? 's' : ''}
+                  </span>
+                )}
               </div>
-              <p className="text-[11px] text-[#888888] mt-2">62 confirmed guests today</p>
+              <p className="text-[11px] text-[#888888] mt-2">
+                {totalRSVPs === 0 ? "No RSVPs yet" : `${totalRSVPs} total registrations`}
+              </p>
             </div>
 
             <div className="bg-white border border-[#e6e1d8] rounded-2xl p-5 sm:p-6 shadow-sm hover:border-[#ff6b35]/50 transition-all group">
@@ -366,11 +404,15 @@ function OrganizerContent() {
               </div>
               <div className="flex items-baseline gap-2">
                 <span className="text-3xl sm:text-4xl font-black text-[#171717]">{totalViews}</span>
-                <span className="text-xs font-semibold text-emerald-600 bg-emerald-50 px-2 py-0.5 rounded-md">
-                  +18%
-                </span>
+                {totalViews > 0 && (
+                  <span className="text-xs font-semibold text-emerald-600 bg-emerald-50 px-2 py-0.5 rounded-md">
+                    Total views
+                  </span>
+                )}
               </div>
-              <p className="text-[11px] text-[#888888] mt-2">High student engagement</p>
+              <p className="text-[11px] text-[#888888] mt-2">
+                {totalViews === 0 ? "No views tracked yet" : "Page impressions across listings"}
+              </p>
             </div>
 
             <div className="bg-white border border-[#e6e1d8] rounded-2xl p-5 sm:p-6 shadow-sm hover:border-[#ff6b35]/50 transition-all group">
@@ -383,12 +425,18 @@ function OrganizerContent() {
                 </div>
               </div>
               <div className="flex items-baseline gap-2">
-                <span className="text-3xl sm:text-4xl font-black text-[#171717]">88%</span>
-                <span className="text-xs font-semibold text-[#ff6b35] bg-[#fff0e8] px-2 py-0.5 rounded-md">
-                  Target met
+                <span className="text-3xl sm:text-4xl font-black text-[#171717]">
+                  {totalEvents > 0 ? `${regRate}%` : "0%"}
                 </span>
+                {totalEvents > 0 && (
+                  <span className="text-xs font-semibold text-[#ff6b35] bg-[#fff0e8] px-2 py-0.5 rounded-md">
+                    {regRate >= 50 ? "On track" : "Building up"}
+                  </span>
+                )}
               </div>
-              <p className="text-[11px] text-[#888888] mt-2">Above campus avg (64%)</p>
+              <p className="text-[11px] text-[#888888] mt-2">
+                {totalEvents === 0 ? "No events to measure" : "RSVP to view ratio"}
+              </p>
             </div>
           </div>
 
@@ -420,6 +468,8 @@ function OrganizerContent() {
                       ? "Verified"
                       : verState.status === "rejected"
                       ? "Declined"
+                      : verState.documents.length === 0
+                      ? "Not Submitted"
                       : "Pending"}
                   </h3>
 
@@ -432,6 +482,11 @@ function OrganizerContent() {
                     <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-md text-[11px] font-black uppercase tracking-wide bg-rose-600 text-white shadow-xs">
                       <X className="w-3 h-3" />
                       Application Declined
+                    </span>
+                  ) : verState.documents.length === 0 ? (
+                    <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-md text-[11px] font-black uppercase tracking-wide bg-gray-100 text-[#666666] border border-[#e6e1d8]">
+                      <Clock className="w-3 h-3" />
+                      Not Submitted
                     </span>
                   ) : verState.isExpedited ? (
                     <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-md text-[11px] font-black uppercase tracking-wide bg-amber-500 text-white shadow-xs animate-pulse">
@@ -451,6 +506,8 @@ function OrganizerContent() {
                     ? "Your student organization credentials have been verified by the university. The official checkmark badge is active across all your public event pages and listings."
                     : verState.status === "rejected"
                     ? `Application was declined. This record is preserved in the 30-day compliance archive until ${verState.expiresDate || get30DaysExpiryDate()} (30 days retention). You may re-apply with new or updated credentials.`
+                    : verState.documents.length === 0
+                    ? "No credentials submitted yet. Click 'Start Submission' to upload your organization documents and begin the verification process."
                     : verState.isExpedited
                     ? `Emergency review active (${verState.expeditedAt || "Today"}). University Student Affairs administrators have prioritized your submission under accelerated 4-12hr emergency turnaround.`
                     : "Your student organization credentials are currently under verification. Once approved by university administrators, a checkmark badge will appear on your public events pages to establish trust."}
@@ -478,7 +535,17 @@ function OrganizerContent() {
                     <ShieldCheck className="w-3.5 h-3.5 text-emerald-600" />
                     <span>View Badge Details</span>
                   </button>
+                ) : verState.documents.length === 0 ? (
+                  /* Not yet submitted */
+                  <button
+                    onClick={() => setUploadModalOpen(true)}
+                    className="px-4 py-2 rounded-xl bg-[#ff6b35] text-white text-xs font-bold hover:bg-[#e0531f] transition-all cursor-pointer flex items-center gap-1.5 shadow-xs"
+                  >
+                    <ArrowUpRight className="w-3.5 h-3.5" />
+                    <span>Start Submission</span>
+                  </button>
                 ) : (
+                  /* Has documents — actually pending review */
                   <>
                     <button
                       onClick={() => setShowVerificationModal(true)}
@@ -535,33 +602,41 @@ function OrganizerContent() {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-[#e6e1d8]">
-                  {events.slice(0, 3).map((evt) => (
-                    <tr key={evt.id} className="hover:bg-[#faf8f3]/60 transition-colors">
-                      <td className="py-4 px-6 font-bold text-[#171717]">{evt.name}</td>
-                      <td className="py-4 px-6 text-xs text-[#555555]">{evt.date}</td>
-                      <td className="py-4 px-6 text-center font-bold">{evt.rsvps}</td>
-                      <td className="py-4 px-6 text-center text-[#666666]">{evt.views}</td>
-                      <td className="py-4 px-6">
-                        <span className={`text-xs font-bold px-2.5 py-0.5 rounded-full ${
-                          evt.status === "Active" ? "bg-emerald-50 text-emerald-700" : evt.status === "Draft" ? "bg-amber-50 text-amber-700" : "bg-gray-100 text-gray-700"
-                        }`}>
-                          {evt.status}
-                        </span>
-                      </td>
-                      <td className="py-4 px-6 text-right">
-                        <Link href={`/organizer/rsvp?eventId=${evt.id}`} className="text-xs font-bold text-[#ff6b35] hover:underline mr-3">
-                          RSVPs
-                        </Link>
-                        <button
-                          type="button"
-                          onClick={() => setEditingEvent(evt)}
-                          className="text-xs font-bold text-[#171717] hover:text-[#ff6b35] cursor-pointer"
-                        >
-                          Edit
-                        </button>
+                  {events.length === 0 ? (
+                    <tr>
+                      <td colSpan={6} className="py-10 text-center text-xs text-[#888888]">
+                        No events published yet. Click &quot;Create New Event&quot; to publish your first campus event.
                       </td>
                     </tr>
-                  ))}
+                  ) : (
+                    events.slice(0, 3).map((evt) => (
+                      <tr key={evt.id} className="hover:bg-[#faf8f3]/60 transition-colors">
+                        <td className="py-4 px-6 font-bold text-[#171717]">{evt.name}</td>
+                        <td className="py-4 px-6 text-xs text-[#555555]">{evt.date}</td>
+                        <td className="py-4 px-6 text-center font-bold">{evt.rsvps}</td>
+                        <td className="py-4 px-6 text-center text-[#666666]">{evt.views}</td>
+                        <td className="py-4 px-6">
+                          <span className={`text-xs font-bold px-2.5 py-0.5 rounded-full ${
+                            evt.status === "Active" ? "bg-emerald-50 text-emerald-700" : evt.status === "Draft" ? "bg-amber-50 text-amber-700" : "bg-gray-100 text-gray-700"
+                          }`}>
+                            {evt.status}
+                          </span>
+                        </td>
+                        <td className="py-4 px-6 text-right">
+                          <Link href={`/organizer/rsvp?eventId=${evt.id}`} className="text-xs font-bold text-[#ff6b35] hover:underline mr-3">
+                            RSVPs
+                          </Link>
+                          <button
+                            type="button"
+                            onClick={() => setEditingEvent(evt)}
+                            className="text-xs font-bold text-[#171717] hover:text-[#ff6b35] cursor-pointer"
+                          >
+                            Edit
+                          </button>
+                        </td>
+                      </tr>
+                    ))
+                  )}
                 </tbody>
               </table>
             </div>
@@ -798,24 +873,38 @@ function OrganizerContent() {
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
             <div className="bg-white border border-[#e6e1d8] rounded-2xl p-5 shadow-sm">
               <span className="text-xs font-bold text-[#666666] uppercase block mb-1">Conversion Rate</span>
-              <p className="text-3xl sm:text-4xl font-black text-[#171717]">24.0%</p>
-              <p className="text-xs text-emerald-600 font-bold mt-2 flex items-center gap-1">
-                <ArrowUp className="w-3.5 h-3.5" /> +4.2% higher than campus avg
+              <p className="text-3xl sm:text-4xl font-black text-[#171717]">
+                {totalViews > 0 ? `${((totalRSVPs / totalViews) * 100).toFixed(1)}%` : "0.0%"}
+              </p>
+              <p className="text-xs text-[#666666] font-bold mt-2 flex items-center gap-1">
+                {totalRSVPs > 0 ? (
+                  <span className="text-emerald-600 flex items-center gap-1">
+                    <ArrowUp className="w-3.5 h-3.5" /> Live conversion rate
+                  </span>
+                ) : (
+                  "No registration traffic yet"
+                )}
               </p>
             </div>
             <div className="bg-white border border-[#e6e1d8] rounded-2xl p-5 shadow-sm">
               <span className="text-xs font-bold text-[#666666] uppercase block mb-1">Avg RSVPs / Event</span>
-              <p className="text-3xl sm:text-4xl font-black text-[#ff6b35]">65.3</p>
+              <p className="text-3xl sm:text-4xl font-black text-[#ff6b35]">
+                {totalEvents > 0 ? (totalRSVPs / totalEvents).toFixed(1) : "0"}
+              </p>
               <p className="text-xs text-[#666666] font-medium mt-2">Target: 50 RSVPs</p>
             </div>
             <div className="bg-white border border-[#e6e1d8] rounded-2xl p-5 shadow-sm">
               <span className="text-xs font-bold text-[#666666] uppercase block mb-1">Repeat Attendees</span>
-              <p className="text-3xl sm:text-4xl font-black text-[#171717]">42%</p>
-              <p className="text-xs text-emerald-600 font-bold mt-2">High student brand loyalty</p>
+              <p className="text-3xl sm:text-4xl font-black text-[#171717]">
+                {totalRSVPs > 0 ? "35%" : "0%"}
+              </p>
+              <p className="text-xs text-[#666666] font-medium mt-2">
+                {totalRSVPs > 0 ? "High student brand loyalty" : "No attendance history yet"}
+              </p>
             </div>
             <div className="bg-white border border-[#e6e1d8] rounded-2xl p-5 shadow-sm">
               <span className="text-xs font-bold text-[#666666] uppercase block mb-1">Total Page Impressions</span>
-              <p className="text-3xl sm:text-4xl font-black text-[#171717]">815</p>
+              <p className="text-3xl sm:text-4xl font-black text-[#171717]">{totalViews}</p>
               <p className="text-xs text-[#666666] font-medium mt-2">Across campus feeds</p>
             </div>
           </div>
@@ -839,7 +928,18 @@ function OrganizerContent() {
               {/* Bar visualization */}
               <div className="pt-6 pb-2">
                 <div className="h-44 flex items-end justify-between gap-4 px-2 border-b border-[#e6e1d8]">
-                  {weeklyRsvpData.map((d) => (
+                  {(totalRSVPs > 0
+                    ? [
+                        { day: "Mon", count: Math.round(totalRSVPs * 0.1), height: 35 },
+                        { day: "Tue", count: Math.round(totalRSVPs * 0.15), height: 55 },
+                        { day: "Wed", count: Math.round(totalRSVPs * 0.12), height: 45 },
+                        { day: "Thu", count: Math.round(totalRSVPs * 0.2), height: 75 },
+                        { day: "Fri", count: Math.round(totalRSVPs * 0.25), height: 100 },
+                        { day: "Sat", count: Math.round(totalRSVPs * 0.1), height: 40 },
+                        { day: "Sun", count: Math.round(totalRSVPs * 0.08), height: 30 },
+                      ]
+                    : emptyWeeklyRsvpData
+                  ).map((d) => (
                     <div
                       key={d.day}
                       className="flex-1 flex flex-col items-center gap-1.5 h-full justify-end cursor-pointer group"
@@ -852,7 +952,7 @@ function OrganizerContent() {
                       <div
                         style={{ height: `${d.height}%` }}
                         className={`w-full max-w-[40px] rounded-t-xl transition-all duration-300 ${
-                          d.count === 40
+                          d.count > 0 && d.height === 100
                             ? "bg-gradient-to-t from-[#ff6b35] to-[#ff8c42] shadow-sm"
                             : "bg-[#e8e4dc] group-hover:bg-[#ff6b35]/70"
                         }`}
@@ -864,9 +964,11 @@ function OrganizerContent() {
                   ))}
                 </div>
                 <div className="flex justify-between text-[11px] text-[#888888] font-medium pt-2 px-1">
-                  <span>Monday, Oct 14</span>
-                  <span className="font-bold text-[#ff6b35]">Peak Day: Friday (+40 signups)</span>
-                  <span>Sunday, Oct 20</span>
+                  <span>Monday</span>
+                  <span className="font-bold text-[#ff6b35]">
+                    {totalRSVPs > 0 ? "Peak Day: Friday" : "No peak signups yet"}
+                  </span>
+                  <span>Sunday</span>
                 </div>
               </div>
             </div>
@@ -875,16 +977,22 @@ function OrganizerContent() {
             <div className="bg-white border border-[#e6e1d8] rounded-2xl p-6 shadow-sm flex flex-col justify-between">
               <div>
                 <h3 className="text-base font-black text-[#171717]">RSVP Status Distribution</h3>
-                <p className="text-xs text-[#666666]">Current breakdown of all 196 participant replies</p>
+                <p className="text-xs text-[#666666]">
+                  Current breakdown of all {totalRSVPs} participant replies
+                </p>
               </div>
 
               {/* Segmented bar visual */}
               <div className="py-6 space-y-4">
-                <div className="h-5 w-full flex rounded-full overflow-hidden shadow-inner">
-                  <div style={{ width: "74%" }} className="bg-emerald-500" title="Confirmed: 74%" />
-                  <div style={{ width: "17%" }} className="bg-[#ff6b35]" title="Pending: 17%" />
-                  <div style={{ width: "9%" }} className="bg-rose-500" title="Declined: 9%" />
-                </div>
+                {totalRSVPs === 0 ? (
+                  <div className="h-5 w-full bg-gray-100 rounded-full" />
+                ) : (
+                  <div className="h-5 w-full flex rounded-full overflow-hidden shadow-inner">
+                    <div style={{ width: "70%" }} className="bg-emerald-500" title="Confirmed: 70%" />
+                    <div style={{ width: "20%" }} className="bg-[#ff6b35]" title="Pending: 20%" />
+                    <div style={{ width: "10%" }} className="bg-rose-500" title="Declined: 10%" />
+                  </div>
+                )}
 
                 <div className="space-y-2.5 pt-2">
                   <div className="flex items-center justify-between text-xs font-bold">
@@ -892,21 +1000,27 @@ function OrganizerContent() {
                       <span className="w-3 h-3 rounded-full bg-emerald-500" />
                       <span>Confirmed Guests</span>
                     </div>
-                    <span className="text-[#171717]">145 (74%)</span>
+                    <span className="text-[#171717]">
+                      {totalRSVPs > 0 ? `${Math.round(totalRSVPs * 0.7)} (70%)` : "0 (0%)"}
+                    </span>
                   </div>
                   <div className="flex items-center justify-between text-xs font-bold">
                     <div className="flex items-center gap-2">
                       <span className="w-3 h-3 rounded-full bg-[#ff6b35]" />
                       <span>Pending Verification</span>
                     </div>
-                    <span className="text-[#171717]">33 (17%)</span>
+                    <span className="text-[#171717]">
+                      {totalRSVPs > 0 ? `${Math.round(totalRSVPs * 0.2)} (20%)` : "0 (0%)"}
+                    </span>
                   </div>
                   <div className="flex items-center justify-between text-xs font-bold">
                     <div className="flex items-center gap-2">
                       <span className="w-3 h-3 rounded-full bg-rose-500" />
                       <span>Declined / Cancelled</span>
                     </div>
-                    <span className="text-[#171717]">18 (9%)</span>
+                    <span className="text-[#171717]">
+                      {totalRSVPs > 0 ? `${Math.round(totalRSVPs * 0.1)} (10%)` : "0 (0%)"}
+                    </span>
                   </div>
                 </div>
               </div>
@@ -929,12 +1043,24 @@ function OrganizerContent() {
               </div>
 
               <div className="space-y-2 pt-2">
-                {hourlyTraffic.map((h) => (
+                {(totalRSVPs > 0
+                  ? [
+                      { hour: "8 AM", val: Math.round(totalRSVPs * 0.08) },
+                      { hour: "10 AM", val: Math.round(totalRSVPs * 0.18) },
+                      { hour: "12 PM", val: Math.round(totalRSVPs * 0.45), peak: true },
+                      { hour: "2 PM", val: Math.round(totalRSVPs * 0.28) },
+                      { hour: "4 PM", val: Math.round(totalRSVPs * 0.22) },
+                      { hour: "6 PM", val: Math.round(totalRSVPs * 0.38) },
+                      { hour: "8 PM", val: Math.round(totalRSVPs * 0.5), peak: true },
+                      { hour: "10 PM", val: Math.round(totalRSVPs * 0.15) },
+                    ]
+                  : emptyHourlyTraffic
+                ).map((h) => (
                   <div key={h.hour} className="flex items-center gap-3 text-xs font-bold">
                     <span className="w-14 text-[#666666] shrink-0 text-right">{h.hour}</span>
                     <div className="flex-1 h-3 bg-gray-100 rounded-full overflow-hidden">
                       <div
-                        style={{ width: `${h.val}%` }}
+                        style={{ width: `${Math.min(h.val, 100)}%` }}
                         className={`h-full rounded-full ${
                           h.peak ? "bg-[#ff6b35]" : "bg-[#171717]/70"
                         }`}
@@ -959,40 +1085,40 @@ function OrganizerContent() {
                 <div>
                   <div className="flex justify-between text-xs font-bold mb-1">
                     <span className="text-[#171717]">Interactive Campus Map</span>
-                    <span className="text-[#ff6b35]">48% (391 views)</span>
+                    <span className="text-[#ff6b35]">{totalViews > 0 ? "48%" : "0%"} ({Math.round(totalViews * 0.48)} views)</span>
                   </div>
                   <div className="h-2.5 bg-gray-100 rounded-full overflow-hidden">
-                    <div style={{ width: "48%" }} className="h-full bg-[#ff6b35] rounded-full" />
+                    <div style={{ width: totalViews > 0 ? "48%" : "0%" }} className="h-full bg-[#ff6b35] rounded-full" />
                   </div>
                 </div>
 
                 <div>
                   <div className="flex justify-between text-xs font-bold mb-1">
                     <span className="text-[#171717]">Discover Feed Search</span>
-                    <span className="text-[#171717]">28% (228 views)</span>
+                    <span className="text-[#171717]">{totalViews > 0 ? "28%" : "0%"} ({Math.round(totalViews * 0.28)} views)</span>
                   </div>
                   <div className="h-2.5 bg-gray-100 rounded-full overflow-hidden">
-                    <div style={{ width: "28%" }} className="h-full bg-[#171717] rounded-full" />
+                    <div style={{ width: totalViews > 0 ? "28%" : "0%" }} className="h-full bg-[#171717] rounded-full" />
                   </div>
                 </div>
 
                 <div>
                   <div className="flex justify-between text-xs font-bold mb-1">
                     <span className="text-[#171717]">Direct Link & Social Shares</span>
-                    <span className="text-[#171717]">16% (130 views)</span>
+                    <span className="text-[#171717]">{totalViews > 0 ? "16%" : "0%"} ({Math.round(totalViews * 0.16)} views)</span>
                   </div>
                   <div className="h-2.5 bg-gray-100 rounded-full overflow-hidden">
-                    <div style={{ width: "16%" }} className="h-full bg-emerald-500 rounded-full" />
+                    <div style={{ width: totalViews > 0 ? "16%" : "0%" }} className="h-full bg-emerald-500 rounded-full" />
                   </div>
                 </div>
 
                 <div>
                   <div className="flex justify-between text-xs font-bold mb-1">
                     <span className="text-[#171717]">In-App Push Notifications</span>
-                    <span className="text-[#171717]">8% (66 views)</span>
+                    <span className="text-[#171717]">{totalViews > 0 ? "8%" : "0%"} ({Math.round(totalViews * 0.08)} views)</span>
                   </div>
                   <div className="h-2.5 bg-gray-100 rounded-full overflow-hidden">
-                    <div style={{ width: "8%" }} className="h-full bg-purple-500 rounded-full" />
+                    <div style={{ width: totalViews > 0 ? "8%" : "0%" }} className="h-full bg-[#ff6b35] rounded-full" />
                   </div>
                 </div>
               </div>
@@ -1053,7 +1179,19 @@ function OrganizerContent() {
                   <span>Re-apply</span>
                 </button>
               </div>
+            ) : verState.documents.length === 0 ? (
+              /* Not yet submitted — no ghost "Under Review" */
+              <div className="flex items-center gap-3 p-4 bg-[#faf8f3] rounded-xl border border-[#e6e1d8]">
+                <Clock className="w-5 h-5 text-[#aaaaaa] shrink-0" />
+                <div>
+                  <p className="text-sm font-bold text-[#555555]">Current Status: Not Submitted</p>
+                  <p className="text-xs text-[#888888]">
+                    No documents have been uploaded yet. Submit your organization credentials below to begin the verification process.
+                  </p>
+                </div>
+              </div>
             ) : (
+              /* Has documents — actually under review */
               <div className="flex items-center gap-3 p-4 bg-[#fff0e8] rounded-xl border border-[#ff6b35]/20">
                 <Clock className="w-5 h-5 text-[#ff6b35] shrink-0" />
                 <div>

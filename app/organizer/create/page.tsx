@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useRef } from "react";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import * as z from "zod";
@@ -18,6 +18,8 @@ import {
   DollarSign,
   ArrowLeft,
   X,
+  ImagePlus,
+  Trash2,
 } from "lucide-react";
 import { addNotification } from "@/lib/notifications-store";
 import { saveStoredEvent } from "@/lib/events-store";
@@ -42,6 +44,11 @@ export default function CreateEventPage() {
   const [errorMsg, setErrorMsg] = useState("");
   const [draftSaved, setDraftSaved] = useState(false);
   const [previewOpen, setPreviewOpen] = useState(false);
+
+  // Cover image state
+  const [coverImage, setCoverImage] = useState<string | null>(null);
+  const [coverFileName, setCoverFileName] = useState<string>("");
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   const {
     register,
@@ -69,14 +76,36 @@ export default function CreateEventPage() {
 
   const handleFreeToggle = (checked: boolean) => {
     setValue("isFree", checked);
-    if (checked) {
-      setValue("price", 0);
+    if (checked) setValue("price", 0);
+  };
+
+  // Handle cover image file selection → convert to data URL
+  const handleCoverImageChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    if (!file.type.startsWith("image/")) {
+      alert("Please select an image file (JPG, PNG, GIF, WebP).");
+      return;
     }
+    if (file.size > 5 * 1024 * 1024) {
+      alert("Image must be smaller than 5 MB.");
+      return;
+    }
+    setCoverFileName(file.name);
+    const reader = new FileReader();
+    reader.onloadend = () => setCoverImage(reader.result as string);
+    reader.readAsDataURL(file);
+  };
+
+  const removeCoverImage = () => {
+    setCoverImage(null);
+    setCoverFileName("");
+    if (fileInputRef.current) fileInputRef.current.value = "";
   };
 
   const onSaveDraft = () => {
     try {
-      localStorage.setItem("spott_event_draft", JSON.stringify(formValues));
+      localStorage.setItem("spott_event_draft", JSON.stringify({ ...formValues, coverImage }));
       setDraftSaved(true);
       setTimeout(() => setDraftSaved(false), 3500);
     } catch {
@@ -89,12 +118,27 @@ export default function CreateEventPage() {
     setErrorMsg("");
     setSuccess(false);
 
+    const newEventObj = {
+      id: `event-${Date.now()}`,
+      title: data.title,
+      description: data.description,
+      date: `${data.date} ${data.time}:00`,
+      price: data.isFree ? 0 : data.price,
+      status: "active",
+      organizer: "Metro Creative Group",
+      verified: true,
+      location: data.location,
+      city: "Manila",
+      categories: [data.category],
+      registrations: 0,
+      confirmedAt: new Date().toISOString(),
+      coverImage: coverImage || null,
+    };
+
     try {
-      const res = await fetch("/api/events", {
+      await fetch("/api/events", {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           title: data.title,
           description: data.description,
@@ -106,62 +150,19 @@ export default function CreateEventPage() {
           registrationInfo: data.registrationLimit,
         }),
       });
+    } catch {}
 
-      const newEventObj = {
-        id: `event-${Date.now()}`,
-        title: data.title,
-        description: data.description,
-        date: `${data.date} ${data.time}:00`,
-        price: data.isFree ? 0 : data.price,
-        status: "active",
-        organizer: "Metro Creative Group",
-        verified: true,
-        location: data.location,
-        city: "Manila",
-        categories: [data.category],
-        registrations: 0,
-        confirmedAt: new Date().toISOString(),
-      };
-      saveStoredEvent(newEventObj);
+    saveStoredEvent(newEventObj as any);
+    setSuccess(true);
+    addNotification({
+      type: "announcement",
+      title: `New Event: "${data.title}"`,
+      message: `Metro Creative Group published a new event at ${data.location}. Check out details and RSVP!`,
+      targetRole: "user",
+      link: `/events/${newEventObj.id}`,
+    });
 
-      setSuccess(true);
-      addNotification({
-        type: "announcement",
-        title: `New Event: "${data.title}"`,
-        message: `Metro Creative Group published a new event at ${data.location}. Check out details and RSVP!`,
-        targetRole: "user",
-        link: `/events/${newEventObj.id}`,
-      });
-    } catch {
-      // In development or local demo, mark success gracefully
-      const newEventObj = {
-        id: `event-${Date.now()}`,
-        title: data.title,
-        description: data.description,
-        date: `${data.date} ${data.time}:00`,
-        price: data.isFree ? 0 : data.price,
-        status: "active",
-        organizer: "Metro Creative Group",
-        verified: true,
-        location: data.location,
-        city: "Manila",
-        categories: [data.category],
-        registrations: 0,
-        confirmedAt: new Date().toISOString(),
-      };
-      saveStoredEvent(newEventObj);
-
-      setSuccess(true);
-      addNotification({
-        type: "announcement",
-        title: `New Event: "${data.title}"`,
-        message: `Metro Creative Group published a new event at ${data.location}. Check out details and RSVP!`,
-        targetRole: "user",
-        link: `/events/${newEventObj.id}`,
-      });
-    } finally {
-      setIsSubmitting(false);
-    }
+    setIsSubmitting(false);
   };
 
   return (
@@ -180,7 +181,7 @@ export default function CreateEventPage() {
         </span>
       </div>
 
-      {/* Header matching Wireframe 3 */}
+      {/* Header */}
       <div>
         <h1 className="text-2xl sm:text-3xl font-black text-[#171717] tracking-tight">
           Create New Event
@@ -219,9 +220,75 @@ export default function CreateEventPage() {
         </div>
       )}
 
-      {/* Main Form Card matching Wireframe 3 */}
+      {/* Main Form Card */}
       <div className="bg-white border border-[#e6e1d8] rounded-2xl p-6 sm:p-8 shadow-sm">
         <form onSubmit={handleSubmit(onSubmit)} className="space-y-6">
+
+          {/* ── Cover Image Upload ── */}
+          <div>
+            <label className="block text-xs sm:text-sm font-bold text-[#171717] mb-1.5">
+              Cover Image <span className="text-[#888888] font-normal">(optional)</span>
+            </label>
+
+            {coverImage ? (
+              /* Image preview */
+              <div className="relative rounded-2xl overflow-hidden border border-[#e6e1d8] group">
+                <img
+                  src={coverImage}
+                  alt="Cover preview"
+                  className="w-full h-52 object-cover"
+                />
+                {/* Overlay with filename + remove */}
+                <div className="absolute inset-0 bg-black/0 group-hover:bg-black/30 transition-all flex items-end justify-between p-4 opacity-0 group-hover:opacity-100">
+                  <span className="text-white text-xs font-bold truncate max-w-[70%] bg-black/50 px-2 py-1 rounded-lg">
+                    {coverFileName}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={removeCoverImage}
+                    className="p-2 rounded-xl bg-rose-600 text-white hover:bg-rose-700 transition-colors cursor-pointer flex items-center gap-1.5 text-xs font-bold"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                    Remove
+                  </button>
+                </div>
+                {/* Always-visible remove button for accessibility */}
+                <button
+                  type="button"
+                  onClick={removeCoverImage}
+                  className="absolute top-3 right-3 p-1.5 rounded-full bg-black/50 text-white hover:bg-rose-600 transition-colors cursor-pointer"
+                  title="Remove cover image"
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              </div>
+            ) : (
+              /* Upload zone */
+              <button
+                type="button"
+                onClick={() => fileInputRef.current?.click()}
+                className="w-full h-40 border-2 border-dashed border-[#e6e1d8] hover:border-[#ff6b35] rounded-2xl flex flex-col items-center justify-center gap-3 text-[#888888] hover:text-[#ff6b35] hover:bg-[#fff8f5] transition-all cursor-pointer group"
+              >
+                <span className="w-12 h-12 rounded-2xl bg-[#faf8f3] group-hover:bg-[#fff0e8] flex items-center justify-center transition-colors">
+                  <ImagePlus className="w-6 h-6" />
+                </span>
+                <div className="text-center">
+                  <p className="text-sm font-bold">Click to upload cover image</p>
+                  <p className="text-xs mt-0.5 text-[#aaa]">JPG, PNG, GIF, WebP — max 5 MB</p>
+                </div>
+              </button>
+            )}
+
+            {/* Hidden file input */}
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept="image/*"
+              className="hidden"
+              onChange={handleCoverImageChange}
+            />
+          </div>
+
           {/* Event Title */}
           <div>
             <label className="block text-xs sm:text-sm font-bold text-[#171717] mb-1.5">
@@ -338,7 +405,7 @@ export default function CreateEventPage() {
               </select>
             </div>
 
-            {/* Price ($ / ₱) + Free Event Checkbox */}
+            {/* Price + Free Event Checkbox */}
             <div>
               <label className="block text-xs sm:text-sm font-bold text-[#171717] mb-1.5">
                 Price (₱)
@@ -381,7 +448,7 @@ export default function CreateEventPage() {
             />
           </div>
 
-          {/* Action Buttons matching Wireframe 3 */}
+          {/* Action Buttons */}
           <div className="pt-6 border-t border-[#e6e1d8] flex flex-col-reverse sm:flex-row items-center justify-end gap-3">
             <button
               type="button"
@@ -409,22 +476,43 @@ export default function CreateEventPage() {
         </form>
       </div>
 
-      {/* Live Preview Modal */}
+      {/* ── Live Preview Modal ── */}
       {previewOpen && (
         <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4">
           <div className="bg-white rounded-3xl max-w-md w-full overflow-hidden shadow-2xl border border-[#e6e1d8]">
-            <div className="relative h-48 bg-gradient-to-br from-[#ff6b35] to-[#222222] p-5 flex flex-col justify-between text-white">
-              <button
-                onClick={() => setPreviewOpen(false)}
-                className="self-end w-8 h-8 rounded-full bg-black/40 hover:bg-black/60 flex items-center justify-center text-white"
-              >
-                <X className="w-4 h-4" />
-              </button>
-              <div>
+
+            {/* Header: real image if uploaded, else gradient fallback */}
+            <div className="relative h-52 flex flex-col justify-between text-white overflow-hidden">
+              {coverImage ? (
+                <>
+                  <img
+                    src={coverImage}
+                    alt="Event cover"
+                    className="absolute inset-0 w-full h-full object-cover"
+                  />
+                  {/* Dark gradient overlay so text stays readable */}
+                  <div className="absolute inset-0 bg-gradient-to-t from-black/70 via-black/20 to-black/10" />
+                </>
+              ) : (
+                <div className="absolute inset-0 bg-gradient-to-br from-[#ff6b35] to-[#222222]" />
+              )}
+
+              {/* Close button */}
+              <div className="relative z-10 flex justify-end p-4">
+                <button
+                  onClick={() => setPreviewOpen(false)}
+                  className="w-8 h-8 rounded-full bg-black/40 hover:bg-black/60 flex items-center justify-center text-white transition-colors cursor-pointer"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+
+              {/* Event meta at bottom of image */}
+              <div className="relative z-10 p-5 pb-4">
                 <span className="px-2.5 py-1 rounded-full bg-white/20 backdrop-blur-md text-[11px] font-bold uppercase tracking-wider">
                   {formValues.category || "School Event"}
                 </span>
-                <h3 className="text-xl font-black mt-2 leading-tight">
+                <h3 className="text-xl font-black mt-2 leading-tight drop-shadow">
                   {formValues.title || "Untitled Event"}
                 </h3>
               </div>
@@ -460,7 +548,7 @@ export default function CreateEventPage() {
               <div className="pt-3">
                 <button
                   onClick={() => setPreviewOpen(false)}
-                  className="w-full py-2.5 rounded-xl bg-[#171717] text-white font-bold text-xs hover:bg-[#ff6b35] transition-colors"
+                  className="w-full py-2.5 rounded-xl bg-[#171717] text-white font-bold text-xs hover:bg-[#ff6b35] transition-colors cursor-pointer"
                 >
                   Return to Editor
                 </button>
