@@ -3,11 +3,10 @@
 import { useState, useEffect } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { ChevronRight, Search, MapPin } from "lucide-react";
+import { ChevronRight, Search, MapPin, Calendar } from "lucide-react";
 import EventCard, { type EventData } from "@/components/EventCard";
 import CategoryPills from "@/components/CategoryPills";
-
-import { DEFAULT_EVENTS } from "@/lib/default-events";
+import { getStoredEvents } from "@/lib/events-store";
 
 const POPULAR_CATEGORIES = [
   "Music & Concerts",
@@ -27,33 +26,42 @@ const CATEGORIES = POPULAR_CATEGORIES;
 
 export default function Home() {
   const router = useRouter();
-  // Instant render from DEFAULT_EVENTS - zero buffering!
-  const [events, setEvents] = useState<EventData[]>(DEFAULT_EVENTS);
+  const [events, setEvents] = useState<EventData[]>([]);
   const [loading, setLoading] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const [selectedCategory, setSelectedCategory] = useState("");
   const [savedIds, setSavedIds] = useState<string[]>([]);
+
+  const loadAllEvents = async () => {
+    const local = getStoredEvents();
+    try {
+      const res = await fetch("/api/events");
+      if (res.ok) {
+        const apiData = await res.json();
+        if (Array.isArray(apiData)) {
+          // Merge avoiding duplicate IDs
+          const existingIds = new Set(local.map((e) => e.id));
+          const merged = [...local, ...apiData.filter((e: any) => !existingIds.has(e.id))];
+          setEvents(merged);
+          return;
+        }
+      }
+    } catch {}
+    setEvents(local);
+  };
 
   useEffect(() => {
     try {
       const stored = localStorage.getItem("spott_saved_events");
       if (stored) setSavedIds(JSON.parse(stored).map(String));
     } catch {}
-    fetchEvents();
-  }, []);
 
-  const fetchEvents = async () => {
-    try {
-      const res = await fetch("/api/events");
-      if (!res.ok) throw new Error("Failed to fetch");
-      const data = await res.json();
-      if (Array.isArray(data) && data.length > 0) {
-        setEvents(data);
-      }
-    } catch (err) {
-      console.error(err);
-    }
-  };
+    loadAllEvents();
+
+    const handleUpdate = () => loadAllEvents();
+    window.addEventListener("spott_events_updated", handleUpdate);
+    return () => window.removeEventListener("spott_events_updated", handleUpdate);
+  }, []);
 
   const handleSearchSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -197,6 +205,14 @@ export default function Home() {
                 </div>
               ))}
             </div>
+          ) : featuredEvents.length === 0 ? (
+            <div className="bg-[#faf8f3] border border-dashed border-[#e6e1d8] rounded-2xl p-10 text-center">
+              <Calendar className="w-8 h-8 text-muted/50 mx-auto mb-3" />
+              <h3 className="text-base font-bold text-ink">No featured events yet</h3>
+              <p className="text-xs text-muted max-w-sm mx-auto mt-1">
+                When organizers publish and feature campus events, they will be highlighted here.
+              </p>
+            </div>
           ) : (
             <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
               {featuredEvents.map((event) => (
@@ -234,6 +250,14 @@ export default function Home() {
                   className="bg-white border border-line rounded-2xl p-4 h-24 animate-pulse"
                 />
               ))}
+            </div>
+          ) : upcomingEvents.length === 0 ? (
+            <div className="bg-[#faf8f3] border border-dashed border-[#e6e1d8] rounded-2xl p-10 text-center">
+              <MapPin className="w-8 h-8 text-muted/50 mx-auto mb-3" />
+              <h3 className="text-base font-bold text-ink">No upcoming events scheduled</h3>
+              <p className="text-xs text-muted max-w-sm mx-auto mt-1">
+                Stay tuned! Newly published events near your campus will appear here in real-time.
+              </p>
             </div>
           ) : (
             <div className="space-y-3">

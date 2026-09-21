@@ -1,7 +1,8 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { CheckCircle2, Bookmark, MapPin } from "lucide-react";
+import { useRouter } from "next/navigation";
+import { CheckCircle2, Bookmark, MapPin, ArrowUpRight } from "lucide-react";
 import Link from "next/link";
 import { format } from "date-fns";
 import type { EventData } from "@/components/EventCard";
@@ -10,6 +11,7 @@ import { DEFAULT_EVENTS } from "@/lib/default-events";
 type Tab = "saved" | "registered" | "upcoming" | "past";
 
 export default function MyEventsPage() {
+  const router = useRouter();
   const [activeTab, setActiveTab] = useState<Tab>("saved");
   // Instant rendering from DEFAULT_EVENTS - zero buffering!
   const [events, setEvents] = useState<EventData[]>(DEFAULT_EVENTS);
@@ -103,7 +105,16 @@ export default function MyEventsPage() {
             currentEvents.map((event) => (
               <div
                 key={event.id}
-                className="bg-white border border-line rounded-2xl p-5 flex flex-col sm:flex-row justify-between gap-4 hover:border-gray-300 transition-colors"
+                onClick={() => router.push(`/events/${event.id}`)}
+                role="link"
+                tabIndex={0}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" || e.key === " ") {
+                    e.preventDefault();
+                    router.push(`/events/${event.id}`);
+                  }
+                }}
+                className="bg-white border border-line rounded-2xl p-5 flex flex-col sm:flex-row justify-between gap-4 hover:border-accent/40 hover:shadow-md hover:-translate-y-0.5 transition-all duration-200 cursor-pointer group"
               >
                 <div className="space-y-1">
                   <div className="flex items-center gap-2">
@@ -116,12 +127,10 @@ export default function MyEventsPage() {
                       </span>
                     )}
                   </div>
-                  <Link
-                    href={`/events/${event.id}`}
-                    className="text-lg font-bold text-ink hover:text-accent transition-colors block"
-                  >
-                    {event.title}
-                  </Link>
+                  <h3 className="text-lg font-bold text-ink group-hover:text-accent transition-colors flex items-center gap-1 m-0">
+                    <span>{event.title}</span>
+                    <ArrowUpRight className="w-4 h-4 text-muted opacity-0 group-hover:opacity-100 group-hover:text-accent transition-all shrink-0" />
+                  </h3>
                   <div className="flex items-center gap-4 text-xs text-muted pt-1">
                     <span>
                       {format(new Date(event.date), "EEE, MMM d • h:mm a")}

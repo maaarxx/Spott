@@ -1,10 +1,12 @@
 "use client";
 
 import Link from "next/link";
-import { usePathname } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import { useState, useEffect } from "react";
 import { Menu, X } from "lucide-react";
 import { createClient } from "@/lib/supabase-browser";
+import { getCurrentUser, logout, SpottAccount } from "@/lib/auth-store";
+import { getUnreadCount } from "@/lib/notifications-store";
 import type { User } from "@supabase/supabase-js";
 
 const navLinks = [
@@ -16,11 +18,23 @@ const navLinks = [
 
 export default function Navbar() {
   const pathname = usePathname();
+  const router = useRouter();
   const [mobileOpen, setMobileOpen] = useState(false);
   const [user, setUser] = useState<User | null>(null);
+  const [localUser, setLocalUser] = useState<SpottAccount | null>(null);
+  const [unreadNotifs, setUnreadNotifs] = useState(0);
+  const [mounted, setMounted] = useState(false);
   const supabase = createClient();
 
+  const syncState = () => {
+    setLocalUser(getCurrentUser());
+    setUnreadNotifs(getUnreadCount("user"));
+  };
+
   useEffect(() => {
+    setMounted(true);
+    syncState();
+
     const getUser = async () => {
       try {
         const { data: { user } } = await supabase.auth.getUser();
@@ -35,21 +49,39 @@ export default function Navbar() {
       setUser(session?.user ?? null);
     });
 
-    return () => subscription.unsubscribe();
+    window.addEventListener("spott_auth_changed", syncState);
+    window.addEventListener("spott_notifications_updated", syncState);
+
+    return () => {
+      subscription.unsubscribe();
+      window.removeEventListener("spott_auth_changed", syncState);
+      window.removeEventListener("spott_notifications_updated", syncState);
+    };
   }, []);
+
+  // ALL HOOKS ARE CALLED ABOVE. Only now can we conditionally return null!
+  if (pathname.startsWith("/organizer") || pathname.startsWith("/admin")) {
+    return null;
+  }
 
   const handleSignOut = async () => {
     try {
       await supabase.auth.signOut();
-    } catch {
-      // ignore
-    }
+    } catch {}
+    logout();
     setUser(null);
-    window.location.href = "/";
+    setLocalUser(null);
+    router.push("/login");
   };
 
-  const displayName = user?.user_metadata?.full_name || user?.email?.split("@")[0] || "User";
+  const displayName =
+    (mounted && localUser?.name) ||
+    user?.user_metadata?.full_name ||
+    user?.email?.split("@")[0] ||
+    "User";
   const initial = displayName.charAt(0).toUpperCase();
+
+  const isUserLoggedIn = mounted && Boolean(user || localUser);
 
   return (
     <header className="h-[72px] px-[6vw] flex items-center justify-between border-b border-line bg-white sticky top-0 z-50">
@@ -59,36 +91,49 @@ export default function Navbar() {
         <span className="font-black text-[25px] tracking-[-1px] text-ink">Spott</span>
       </Link>
 
-      {/* Desktop Nav - Wireframe UX layout */}
+      {/* Desktop Nav */}
       <nav className="hidden md:flex items-center gap-1">
         {navLinks.map((link) => {
           const isActive = pathname === link.href;
+          const isNotif = link.href === "/notifications";
+
           return (
             <Link
               key={link.href}
               href={link.href}
-              className={`px-4 py-1.5 text-sm font-bold rounded transition-colors no-underline ${
+              className={`px-4 py-1.5 text-sm font-bold rounded transition-colors no-underline flex items-center gap-1.5 relative ${
                 isActive
                   ? "bg-dark text-white"
                   : "text-ink hover:text-accent"
               }`}
             >
-              {link.label}
+              <span>{link.label}</span>
+              {isNotif && mounted && unreadNotifs > 0 && (
+                <span
+                  className={`text-[10px] font-black px-1.5 py-0.2 rounded-full ${
+                    isActive
+                      ? "bg-accent text-white"
+                      : "bg-accent text-white"
+                  }`}
+                >
+                  {unreadNotifs}
+                </span>
+              )}
             </Link>
           );
         })}
       </nav>
 
-      {/* Right controls: User profile avatar (from wireframe, NO Demo Account button) */}
+      {/* Right controls */}
       <div className="flex items-center gap-3">
-        {user ? (
+        {isUserLoggedIn ? (
           <div className="flex items-center gap-3">
             <span className="text-sm font-bold text-ink hidden sm:block">
               {displayName}
             </span>
             <button
               onClick={handleSignOut}
-              className="w-9 h-9 rounded-full bg-[#eee9e1] border border-line flex items-center justify-center text-sm font-bold text-ink hover:bg-accent hover:text-white transition-colors cursor-pointer"
+              className="w-9 h-9 rounded-full bg-[#eee9e1] border border-line flex items-center justify-center text-sm font-bold text-ink hover:bg-rose-500 hover:text-white transition-colors cursor-pointer"
               title="Click to sign out"
             >
               {initial}
@@ -119,30 +164,48 @@ export default function Navbar() {
           <nav className="flex flex-col gap-1">
             {navLinks.map((link) => {
               const isActive = pathname === link.href;
+              const isNotif = link.href === "/notifications";
               return (
                 <Link
                   key={link.href}
                   href={link.href}
                   onClick={() => setMobileOpen(false)}
-                  className={`px-4 py-2.5 text-sm font-bold rounded transition-colors no-underline ${
+                  className={`px-4 py-2.5 text-sm font-bold rounded transition-colors no-underline flex items-center justify-between ${
                     isActive
                       ? "bg-dark text-white"
                       : "text-ink hover:text-accent"
                   }`}
                 >
-                  {link.label}
+                  <span>{link.label}</span>
+                  {isNotif && mounted && unreadNotifs > 0 && (
+                    <span className="text-xs bg-accent text-white px-2 py-0.5 rounded-full font-bold">
+                      {unreadNotifs}
+                    </span>
+                  )}
                 </Link>
               );
             })}
-            {!user && (
-              <Link
-                href="/login"
-                onClick={() => setMobileOpen(false)}
-                className="px-4 py-2.5 text-sm font-bold text-accent rounded transition-colors no-underline border-t border-line mt-1 pt-3"
-              >
-                Log In
-              </Link>
-            )}
+            <div className="pt-2 border-t border-line mt-2">
+              {isUserLoggedIn ? (
+                <button
+                  onClick={() => {
+                    setMobileOpen(false);
+                    handleSignOut();
+                  }}
+                  className="w-full text-left px-4 py-2 text-sm font-bold text-rose-600 hover:bg-rose-50 rounded"
+                >
+                  Log Out ({displayName})
+                </button>
+              ) : (
+                <Link
+                  href="/login"
+                  onClick={() => setMobileOpen(false)}
+                  className="block px-4 py-2 text-sm font-bold text-accent"
+                >
+                  Log In
+                </Link>
+              )}
+            </div>
           </nav>
         </div>
       )}
