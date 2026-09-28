@@ -40,6 +40,9 @@ import {
   Archive,
   History,
   RotateCcw,
+  ArrowLeft,
+  Mail,
+  Globe,
 } from "lucide-react";
 import { useEffect } from "react";
 import {
@@ -47,6 +50,7 @@ import {
   defaultVerificationState,
   setExpeditedRequest,
   addVerificationDocument,
+  removeVerificationDocument,
   setApprovalStatus,
   getRealTimeDate,
   get30DaysExpiryDate,
@@ -55,7 +59,14 @@ import {
 } from "@/lib/verification-store";
 import PdfViewerModal from "@/components/PdfViewerModal";
 import { addNotification, removeNotificationsForEvent } from "@/lib/notifications-store";
-import { getStoredEvents, saveStoredEvent, deleteStoredEvent } from "@/lib/events-store";
+import { getStoredEvents, saveStoredEvent, deleteStoredEvent, subscribeToEvents } from "@/lib/events-store";
+import { getCurrentUser } from "@/lib/auth-store";
+import {
+  getOrganizerProfile,
+  saveOrganizerProfile,
+  subscribeToOrganizerProfile,
+  OrganizerProfile,
+} from "@/lib/organizer-store";
 
 const currentYear = new Date().getFullYear();
 
@@ -112,6 +123,63 @@ function OrganizerContent() {
   // Verification & Document Store state (SSR-safe baseline)
   const [verState, setVerState] = useState<VerificationState>(defaultVerificationState);
   const [previewDocName, setPreviewDocName] = useState<string | null>(null);
+  const [verBannerFadingOut, setVerBannerFadingOut] = useState(false);
+  const [verBannerHidden, setVerBannerHidden] = useState(false);
+
+  // Profile editing state
+  const [profileData, setProfileData] = useState<OrganizerProfile>(() => {
+    return getOrganizerProfile();
+  });
+  const [profileSaved, setProfileSaved] = useState(false);
+  const [showProfilePreview, setShowProfilePreview] = useState(false);
+
+  useEffect(() => {
+    const user = getCurrentUser();
+    const orgName = user?.organization || user?.name || "Metro Creative Group";
+    setProfileData(getOrganizerProfile(orgName));
+    const unsub = subscribeToOrganizerProfile(() => {
+      setProfileData(getOrganizerProfile(orgName));
+    });
+    return () => unsub();
+  }, []);
+
+  const handleAvatarFile = (file: File) => {
+    if (!file) return;
+    if (file.size > 2 * 1024 * 1024) {
+      showAlert("Image must be smaller than 2MB.");
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = () => {
+      if (typeof reader.result === "string") {
+        setProfileData((prev) => ({ ...prev, avatarUrl: reader.result as string }));
+      }
+    };
+    reader.readAsDataURL(file);
+  };
+
+  const handleSaveProfile = (e: React.FormEvent) => {
+    e.preventDefault();
+    const saved = saveOrganizerProfile(profileData);
+    setProfileData(saved);
+    setProfileSaved(true);
+    showAlert("Profile changes saved! Public organizer page has been updated.");
+    setTimeout(() => setProfileSaved(false), 3000);
+  };
+
+  useEffect(() => {
+    if (verState.status === "approved") {
+      const fadeTimer = setTimeout(() => setVerBannerFadingOut(true), 2000);
+      const hideTimer = setTimeout(() => setVerBannerHidden(true), 2700);
+      return () => {
+        clearTimeout(fadeTimer);
+        clearTimeout(hideTimer);
+      };
+    } else {
+      setVerBannerFadingOut(false);
+      setVerBannerHidden(false);
+    }
+  }, [verState.status]);
 
   // Upload modal state
   const [uploadModalOpen, setUploadModalOpen] = useState(false);
@@ -125,9 +193,8 @@ function OrganizerContent() {
     "Priority verification request for upcoming campus event season."
   );
 
-  const syncEvents = () => {
-    const stored = getStoredEvents();
-    const mapped: OrganizerEvent[] = stored.map((e) => {
+  const mapToOrganizerEvents = (list: any[]): OrganizerEvent[] => {
+    return list.map((e) => {
       let timeStr = "TBA";
       let dateStr = e.date || "";
       if (e.date && e.date.includes(" ")) {
@@ -153,13 +220,54 @@ function OrganizerContent() {
         price: e.price || 0,
       };
     });
-    setEvents(mapped);
+  };
+
+  const syncEvents = async () => {
+    const user = getCurrentUser();
+    const myOrg = (user?.organization || user?.name || "Metro Creative Group").trim().toLowerCase();
+
+    const filterForOrg = (list: any[]) => {
+      return list.filter((e) => {
+        const evOrg = (e.organizer || "Metro Creative Group").trim().toLowerCase();
+        if (myOrg.includes("metro creative")) {
+          return evOrg.includes("metro creative") || !e.organizer;
+        }
+        return evOrg === myOrg;
+      });
+    };
+
+    const stored = getStoredEvents();
+    setEvents(mapToOrganizerEvents(filterForOrg(stored)));
+
+    try {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 1200);
+      const res = await fetch("/api/events", { signal: controller.signal });
+      clearTimeout(timer);
+      if (res.ok) {
+        const apiData = await res.json();
+        if (Array.isArray(apiData)) {
+          const freshStored = getStoredEvents();
+          const existingIds = new Set(freshStored.map((e) => e.id));
+          const newFromApi = apiData.filter((e: any) => !existingIds.has(e.id));
+          if (newFromApi.length > 0) {
+            newFromApi.forEach((item: any) => saveStoredEvent(item));
+          }
+          const merged = [...freshStored, ...newFromApi];
+          setEvents(mapToOrganizerEvents(filterForOrg(merged)));
+        }
+      }
+    } catch {}
   };
 
   useEffect(() => {
     syncEvents();
-    window.addEventListener("spott_events_updated", syncEvents);
-    return () => window.removeEventListener("spott_events_updated", syncEvents);
+    const unsubscribeEvents = subscribeToEvents(syncEvents);
+    window.addEventListener("spott_registered_updated", syncEvents);
+    return () => {
+      unsubscribeEvents();
+      window.removeEventListener("spott_registered_updated", syncEvents);
+    };
   }, []);
 
   useEffect(() => {
@@ -199,6 +307,12 @@ function OrganizerContent() {
       setUploadDocTitle("");
       showAlert(`✓ Uploaded "${uploadDocTitle}.pdf" successfully to your accreditation files.`);
     }, 600);
+  };
+
+  const handleRemoveDoc = (id: string, name: string) => {
+    const updated = removeVerificationDocument(id);
+    setVerState(updated);
+    showAlert(`Removed "${name}" from uploaded credentials.`);
   };
 
   const filteredEvents = events.filter((e) => {
@@ -440,16 +554,19 @@ function OrganizerContent() {
             </div>
           </div>
 
-          {/* Verification Status Banner */}
-          <div
-            className={`rounded-2xl p-5 sm:p-6 shadow-sm relative overflow-hidden border ${
-              verState.status === "approved"
-                ? "bg-gradient-to-r from-white via-white to-emerald-50/40 border-emerald-300"
-                : verState.status === "rejected"
-                ? "bg-gradient-to-r from-white via-white to-rose-50/40 border-rose-300"
-                : "bg-gradient-to-r from-white via-white to-[#fff8f5] border-[#ff6b35]/30"
-            }`}
-          >
+          {/* Verification Status Banner (fades out and hides when verified, only returns if rejected or reset) */}
+          {!verBannerHidden && (
+            <div
+              className={`rounded-2xl p-5 sm:p-6 shadow-sm relative overflow-hidden border transition-all duration-700 ${
+                verBannerFadingOut ? "opacity-0 -translate-y-3 pointer-events-none" : "opacity-100 translate-y-0"
+              } ${
+                verState.status === "approved"
+                  ? "bg-gradient-to-r from-white via-white to-emerald-50/40 border-emerald-300"
+                  : verState.status === "rejected"
+                  ? "bg-gradient-to-r from-white via-white to-rose-50/40 border-rose-300"
+                  : "bg-gradient-to-r from-white via-white to-[#fff8f5] border-[#ff6b35]/30"
+              }`}
+            >
             <div
               className={`absolute top-0 left-0 w-1.5 h-full ${
                 verState.status === "approved"
@@ -572,6 +689,7 @@ function OrganizerContent() {
               </div>
             </div>
           </div>
+          )}
 
           {/* Recent Events Preview Table */}
           <div className="bg-white border border-[#e6e1d8] rounded-2xl shadow-sm overflow-hidden">
@@ -727,10 +845,17 @@ function OrganizerContent() {
                 className="px-3.5 py-2 text-xs font-bold border border-[#e6e1d8] rounded-xl bg-white text-[#171717] focus:outline-none focus:border-[#ff6b35] cursor-pointer"
               >
                 <option value="All">All Categories</option>
-                <option value="Concerts">Concerts</option>
-                <option value="Workshops">Workshops</option>
-                <option value="School Events">School Events</option>
+                <option value="Music & Concerts">Music & Concerts</option>
                 <option value="Night Markets">Night Markets</option>
+                <option value="School Events">School Events</option>
+                <option value="Food & Drinks">Food & Drinks</option>
+                <option value="Art & Culture">Art & Culture</option>
+                <option value="Workshops">Workshops</option>
+                <option value="Sports & Fitness">Sports & Fitness</option>
+                <option value="Tech">Tech</option>
+                <option value="Comedy">Comedy</option>
+                <option value="Outdoor">Outdoor</option>
+                <option value="Networking">Networking</option>
               </select>
             </div>
           </div>
@@ -861,11 +986,6 @@ function OrganizerContent() {
               <p className="text-sm text-[#666666] mt-0.5">
                 Audience reach, conversion funnel, RSVP velocity, and attendee engagement trends.
               </p>
-            </div>
-            <div className="flex items-center gap-2">
-              <span className="text-xs font-bold px-3 py-1.5 bg-[#fff0e8] text-[#ff6b35] rounded-xl border border-[#ff6b35]/30">
-                Live Data • Updated 5m ago
-              </span>
             </div>
           </div>
 
@@ -1232,30 +1352,239 @@ function OrganizerContent() {
                         <Eye className="w-3.5 h-3.5 text-[#ff6b35]" />
                         <span>View PDF</span>
                       </button>
+                      <button
+                        onClick={() => handleRemoveDoc(doc.id, doc.name)}
+                        title="Remove Document"
+                        className="p-1.5 text-[#888888] hover:text-rose-600 hover:bg-rose-50 rounded-lg transition-colors cursor-pointer"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
                     </div>
                   </div>
                 ))}
 
-                {/* Upload New Document Card */}
-                <div className="flex flex-col sm:flex-row sm:items-center justify-between p-4 rounded-xl border border-[#e6e1d8] bg-[#faf8f3] gap-3">
-                  <div className="flex items-center gap-3">
-                    <FileText className="w-5 h-5 text-[#888888] shrink-0" />
-                    <div>
-                      <p className="text-xs sm:text-sm font-bold text-[#171717]">Additional Campus Chapter Credentials (Optional)</p>
-                      <p className="text-xs text-[#888888]">Attach awards, co-curricular charters, or sanitation & fire clearances</p>
+                {/* Show initial upload card only when no documents uploaded yet */}
+                {verState.documents.length === 0 && (
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between p-4 rounded-xl border border-dashed border-[#e6e1d8] bg-[#faf8f3] gap-3">
+                    <div className="flex items-center gap-3">
+                      <FileText className="w-5 h-5 text-[#888888] shrink-0" />
+                      <div>
+                        <p className="text-xs sm:text-sm font-bold text-[#171717]">University Co-Curricular Chapter Charter</p>
+                        <p className="text-xs text-[#888888]">Submit your official university organization charter or accreditation certificate</p>
+                      </div>
                     </div>
+                    <button
+                      onClick={() => setUploadModalOpen(true)}
+                      className="px-4 py-2 rounded-xl border border-[#ff6b35] bg-[#fff0e8] hover:bg-[#ff6b35] hover:text-white text-xs font-bold text-[#ff6b35] transition-all cursor-pointer flex items-center gap-1.5 shadow-2xs self-start sm:self-auto shrink-0"
+                    >
+                      <UploadCloud className="w-4 h-4" />
+                      <span>Upload PDF</span>
+                    </button>
                   </div>
-                  <button
-                    onClick={() => setUploadModalOpen(true)}
-                    className="px-4 py-2 rounded-xl border border-[#ff6b35] bg-[#fff0e8] hover:bg-[#ff6b35] hover:text-white text-xs font-bold text-[#ff6b35] transition-all cursor-pointer flex items-center gap-1.5 shadow-2xs self-start sm:self-auto shrink-0"
-                  >
-                    <UploadCloud className="w-4 h-4" />
-                    <span>Upload PDF</span>
-                  </button>
-                </div>
+                )}
               </div>
             </div>
           </div>
+        </div>
+      )}
+
+      {/* ========================================================================= */}
+      {/* 5. PROFILE TAB: Organizer Public Brand & Credentials                      */}
+      {/* ========================================================================= */}
+      {activeTab === "profile" && (
+        <div className="space-y-6">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+            <div>
+              <h1 className="text-2xl sm:text-3xl font-black text-[#171717] tracking-tight">
+                Public Organizer Profile
+              </h1>
+              <p className="text-sm text-[#666666] mt-0.5">
+                Customize your organization logo, bio description, and venue address visible to all attendees.
+              </p>
+            </div>
+
+            <button
+              type="button"
+              onClick={() => setShowProfilePreview(true)}
+              className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl border border-[#e6e1d8] bg-white text-xs font-bold text-[#171717] hover:border-[#ff6b35] hover:text-[#ff6b35] transition-all shadow-2xs cursor-pointer"
+            >
+              <Eye className="w-3.5 h-3.5 text-[#ff6b35]" />
+              <span>Preview</span>
+            </button>
+          </div>
+
+          <form onSubmit={handleSaveProfile} className="space-y-6">
+            <div className="bg-white border border-[#e6e1d8] rounded-2xl p-6 sm:p-8 shadow-sm space-y-6">
+              {/* Profile Picture / Logo Section */}
+              <div className="pb-6 border-b border-[#e6e1d8]">
+                <h3 className="text-base font-black text-[#171717] mb-1">Organization Avatar & Logo</h3>
+                <p className="text-xs text-[#666666] mb-4">
+                  This photo represents your organization across event cards, details pages, and public organizer pages.
+                </p>
+
+                <div className="flex flex-col sm:flex-row items-start sm:items-center gap-5">
+                  <div className="w-20 h-20 sm:w-24 sm:h-24 rounded-2xl bg-gradient-to-br from-[#171717] via-[#262626] to-[#3a3a3a] text-white flex items-center justify-center font-black text-2xl tracking-wider shadow-sm border border-white/10 shrink-0 overflow-hidden relative">
+                    {profileData.avatarUrl ? (
+                      <img
+                        src={profileData.avatarUrl}
+                        alt={profileData.name}
+                        className="w-full h-full object-cover"
+                      />
+                    ) : (
+                      <span>{profileData.name.slice(0, 2).toUpperCase()}</span>
+                    )}
+                  </div>
+
+                  <div className="space-y-2">
+                    <div className="flex items-center gap-2.5 flex-wrap">
+                      <label className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-[#171717] text-white text-xs font-bold hover:bg-[#ff6b35] transition-all cursor-pointer shadow-2xs">
+                        <UploadCloud className="w-3.5 h-3.5" />
+                        <span>Upload New Photo</span>
+                        <input
+                          type="file"
+                          accept="image/*"
+                          className="hidden"
+                          onChange={(e) => {
+                            if (e.target.files?.[0]) handleAvatarFile(e.target.files[0]);
+                          }}
+                        />
+                      </label>
+
+                      {profileData.avatarUrl && (
+                        <button
+                          type="button"
+                          onClick={() => setProfileData((prev) => ({ ...prev, avatarUrl: "" }))}
+                          className="px-3 py-2 rounded-xl border border-rose-200 text-rose-600 hover:bg-rose-50 text-xs font-bold transition-colors cursor-pointer"
+                        >
+                          Remove Photo
+                        </button>
+                      )}
+                    </div>
+                    <p className="text-[11px] text-[#888888] m-0">
+                      Recommended: Square PNG or JPG, max 2MB. Clear logos work best on light and dark backgrounds.
+                    </p>
+                  </div>
+                </div>
+              </div>
+
+              {/* Text Fields */}
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+                <div>
+                  <label className="block text-xs font-black text-[#171717] mb-1.5 uppercase tracking-wide">
+                    Organization Name
+                  </label>
+                  <input
+                    type="text"
+                    value={profileData.name}
+                    onChange={(e) => setProfileData((prev) => ({ ...prev, name: e.target.value }))}
+                    required
+                    placeholder="e.g. Metro Creative Group"
+                    className="w-full text-xs font-bold border border-[#e6e1d8] rounded-xl p-3 focus:outline-none focus:border-[#ff6b35] text-[#171717]"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-xs font-black text-[#171717] mb-1.5 uppercase tracking-wide">
+                    Category / Focus
+                  </label>
+                  <select
+                    value={profileData.category || "Creative Arts & Design"}
+                    onChange={(e) => setProfileData((prev) => ({ ...prev, category: e.target.value }))}
+                    className="w-full text-xs font-bold border border-[#e6e1d8] rounded-xl p-3 focus:outline-none focus:border-[#ff6b35] text-[#171717] bg-white cursor-pointer"
+                  >
+                    <option value="Creative Arts & Design">Creative Arts & Design</option>
+                    <option value="Campus & Student Org">Campus & Student Org</option>
+                    <option value="Technology & Innovation">Technology & Innovation</option>
+                    <option value="Music, Sound & Nightlife">Music, Sound & Nightlife</option>
+                    <option value="Sports & Active Recreation">Sports & Active Recreation</option>
+                    <option value="Community & Cultural">Community & Cultural</option>
+                  </select>
+                </div>
+
+                <div className="md:col-span-2">
+                  <label className="block text-xs font-black text-[#171717] mb-1.5 uppercase tracking-wide">
+                    Address / Campus Location
+                  </label>
+                  <div className="relative">
+                    <MapPin className="w-4 h-4 text-[#ff6b35] absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+                    <input
+                      type="text"
+                      value={profileData.address || ""}
+                      onChange={(e) => setProfileData((prev) => ({ ...prev, address: e.target.value }))}
+                      placeholder="e.g. D+A Campus, De La Salle-College of Saint Benilde, Taft Ave, Malate, Manila"
+                      className="w-full text-xs font-bold border border-[#e6e1d8] rounded-xl pl-9 pr-3 py-3 focus:outline-none focus:border-[#ff6b35] text-[#171717]"
+                    />
+                  </div>
+                  <p className="text-[11px] text-[#888888] mt-1">
+                    Helps attendees locate your headquarters, campus venue, or base city.
+                  </p>
+                </div>
+
+                <div className="md:col-span-2">
+                  <label className="block text-xs font-black text-[#171717] mb-1.5 uppercase tracking-wide">
+                    Caption & About Description
+                  </label>
+                  <textarea
+                    rows={4}
+                    value={profileData.caption || ""}
+                    onChange={(e) => setProfileData((prev) => ({ ...prev, caption: e.target.value }))}
+                    placeholder="Describe your organization, events, activities, and community..."
+                    className="w-full text-xs leading-relaxed border border-[#e6e1d8] rounded-xl p-3 focus:outline-none focus:border-[#ff6b35] text-[#171717] resize-none"
+                  />
+                  <p className="text-[11px] text-[#888888] mt-1">
+                    This caption is prominently displayed on your public profile header and organizer cards.
+                  </p>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-black text-[#171717] mb-1.5 uppercase tracking-wide">
+                    Official Email (Optional)
+                  </label>
+                  <input
+                    type="email"
+                    value={profileData.email || ""}
+                    onChange={(e) => setProfileData((prev) => ({ ...prev, email: e.target.value }))}
+                    placeholder="contact@yourorg.ph"
+                    className="w-full text-xs font-bold border border-[#e6e1d8] rounded-xl p-3 focus:outline-none focus:border-[#ff6b35] text-[#171717]"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-xs font-black text-[#171717] mb-1.5 uppercase tracking-wide">
+                    Website or Social Link (Optional)
+                  </label>
+                  <input
+                    type="url"
+                    value={profileData.website || ""}
+                    onChange={(e) => setProfileData((prev) => ({ ...prev, website: e.target.value }))}
+                    placeholder="https://instagram.com/yourorg"
+                    className="w-full text-xs font-bold border border-[#e6e1d8] rounded-xl p-3 focus:outline-none focus:border-[#ff6b35] text-[#171717]"
+                  />
+                </div>
+              </div>
+
+              {/* Action Buttons */}
+              <div className="pt-4 border-t border-[#e6e1d8] flex items-center justify-between flex-wrap gap-3">
+                <span className="text-xs text-[#666666]">
+                  {profileSaved ? (
+                    <span className="text-emerald-600 font-bold inline-flex items-center gap-1">
+                      <Check className="w-4 h-4" /> Changes saved to public profile!
+                    </span>
+                  ) : (
+                    "All changes are instantly published across Spott."
+                  )}
+                </span>
+
+                <button
+                  type="submit"
+                  className="px-6 py-2.5 rounded-xl bg-[#ff6b35] text-white text-xs font-bold hover:bg-[#e0531f] transition-all shadow-md cursor-pointer inline-flex items-center gap-2"
+                >
+                  <Check className="w-3.5 h-3.5" />
+                  <span>Save Profile</span>
+                </button>
+              </div>
+            </div>
+          </form>
         </div>
       )}
 
@@ -1422,10 +1751,9 @@ function OrganizerContent() {
                   onChange={(e) => setUploadDocType(e.target.value)}
                   className="w-full border border-[#e6e1d8] rounded-xl px-3.5 py-2.5 text-xs font-bold bg-white focus:outline-none focus:border-[#ff6b35] text-[#171717]"
                 >
-                  <option value="Campus Chapter Credential">Campus Chapter Credential</option>
+                  <option value="University Co-Curricular Charter">University Co-Curricular Charter</option>
                   <option value="University Accreditation Certificate">University Accreditation Certificate</option>
                   <option value="Faculty Adviser Endorsement Letter">Faculty Adviser Endorsement Letter</option>
-                  <option value="Sanitation & Venue Safety Clearance">Sanitation & Venue Safety Clearance</option>
                   <option value="Student Council Recognition Certificate">Student Council Recognition Certificate</option>
                 </select>
               </div>
@@ -1616,6 +1944,190 @@ function OrganizerContent() {
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* Profile Public Preview Modal */}
+      {showProfilePreview && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-in fade-in duration-200">
+          <div className="bg-[#fcfbf9] w-full max-w-4xl max-h-[90vh] rounded-3xl shadow-2xl border border-[#e6e1d8] flex flex-col overflow-hidden">
+            {/* Top Toolbar */}
+            <div className="px-6 py-4 bg-white border-b border-[#e6e1d8] flex items-center justify-between gap-4 shrink-0">
+              <div className="flex items-center gap-3">
+                <div className="w-8 h-8 rounded-lg bg-orange-50 text-[#ff6b35] flex items-center justify-center font-bold">
+                  <Eye className="w-4 h-4" />
+                </div>
+                <div>
+                  <div className="flex items-center gap-2">
+                    <h2 className="text-sm font-black text-[#171717] tracking-tight">Public Profile Preview</h2>
+                    <span className="px-2 py-0.5 rounded-full bg-blue-50 text-blue-600 border border-blue-200 text-[10px] font-bold">
+                      Attendee View
+                    </span>
+                  </div>
+                  <p className="text-[11px] text-[#666666]">
+                    This is exactly how attendees and students see your organizer brand.
+                  </p>
+                </div>
+              </div>
+
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setShowProfilePreview(false)}
+                  className="p-2 text-[#777] hover:text-[#171717] hover:bg-[#f0ece1] rounded-xl transition-colors cursor-pointer"
+                  title="Close Preview"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+            </div>
+
+            {/* Modal Body: Render Public Profile Representation */}
+            <div className="p-6 overflow-y-auto space-y-6">
+              {/* Organizer Hero Card */}
+              <div className="bg-white border border-[#e6e1d8] rounded-2xl p-6 sm:p-8 shadow-xs relative overflow-hidden">
+                <div className="flex flex-col sm:flex-row items-start sm:items-center gap-5">
+                  <div className="w-20 h-20 sm:w-24 sm:h-24 rounded-2xl bg-gradient-to-br from-[#171717] via-[#262626] to-[#3a3a3a] text-white flex items-center justify-center font-black text-2xl tracking-wider shadow-sm border border-white/10 shrink-0 overflow-hidden relative">
+                    {profileData.avatarUrl ? (
+                      <img
+                        src={profileData.avatarUrl}
+                        alt={profileData.name}
+                        className="w-full h-full object-cover"
+                      />
+                    ) : (
+                      <span>{(profileData.name || "MC").slice(0, 2).toUpperCase()}</span>
+                    )}
+                    {verState.status === "approved" && (
+                      <div
+                        className="absolute -bottom-1 -right-1 bg-white p-0.5 rounded-full shadow-sm z-10"
+                        title="Verified Organizer"
+                      >
+                        <CheckCircle2 className="w-5 h-5 text-[#14804a]" />
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="space-y-1.5 flex-1 min-w-0">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <h3 className="text-xl sm:text-2xl font-black text-[#171717] tracking-tight">
+                        {profileData.name || "Organizer Name"}
+                      </h3>
+                      {verState.status === "approved" ? (
+                        <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-emerald-50 text-[#14804a] border border-emerald-200 text-xs font-bold">
+                          <CheckCircle2 className="w-3.5 h-3.5 text-[#14804a]" />
+                          <span>Verified Organizer</span>
+                        </span>
+                      ) : (
+                        <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-gray-100 text-[#666] border border-gray-200 text-xs font-medium">
+                          <span>Community Organizer</span>
+                        </span>
+                      )}
+                      {profileData.category && (
+                        <span className="px-2.5 py-0.5 rounded-full bg-orange-50 text-[#ff6b35] border border-orange-200/70 text-xs font-bold">
+                          {profileData.category}
+                        </span>
+                      )}
+                    </div>
+
+                    {profileData.address && (
+                      <div className="flex items-center gap-1.5 text-xs text-[#666]">
+                        <MapPin className="w-3.5 h-3.5 text-[#ff6b35] shrink-0" />
+                        <span>{profileData.address}</span>
+                      </div>
+                    )}
+
+                    <p className="text-xs text-[#444] pt-1 leading-relaxed max-w-2xl">
+                      {profileData.caption || "No bio description provided yet."}
+                    </p>
+
+                    <div className="flex items-center gap-3 pt-2 text-xs flex-wrap">
+                      {profileData.email && (
+                        <div className="flex items-center gap-1 text-[#666]">
+                          <Mail className="w-3.5 h-3.5 text-[#ff6b35]" />
+                          <span>{profileData.email}</span>
+                        </div>
+                      )}
+                      {profileData.website && (
+                        <div className="flex items-center gap-1 text-[#ff6b35]">
+                          <Globe className="w-3.5 h-3.5" />
+                          <span className="underline">{profileData.website}</span>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Stats Overview */}
+              <div className="grid grid-cols-3 gap-3">
+                <div className="bg-white border border-[#e6e1d8] rounded-xl p-4 text-center">
+                  <div className="text-xl font-black text-[#171717]">{events.length}</div>
+                  <div className="text-[11px] font-semibold text-[#777]">Total Events</div>
+                </div>
+                <div className="bg-white border border-[#e6e1d8] rounded-xl p-4 text-center">
+                  <div className="text-xl font-black text-[#14804a]">
+                    {events.filter((e) => e.status === "Active").length}
+                  </div>
+                  <div className="text-[11px] font-semibold text-[#777]">Active Events</div>
+                </div>
+                <div className="bg-white border border-[#e6e1d8] rounded-xl p-4 text-center">
+                  <div className="text-xl font-black text-[#ff6b35]">
+                    {events.reduce((sum, e) => sum + (e.rsvps || 0), 0)}
+                  </div>
+                  <div className="text-[11px] font-semibold text-[#777]">Total RSVPs</div>
+                </div>
+              </div>
+
+              {/* Events by Organizer Preview */}
+              <div>
+                <h4 className="text-sm font-black text-[#171717] mb-3">
+                  Events by {profileData.name || "Organizer"}
+                </h4>
+                {events.length === 0 ? (
+                  <div className="bg-white border border-[#e6e1d8] rounded-xl p-6 text-center text-xs text-[#777]">
+                    No published events yet. Events you create will show up here for attendees.
+                  </div>
+                ) : (
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    {events.slice(0, 4).map((ev) => (
+                      <div
+                        key={ev.id}
+                        className="bg-white border border-[#e6e1d8] rounded-xl p-3.5 flex items-center justify-between gap-3 shadow-2xs"
+                      >
+                        <div className="min-w-0">
+                          <div className="text-xs font-black text-[#171717] truncate">{ev.name}</div>
+                          <div className="text-[11px] text-[#777] flex items-center gap-1.5 mt-0.5">
+                            <Calendar className="w-3 h-3 text-[#ff6b35]" />
+                            <span>{ev.date}</span>
+                            <span>•</span>
+                            <MapPin className="w-3 h-3 text-[#ff6b35]" />
+                            <span className="truncate">{ev.location}</span>
+                          </div>
+                        </div>
+                        <span className="px-2 py-0.5 rounded-full text-[10px] font-bold shrink-0 bg-emerald-50 text-[#14804a] border border-emerald-200">
+                          {ev.rsvps} RSVPs
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* Modal Footer */}
+            <div className="px-6 py-3.5 bg-white border-t border-[#e6e1d8] flex items-center justify-between">
+              <span className="text-xs text-[#777]">
+                Closing preview will keep your current form edits.
+              </span>
+              <button
+                type="button"
+                onClick={() => setShowProfilePreview(false)}
+                className="px-4 py-2 bg-[#171717] hover:bg-[#ff6b35] text-white rounded-xl text-xs font-bold transition-all cursor-pointer shadow-2xs"
+              >
+                Close Preview
+              </button>
+            </div>
           </div>
         </div>
       )}

@@ -4,11 +4,7 @@ import { useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
-  User,
-  Shield,
-  Layers,
   ArrowRight,
-  RotateCcw,
   CheckCircle2,
   LogIn,
   UserPlus,
@@ -17,9 +13,13 @@ import {
   SPOTT_ACCOUNTS,
   RoleType,
   setCurrentUser,
-  wipeAllData,
   SpottAccount,
 } from "@/lib/auth-store";
+import {
+  addPendingOrganizer,
+  getPendingOrganizers,
+} from "@/lib/pending-organizers-store";
+import { registerUserInAdmin } from "@/lib/users-store";
 
 // ─── Simple in-memory "registered users" store (persisted in localStorage) ───
 const SIGNUP_STORE_KEY = "spott_signed_up_users";
@@ -37,8 +37,21 @@ function getSignedUpUsers(): SpottAccount[] {
 function saveSignedUpUser(acc: SpottAccount) {
   if (typeof window === "undefined") return;
   const existing = getSignedUpUsers();
-  existing.push(acc);
+  const existingIdx = existing.findIndex((a) => a.email.toLowerCase() === acc.email.toLowerCase());
+  if (existingIdx !== -1) {
+    existing[existingIdx] = acc;
+  } else {
+    existing.push(acc);
+  }
   localStorage.setItem(SIGNUP_STORE_KEY, JSON.stringify(existing));
+
+  // Automatically register into Admin User Management for immediate real-time display
+  registerUserInAdmin({
+    name: acc.name,
+    email: acc.email,
+    role: acc.role,
+    status: "Active",
+  });
 }
 
 function findAccount(email: string, password: string): SpottAccount | null {
@@ -64,18 +77,20 @@ function emailExists(email: string): boolean {
     (a) => a.email.toLowerCase() === emailLower
   );
   if (builtIn) return true;
-  return getSignedUpUsers().some((a) => a.email.toLowerCase() === emailLower);
+  if (getSignedUpUsers().some((a) => a.email.toLowerCase() === emailLower)) return true;
+  // Also check pending organizers
+  return getPendingOrganizers().some((o) => o.email.toLowerCase() === emailLower);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 
 export default function LoginPage() {
   const [mode, setMode] = useState<"signin" | "signup">("signin");
-  const [selectedRole, setSelectedRole] = useState<RoleType>("user");
+  const [signupRole, setSignupRole] = useState<RoleType>("user");
 
   // Sign-in fields
-  const [email, setEmail] = useState(SPOTT_ACCOUNTS.user.email);
-  const [password, setPassword] = useState(SPOTT_ACCOUNTS.user.password);
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
 
   // Sign-up fields
   const [signupName, setSignupName] = useState("");
@@ -90,21 +105,11 @@ export default function LoginPage() {
 
   const clearErrors = () => { setAuthError(null); setNotice(null); };
 
-  const handleRoleSelect = (role: RoleType) => {
-    setSelectedRole(role);
-    if (mode === "signin") {
-      setEmail(SPOTT_ACCOUNTS[role].email);
-      setPassword(SPOTT_ACCOUNTS[role].password);
-    }
-    clearErrors();
-  };
-
   const switchMode = (m: "signin" | "signup") => {
     setMode(m);
     clearErrors();
     if (m === "signin") {
-      setEmail(SPOTT_ACCOUNTS[selectedRole].email);
-      setPassword(SPOTT_ACCOUNTS[selectedRole].password);
+      setEmail(""); setPassword("");
     } else {
       setSignupName(""); setSignupEmail(""); setSignupPassword(""); setSignupConfirm("");
     }
@@ -115,10 +120,18 @@ export default function LoginPage() {
     setLoading(true);
     setTimeout(() => {
       setLoading(false);
-      router.push(account.destination);
+      let redirectUrl: string | null = null;
+      if (typeof window !== "undefined") {
+        const search = new URLSearchParams(window.location.search);
+        redirectUrl = search.get("redirect");
+      }
+      if (redirectUrl && account.role === "user") {
+        router.push(redirectUrl);
+      } else {
+        router.push(account.destination);
+      }
     }, 300);
   };
-
 
   // ── Sign In ──
   const handleSignIn = (e: React.FormEvent) => {
@@ -126,16 +139,23 @@ export default function LoginPage() {
     clearErrors();
     setLoading(true);
 
+    // Check if email belongs to a pending/rejected organizer first
+    const emailLower = email.trim().toLowerCase();
+    const pendingOrg = getPendingOrganizers().find(
+      (o) => o.email.toLowerCase() === emailLower && o.password === password.trim()
+    );
+    if (pendingOrg) {
+      setLoading(false);
+      if (pendingOrg.status === "pending") {
+        setAuthError("Your organizer account is awaiting admin approval. You'll receive access once approved.");
+      } else if (pendingOrg.status === "rejected") {
+        setAuthError("Your organizer application was not approved. Please contact the administrator.");
+      }
+      return;
+    }
+
     const account = findAccount(email, password);
     if (account) {
-      // Enforce role match: credentials must belong to the selected role tab
-      if (account.role !== selectedRole) {
-        setLoading(false);
-        setAuthError(
-          `This account is registered as "${account.role.charAt(0).toUpperCase() + account.role.slice(1)}", not "${selectedRole.charAt(0).toUpperCase() + selectedRole.slice(1)}". Please select the correct role tab above.`
-        );
-        return;
-      }
       executeLogin(account);
     } else {
       setLoading(false);
@@ -165,32 +185,45 @@ export default function LoginPage() {
       return;
     }
 
-    const destination = selectedRole === "user" ? "/" : selectedRole === "organizer" ? "/organizer" : "/admin";
+    const destination = signupRole === "user" ? "/" : "/organizer";
     const newAccount: SpottAccount = {
       email: signupEmail.trim().toLowerCase(),
       password: signupPassword,
       name: signupName.trim(),
-      role: selectedRole,
+      role: signupRole,
       destination,
-      ...(selectedRole === "organizer" ? { organization: signupName.trim() } : {}),
+      ...(signupRole === "organizer" ? { organization: signupName.trim() } : {}),
     };
 
     setLoading(true);
     setTimeout(() => {
-      saveSignedUpUser(newAccount);
-      setLoading(false);
-      setNotice(`✓ Account created for ${newAccount.name}! Signing you in…`);
-      setTimeout(() => executeLogin(newAccount), 800);
+      if (signupRole === "organizer") {
+        // Save to pending organizers queue — not to signed-up users
+        addPendingOrganizer({
+          name: signupName.trim(),
+          email: signupEmail.trim().toLowerCase(),
+          password: signupPassword,
+        });
+        setLoading(false);
+        setNotice(
+          "✓ Organizer account submitted! Your account is pending admin approval. You'll be able to log in once approved."
+        );
+        setSignupName(""); setSignupEmail(""); setSignupPassword(""); setSignupConfirm("");
+        setSignupRole("user");
+      } else {
+        const newAccount: SpottAccount = {
+          email: signupEmail.trim().toLowerCase(),
+          password: signupPassword,
+          name: signupName.trim(),
+          role: signupRole,
+          destination: "/",
+        };
+        saveSignedUpUser(newAccount);
+        setLoading(false);
+        setNotice(`✓ Account created for ${newAccount.name}! Signing you in…`);
+        setTimeout(() => executeLogin(newAccount), 800);
+      }
     }, 500);
-  };
-
-  const handleWipeData = () => {
-    wipeAllData();
-    if (typeof window !== "undefined") {
-      localStorage.removeItem(SIGNUP_STORE_KEY);
-    }
-    setNotice("✓ All data, accounts, and local cache have been wiped clean.");
-    setTimeout(() => setNotice(null), 4000);
   };
 
   return (
@@ -236,31 +269,6 @@ export default function LoginPage() {
           </button>
         </div>
 
-        {/* Role Selector Tabs */}
-        <div className="bg-white border border-[#e6e1d8] rounded-2xl p-1.5 mb-5 shadow-sm grid grid-cols-3 gap-1.5">
-          {(["user", "organizer", "admin"] as RoleType[]).map((role) => (
-            <button
-              key={role}
-              type="button"
-              onClick={() => handleRoleSelect(role)}
-              className={`py-2.5 px-2 rounded-xl text-xs font-bold transition-all flex flex-col sm:flex-row items-center justify-center gap-1.5 cursor-pointer ${
-                selectedRole === role
-                  ? "bg-[#171717] text-white shadow-sm ring-2 ring-[#ff6b35]"
-                  : "text-[#666666] hover:bg-[#faf8f3]"
-              }`}
-            >
-              {role === "user" ? (
-                <User className={`w-3.5 h-3.5 ${selectedRole === role ? "text-[#ff6b35]" : ""}`} />
-              ) : role === "organizer" ? (
-                <Layers className={`w-3.5 h-3.5 ${selectedRole === role ? "text-[#ff6b35]" : ""}`} />
-              ) : (
-                <Shield className={`w-3.5 h-3.5 ${selectedRole === role ? "text-[#ff6b35]" : ""}`} />
-              )}
-              <span className="capitalize">{role}</span>
-            </button>
-          ))}
-        </div>
-
         {/* Notices */}
         {notice && (
           <div className="mb-5 p-3 bg-emerald-50 border border-emerald-200 rounded-2xl text-xs font-bold text-emerald-800 flex items-center gap-2 shadow-xs">
@@ -275,19 +283,15 @@ export default function LoginPage() {
           </div>
         )}
 
-
-
         {/* ── Main Auth Card ── */}
         <div className="bg-white border border-[#e6e1d8] rounded-3xl p-6 sm:p-8 shadow-sm">
           <h2 className="text-lg font-black text-[#171717] mb-1">
-            {mode === "signin"
-              ? `Sign In — ${selectedRole.charAt(0).toUpperCase() + selectedRole.slice(1)}`
-              : `Create ${selectedRole.charAt(0).toUpperCase() + selectedRole.slice(1)} Account`}
+            {mode === "signin" ? "Sign In" : "Create Account"}
           </h2>
           <p className="text-xs text-[#666666] mb-5">
             {mode === "signin"
-              ? `Routes to ${selectedRole === "user" ? "Home" : selectedRole === "organizer" ? "Spott Organizer" : "Admin Dashboard"} upon successful sign in.`
-              : `Registering as a ${selectedRole}. Fill in your details to create your Spott account.`}
+              ? "Enter your credentials — you'll be redirected to the right dashboard automatically."
+              : "Fill in your details to create your Spott account."}
           </p>
 
           {mode === "signin" ? (
@@ -329,7 +333,7 @@ export default function LoginPage() {
                 disabled={loading}
                 className="w-full bg-[#171717] hover:bg-[#ff6b35] text-white font-black py-3.5 rounded-xl transition-all cursor-pointer disabled:opacity-50 text-sm shadow-md mt-2 flex items-center justify-center gap-2"
               >
-                <span>{loading ? "Signing In…" : `Enter ${selectedRole === "user" ? "Home" : selectedRole === "organizer" ? "Spott Organizer" : "Admin Portal"}`}</span>
+                <span>{loading ? "Signing In…" : "Sign In"}</span>
                 <ArrowRight className="w-4 h-4" />
               </button>
               <p className="text-center text-xs text-[#888888] mt-1">
@@ -341,9 +345,37 @@ export default function LoginPage() {
             </form>
           ) : (
             <form onSubmit={handleSignUp} className="space-y-4">
+              {/* Role selector — only User and Organizer can sign up */}
               <div>
                 <label className="block text-[11px] font-black uppercase tracking-wider text-[#666666] mb-1.5">
-                  Full Name
+                  Register As
+                </label>
+                <div className="grid grid-cols-2 gap-2">
+                  {(["user", "organizer"] as RoleType[]).map((role) => (
+                    <button
+                      key={role}
+                      type="button"
+                      onClick={() => setSignupRole(role)}
+                      className={`py-2.5 px-2 rounded-xl text-xs font-bold transition-all capitalize cursor-pointer border ${
+                        signupRole === role
+                          ? "bg-[#171717] text-white border-[#ff6b35] ring-1 ring-[#ff6b35]"
+                          : "text-[#666666] border-[#e6e1d8] hover:bg-[#faf8f3]"
+                      }`}
+                    >
+                      {role === "organizer" ? "Organizer" : "User"}
+                    </button>
+                  ))}
+                </div>
+                {signupRole === "organizer" && (
+                  <p className="mt-2 text-[11px] text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 font-semibold">
+                    ⏳ Organizer accounts require admin approval before you can log in.
+                  </p>
+                )}
+              </div>
+
+              <div>
+                <label className="block text-[11px] font-black uppercase tracking-wider text-[#666666] mb-1.5">
+                  {signupRole === "organizer" ? "Organizer Name" : "Full Name"}
                 </label>
                 <input
                   type="text"
@@ -353,7 +385,7 @@ export default function LoginPage() {
                     authError && !signupName.trim() ? "border-rose-400 bg-rose-50/30" : "border-[#e6e1d8] focus:border-[#ff6b35]"
                   }`}
                   required
-                  placeholder="Your full name"
+                  placeholder={signupRole === "organizer" ? "Your organization or group name" : "Your full name"}
                   autoComplete="name"
                 />
               </div>
@@ -373,46 +405,50 @@ export default function LoginPage() {
                   autoComplete="email"
                 />
               </div>
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="block text-[11px] font-black uppercase tracking-wider text-[#666666] mb-1.5">
-                    Password
-                  </label>
-                  <input
-                    type="password"
-                    value={signupPassword}
-                    onChange={(e) => { setSignupPassword(e.target.value); setAuthError(null); }}
-                    className={`w-full border rounded-xl px-4 py-3 text-sm font-semibold text-[#171717] focus:outline-none transition-colors ${
-                      authError ? "border-rose-400 bg-rose-50/30" : "border-[#e6e1d8] focus:border-[#ff6b35]"
-                    }`}
-                    required
-                    placeholder="Min. 6 chars"
-                    autoComplete="new-password"
-                  />
-                </div>
-                <div>
-                  <label className="block text-[11px] font-black uppercase tracking-wider text-[#666666] mb-1.5">
-                    Confirm
-                  </label>
-                  <input
-                    type="password"
-                    value={signupConfirm}
-                    onChange={(e) => { setSignupConfirm(e.target.value); setAuthError(null); }}
-                    className={`w-full border rounded-xl px-4 py-3 text-sm font-semibold text-[#171717] focus:outline-none transition-colors ${
-                      authError && signupPassword !== signupConfirm ? "border-rose-400 bg-rose-50/30" : "border-[#e6e1d8] focus:border-[#ff6b35]"
-                    }`}
-                    required
-                    placeholder="Repeat password"
-                    autoComplete="new-password"
-                  />
-                </div>
+              <div>
+                <label className="block text-[11px] font-black uppercase tracking-wider text-[#666666] mb-1.5">
+                  Password
+                </label>
+                <input
+                  type="password"
+                  value={signupPassword}
+                  onChange={(e) => { setSignupPassword(e.target.value); setAuthError(null); }}
+                  className={`w-full border rounded-xl px-4 py-3 text-sm font-semibold text-[#171717] focus:outline-none transition-colors ${
+                    authError ? "border-rose-400 bg-rose-50/30" : "border-[#e6e1d8] focus:border-[#ff6b35]"
+                  }`}
+                  required
+                  placeholder="Minimum 6 characters"
+                  autoComplete="new-password"
+                />
+              </div>
+              <div>
+                <label className="block text-[11px] font-black uppercase tracking-wider text-[#666666] mb-1.5">
+                  Confirm Password
+                </label>
+                <input
+                  type="password"
+                  value={signupConfirm}
+                  onChange={(e) => { setSignupConfirm(e.target.value); setAuthError(null); }}
+                  className={`w-full border rounded-xl px-4 py-3 text-sm font-semibold text-[#171717] focus:outline-none transition-colors ${
+                    authError && signupPassword !== signupConfirm ? "border-rose-400 bg-rose-50/30" : "border-[#e6e1d8] focus:border-[#ff6b35]"
+                  }`}
+                  required
+                  placeholder="Repeat your password"
+                  autoComplete="new-password"
+                />
               </div>
               <button
                 type="submit"
                 disabled={loading}
                 className="w-full bg-[#ff6b35] hover:bg-[#e0531f] text-white font-black py-3.5 rounded-xl transition-all cursor-pointer disabled:opacity-50 text-sm shadow-md mt-2 flex items-center justify-center gap-2"
               >
-                <span>{loading ? "Creating Account…" : "Create Account & Sign In"}</span>
+                <span>
+                  {loading
+                    ? "Submitting…"
+                    : signupRole === "organizer"
+                    ? "Submit for Approval"
+                    : "Create Account & Sign In"}
+                </span>
                 <UserPlus className="w-4 h-4" />
               </button>
               <p className="text-center text-xs text-[#888888] mt-1">
@@ -423,20 +459,6 @@ export default function LoginPage() {
               </p>
             </form>
           )}
-
-
-        </div>
-
-        {/* Wipe Data */}
-        <div className="mt-6 text-center">
-          <button
-            type="button"
-            onClick={handleWipeData}
-            className="inline-flex items-center gap-1.5 text-xs font-bold text-gray-500 hover:text-rose-600 transition-colors cursor-pointer bg-transparent border-0 p-1"
-          >
-            <RotateCcw className="w-3.5 h-3.5" />
-            <span>Wipe All Data &amp; Reset Clean State</span>
-          </button>
         </div>
       </div>
     </div>

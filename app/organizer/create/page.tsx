@@ -20,20 +20,26 @@ import {
   X,
   ImagePlus,
   Trash2,
+  Check,
 } from "lucide-react";
 import { addNotification } from "@/lib/notifications-store";
 import { saveStoredEvent } from "@/lib/events-store";
+import LocationPicker from "@/components/LocationPicker";
+import { getCurrentUser } from "@/lib/auth-store";
+import { getVerificationState } from "@/lib/verification-store";
 
 const eventSchema = z.object({
   title: z.string().min(1, "Event title is required"),
-  description: z.string().min(10, "Description must be at least 10 characters long"),
+  description: z.string().min(1, "Event description is required"),
   date: z.string().min(1, "Please enter an event date"),
   time: z.string().min(1, "Please enter an event time"),
   location: z.string().min(1, "Location is required"),
   price: z.coerce.number().min(0, "Price cannot be negative"),
   isFree: z.boolean(),
   category: z.string().min(1, "Please select a category"),
-  registrationLimit: z.string().optional(),
+  hasCapacityLimit: z.boolean().default(false),
+  capacity: z.coerce.number().min(1, "Capacity must be at least 1").optional().nullable(),
+  requireApproval: z.boolean().default(false),
 });
 
 type EventFormValues = z.infer<typeof eventSchema>;
@@ -41,6 +47,7 @@ type EventFormValues = z.infer<typeof eventSchema>;
 export default function CreateEventPage() {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [success, setSuccess] = useState(false);
+  const [publishedEventId, setPublishedEventId] = useState<string | null>(null);
   const [errorMsg, setErrorMsg] = useState("");
   const [draftSaved, setDraftSaved] = useState(false);
   const [previewOpen, setPreviewOpen] = useState(false);
@@ -50,11 +57,16 @@ export default function CreateEventPage() {
   const [coverFileName, setCoverFileName] = useState<string>("");
   const fileInputRef = useRef<HTMLInputElement>(null);
 
+  // Pinned location coordinates
+  const [pinnedLat, setPinnedLat] = useState<number>(14.5638);
+  const [pinnedLng, setPinnedLng] = useState<number>(120.9965);
+
   const {
     register,
     handleSubmit,
     watch,
     setValue,
+    reset,
     formState: { errors },
   } = useForm<EventFormValues>({
     resolver: zodResolver(eventSchema) as any,
@@ -67,7 +79,9 @@ export default function CreateEventPage() {
       location: "",
       date: `${new Date().getFullYear()}-10-24`,
       time: "14:00",
-      registrationLimit: "",
+      hasCapacityLimit: false,
+      capacity: 50,
+      requireApproval: false,
     },
   });
 
@@ -79,22 +93,61 @@ export default function CreateEventPage() {
     if (checked) setValue("price", 0);
   };
 
-  // Handle cover image file selection → convert to data URL
-  const handleCoverImageChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+  // Compress image to ensure it easily fits in localStorage and network payloads (~40-80KB)
+  const compressImageFile = (file: File): Promise<string> => {
+    return new Promise((resolve) => {
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        const img = new Image();
+        img.onload = () => {
+          const canvas = document.createElement("canvas");
+          const MAX_WIDTH = 1200;
+          const MAX_HEIGHT = 800;
+          let width = img.width;
+          let height = img.height;
+
+          if (width > height) {
+            if (width > MAX_WIDTH) {
+              height *= MAX_WIDTH / width;
+              width = MAX_WIDTH;
+            }
+          } else {
+            if (height > MAX_HEIGHT) {
+              width *= MAX_HEIGHT / height;
+              height = MAX_HEIGHT;
+            }
+          }
+          canvas.width = Math.round(width);
+          canvas.height = Math.round(height);
+          const ctx = canvas.getContext("2d");
+          ctx?.drawImage(img, 0, 0, canvas.width, canvas.height);
+          const compressed = canvas.toDataURL("image/jpeg", 0.72);
+          resolve(compressed);
+        };
+        img.onerror = () => resolve(e.target?.result as string);
+        img.src = e.target?.result as string;
+      };
+      reader.readAsDataURL(file);
+    });
+  };
+
+  // Handle cover image file selection → compress to lightweight data URL
+  const handleCoverImageChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
     if (!file.type.startsWith("image/")) {
       alert("Please select an image file (JPG, PNG, GIF, WebP).");
       return;
     }
-    if (file.size > 5 * 1024 * 1024) {
-      alert("Image must be smaller than 5 MB.");
-      return;
-    }
     setCoverFileName(file.name);
-    const reader = new FileReader();
-    reader.onloadend = () => setCoverImage(reader.result as string);
-    reader.readAsDataURL(file);
+    try {
+      const compressedDataUrl = await compressImageFile(file);
+      setCoverImage(compressedDataUrl);
+    } catch {
+      const reader = new FileReader();
+      reader.onloadend = () => setCoverImage(reader.result as string);
+      reader.readAsDataURL(file);
+    }
   };
 
   const removeCoverImage = () => {
@@ -118,6 +171,25 @@ export default function CreateEventPage() {
     setErrorMsg("");
     setSuccess(false);
 
+    if (!data.location || !data.location.trim()) {
+      setErrorMsg("Please enter a valid venue or location.");
+      setIsSubmitting(false);
+      return;
+    }
+
+    if (!pinnedLat || !pinnedLng) {
+      setErrorMsg("Venue location is not pinned. Please type an address or click the map to set a pin.");
+      setIsSubmitting(false);
+      return;
+    }
+
+    const user = getCurrentUser();
+    const orgName = user?.organization || user?.name || "Metro Creative Group";
+    const isApproved = getVerificationState(orgName).status === "approved";
+
+    const parsedCapacity = data.hasCapacityLimit && data.capacity ? Number(data.capacity) : null;
+    const requireApproval = Boolean(data.requireApproval);
+
     const newEventObj = {
       id: `event-${Date.now()}`,
       title: data.title,
@@ -125,44 +197,91 @@ export default function CreateEventPage() {
       date: `${data.date} ${data.time}:00`,
       price: data.isFree ? 0 : data.price,
       status: "active",
-      organizer: "Metro Creative Group",
-      verified: true,
+      organizer: orgName,
+      verified: isApproved,
       location: data.location,
       city: "Manila",
+      latitude: pinnedLat,
+      longitude: pinnedLng,
       categories: [data.category],
       registrations: 0,
+      capacity: parsedCapacity,
+      requireApproval: requireApproval,
       confirmedAt: new Date().toISOString(),
       coverImage: coverImage || null,
+      image: coverImage || null,
     };
 
+    // 1. Immediately save to directory and broadcast so event is instantly published
+    saveStoredEvent(newEventObj as any);
+    setPublishedEventId(newEventObj.id);
+    setSuccess(true);
+    addNotification({
+      type: "announcement",
+      title: `New Event: "${data.title}"`,
+      message: `${orgName} published a new event at ${data.location}. Check out details and RSVP!`,
+      targetRole: "user",
+      link: `/events/${newEventObj.id}`,
+    });
+
+    // 2. Fire-and-forget sync to API in background with 2-second timeout (never blocks UI)
     try {
-      await fetch("/api/events", {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 2000);
+      fetch("/api/events", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
+        signal: controller.signal,
         body: JSON.stringify({
+          id: newEventObj.id,
           title: data.title,
           description: data.description,
           category: data.category,
           date: data.date,
           time: data.time,
           location: data.location,
+          latitude: pinnedLat,
+          longitude: pinnedLng,
           price: data.isFree ? 0 : data.price,
-          registrationInfo: data.registrationLimit,
+          capacity: parsedCapacity,
+          requireApproval: requireApproval,
+          organizer: "Metro Creative Group",
+          coverImage: coverImage || null,
         }),
-      });
+      })
+        .catch(() => {})
+        .finally(() => clearTimeout(timer));
     } catch {}
 
-    saveStoredEvent(newEventObj as any);
-    setSuccess(true);
-    addNotification({
-      type: "announcement",
-      title: `New Event: "${data.title}"`,
-      message: `Metro Creative Group published a new event at ${data.location}. Check out details and RSVP!`,
-      targetRole: "user",
-      link: `/events/${newEventObj.id}`,
+    // Reset form fields back to empty/default and clear uploaded cover image
+    reset({
+      price: 0,
+      isFree: true,
+      category: "School Events",
+      title: "",
+      description: "",
+      location: "",
+      date: `${new Date().getFullYear()}-10-24`,
+      time: "14:00",
+      hasCapacityLimit: false,
+      capacity: 50,
+      requireApproval: false,
     });
+    removeCoverImage();
+    setPinnedLat(14.5638);
+    setPinnedLng(120.9965);
+    try {
+      localStorage.removeItem("spott_event_draft");
+    } catch {}
 
     setIsSubmitting(false);
+  };
+
+  const onInvalid = (fieldErrors: any) => {
+    const firstKey = Object.keys(fieldErrors)[0];
+    const message = fieldErrors[firstKey]?.message || "Please fill in all required fields.";
+    setErrorMsg(message);
+    window.scrollTo({ top: 0, behavior: "smooth" });
   };
 
   return (
@@ -193,17 +312,35 @@ export default function CreateEventPage() {
 
       {/* Alerts */}
       {success && (
-        <div className="p-4 bg-emerald-50 text-emerald-800 rounded-2xl border border-emerald-200 font-bold flex items-center justify-between">
+        <div className="p-4 bg-emerald-50 text-emerald-800 rounded-2xl border border-emerald-200 font-bold flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-xs">
           <div className="flex items-center gap-2">
-            <CheckCircle2 className="w-5 h-5 text-emerald-600" />
-            <span>Event published successfully! It is now live in the Spott feed.</span>
+            <CheckCircle2 className="w-5 h-5 text-emerald-600 shrink-0" />
+            <span>Event published successfully! It is now live in the Spott feed and across all pages.</span>
           </div>
-          <Link
-            href="/discover"
-            className="text-xs font-black underline hover:text-emerald-950 px-3 py-1 bg-emerald-100 rounded-lg"
-          >
-            View in Discover
-          </Link>
+          <div className="flex items-center gap-2 shrink-0">
+            {publishedEventId && (
+              <Link
+                href={`/events/${publishedEventId}`}
+                className="text-xs bg-emerald-600 text-white px-3 py-1.5 rounded-lg hover:bg-emerald-700 transition font-bold no-underline inline-flex items-center gap-1"
+              >
+                View Live Event →
+              </Link>
+            )}
+            <Link
+              href="/organizer"
+              className="text-xs bg-white text-emerald-800 border border-emerald-300 px-3 py-1.5 rounded-lg hover:bg-emerald-100 transition font-bold no-underline"
+            >
+              Dashboard
+            </Link>
+            <button
+              type="button"
+              onClick={() => setSuccess(false)}
+              className="text-emerald-700 hover:text-emerald-950 p-1 text-sm font-bold cursor-pointer ml-1"
+              title="Dismiss notification"
+            >
+              ✕
+            </button>
+          </div>
         </div>
       )}
 
@@ -215,14 +352,21 @@ export default function CreateEventPage() {
       )}
 
       {errorMsg && (
-        <div className="p-4 bg-red-50 text-red-700 rounded-2xl border border-red-200 text-sm font-bold">
-          {errorMsg}
+        <div className="p-4 bg-red-50 text-red-700 rounded-2xl border border-red-200 text-sm font-bold flex items-center justify-between">
+          <span>{errorMsg}</span>
+          <button
+            type="button"
+            onClick={() => setErrorMsg("")}
+            className="text-red-700 hover:text-red-950 p-1 text-xs font-bold cursor-pointer"
+          >
+            ✕
+          </button>
         </div>
       )}
 
       {/* Main Form Card */}
       <div className="bg-white border border-[#e6e1d8] rounded-2xl p-6 sm:p-8 shadow-sm">
-        <form onSubmit={handleSubmit(onSubmit)} className="space-y-6">
+        <form onSubmit={handleSubmit(onSubmit, onInvalid)} className="space-y-6">
 
           {/* ── Cover Image Upload ── */}
           <div>
@@ -370,22 +514,50 @@ export default function CreateEventPage() {
           </div>
 
           {/* Location */}
-          <div>
-            <label className="block text-xs sm:text-sm font-bold text-[#171717] mb-1.5">
-              Location / Venue
-            </label>
-            <input
-              {...register("location")}
-              placeholder="e.g. Room 102, Campus Arts Hall"
-              className={`w-full border rounded-xl px-4 py-3 text-sm font-medium focus:outline-none transition-all ${
-                errors.location
-                  ? "border-red-400"
-                  : "border-[#e6e1d8] focus:border-[#ff6b35] focus:ring-1 focus:ring-[#ff6b35]/20"
-              }`}
+          <div className="space-y-3">
+            <div>
+              <label className="block text-xs sm:text-sm font-bold text-[#171717] mb-1.5 flex flex-wrap items-center justify-between gap-2">
+                <span className="flex items-center gap-2">
+                  <span>Location / Venue</span>
+                  {watch("location")?.trim() ? (
+                    <span className="text-[11px] font-bold text-emerald-700 bg-emerald-50 border border-emerald-300 px-2.5 py-0.5 rounded-full inline-flex items-center gap-1 shadow-2xs">
+                      <Check className="w-3 h-3 text-emerald-600" /> Pinned ({pinnedLat.toFixed(4)}, {pinnedLng.toFixed(4)})
+                    </span>
+                  ) : (
+                    <span className="text-[11px] font-semibold text-amber-700 bg-amber-50 border border-amber-200 px-2 py-0.5 rounded-full inline-flex items-center gap-1">
+                      Type venue to auto-pin
+                    </span>
+                  )}
+                </span>
+                <span className="text-[11px] font-normal text-[#888888]">
+                  Auto-pins marker on map
+                </span>
+              </label>
+              <input
+                {...register("location")}
+                placeholder="e.g. DAC Theater, D+A Campus, De La Salle-College of Saint Benilde, Malate, Manila"
+                className={`w-full border rounded-xl px-4 py-3 text-sm font-medium focus:outline-none transition-all ${
+                  errors.location
+                    ? "border-red-400"
+                    : "border-[#e6e1d8] focus:border-[#ff6b35] focus:ring-1 focus:ring-[#ff6b35]/20"
+                }`}
+              />
+              {errors.location && (
+                <p className="text-red-500 text-xs mt-1 font-semibold">{errors.location.message}</p>
+              )}
+            </div>
+
+            {/* Pin Location on Map */}
+            <LocationPicker
+              locationValue={watch("location") || ""}
+              onLocationChange={(val) => setValue("location", val, { shouldValidate: true })}
+              lat={pinnedLat}
+              lng={pinnedLng}
+              onCoordinatesChange={(lat, lng) => {
+                setPinnedLat(lat);
+                setPinnedLng(lng);
+              }}
             />
-            {errors.location && (
-              <p className="text-red-500 text-xs mt-1 font-semibold">{errors.location.message}</p>
-            )}
           </div>
 
           {/* Category & Price Grid */}
@@ -398,10 +570,17 @@ export default function CreateEventPage() {
                 {...register("category")}
                 className="w-full border border-[#e6e1d8] rounded-xl px-4 py-3 text-sm font-bold bg-white focus:outline-none focus:border-[#ff6b35]"
               >
-                <option value="School Events">School Events</option>
-                <option value="Concerts">Concerts</option>
-                <option value="Workshops">Workshops</option>
+                <option value="Music & Concerts">Music & Concerts</option>
                 <option value="Night Markets">Night Markets</option>
+                <option value="School Events">School Events</option>
+                <option value="Food & Drinks">Food & Drinks</option>
+                <option value="Art & Culture">Art & Culture</option>
+                <option value="Workshops">Workshops</option>
+                <option value="Sports & Fitness">Sports & Fitness</option>
+                <option value="Tech">Tech</option>
+                <option value="Comedy">Comedy</option>
+                <option value="Outdoor">Outdoor</option>
+                <option value="Networking">Networking</option>
               </select>
             </div>
 
@@ -436,16 +615,80 @@ export default function CreateEventPage() {
             </div>
           </div>
 
-          {/* Registration Info */}
-          <div>
-            <label className="block text-xs sm:text-sm font-bold text-[#171717] mb-1.5">
-              Registration Info
-            </label>
-            <input
-              {...register("registrationLimit")}
-              placeholder="Max attendees (leave empty if unlimited)"
-              className="w-full border border-[#e6e1d8] rounded-xl px-4 py-3 text-sm font-medium focus:outline-none focus:border-[#ff6b35]"
-            />
+          {/* Capacity & RSVP Approval Settings */}
+          <div className="bg-[#faf8f3] border border-[#e6e1d8] rounded-2xl p-4 sm:p-5 space-y-4">
+            <div>
+              <h3 className="text-sm font-black text-[#171717] flex items-center gap-2">
+                <span>Capacity & Registration Rules</span>
+              </h3>
+              <p className="text-xs text-[#666666] mt-0.5">
+                Set attendee limits and choose whether to screen/approve reservations.
+              </p>
+            </div>
+
+            {/* Capacity Limit Checkbox & Input */}
+            <div className="space-y-3 pt-1">
+              <label className="flex items-start gap-2.5 cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  {...register("hasCapacityLimit")}
+                  className="w-4 h-4 mt-0.5 rounded text-[#ff6b35] focus:ring-[#ff6b35] border-[#e6e1d8] accent-[#ff6b35]"
+                />
+                <div>
+                  <span className="text-xs sm:text-sm font-bold text-[#171717] block">
+                    Limit attendee capacity (Limited Slots)
+                  </span>
+                  <span className="text-xs text-[#777]">
+                    Leave unchecked if this event has unlimited slots.
+                  </span>
+                </div>
+              </label>
+
+              {watch("hasCapacityLimit") && (
+                <div className="pl-6 pt-1">
+                  <label className="block text-xs font-bold text-[#171717] mb-1">
+                    Maximum Capacity / Available Seats
+                  </label>
+                  <div className="flex items-center gap-2 max-w-xs">
+                    <input
+                      type="number"
+                      min={1}
+                      {...register("capacity")}
+                      placeholder="e.g. 50"
+                      className="w-full border border-[#e6e1d8] rounded-xl px-4 py-2.5 text-sm font-bold bg-white focus:outline-none focus:border-[#ff6b35]"
+                    />
+                    <span className="text-xs text-[#888] font-bold shrink-0">slots</span>
+                  </div>
+                  {errors.capacity && (
+                    <p className="text-red-500 text-xs mt-1 font-semibold">{errors.capacity.message}</p>
+                  )}
+                </div>
+              )}
+            </div>
+
+            {/* Require Approval Toggle */}
+            <div className="pt-3 border-t border-[#e6e1d8]">
+              <label className="flex items-start gap-2.5 cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  {...register("requireApproval")}
+                  className="w-4 h-4 mt-0.5 rounded text-[#ff6b35] focus:ring-[#ff6b35] border-[#e6e1d8] accent-[#ff6b35]"
+                />
+                <div>
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className="text-xs sm:text-sm font-bold text-[#171717]">
+                      Require Organizer Approval for RSVPs
+                    </span>
+                    <span className="text-[10px] font-black uppercase tracking-wider px-2 py-0.5 rounded-full bg-amber-100 text-amber-800 border border-amber-200">
+                      Screening / Pending
+                    </span>
+                  </div>
+                  <span className="text-xs text-[#666] block mt-0.5">
+                    When enabled, new attendees will enter a <strong>"Pending"</strong> queue in your RSVP Management dashboard until you click Approve.
+                  </span>
+                </div>
+              </label>
+            </div>
           </div>
 
           {/* Action Buttons */}
@@ -478,8 +721,8 @@ export default function CreateEventPage() {
 
       {/* ── Live Preview Modal ── */}
       {previewOpen && (
-        <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4">
-          <div className="bg-white rounded-3xl max-w-md w-full overflow-hidden shadow-2xl border border-[#e6e1d8]">
+        <div className="fixed inset-0 bg-black/60 z-[9999] flex items-center justify-center p-4 overflow-y-auto">
+          <div className="bg-white rounded-3xl max-w-md w-full overflow-hidden shadow-2xl border border-[#e6e1d8] relative z-10 my-auto">
 
             {/* Header: real image if uploaded, else gradient fallback */}
             <div className="relative h-52 flex flex-col justify-between text-white overflow-hidden">

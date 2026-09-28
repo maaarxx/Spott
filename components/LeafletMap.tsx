@@ -10,6 +10,7 @@ type LeafletMapProps = {
   onSelectEvent?: (event: EventData) => void;
   center?: { lat: number; lng: number };
   zoom?: number;
+  pinMode?: boolean;
 };
 
 export default function LeafletMap({
@@ -18,6 +19,7 @@ export default function LeafletMap({
   onSelectEvent,
   center,
   zoom = 13,
+  pinMode = false,
 }: LeafletMapProps) {
   const mapContainerRef = useRef<HTMLDivElement>(null);
   const mapInstanceRef = useRef<L.Map | null>(null);
@@ -84,18 +86,26 @@ export default function LeafletMap({
       const priceText = isFree ? "Free" : `₱${event.price}`;
       const isSelected = selectedEventId === event.id;
 
-      // Custom HTML pill marker icon matching wireframe & Spott design
-      const markerHtml = `
-        <div class="spott-marker-pill ${isSelected ? "selected" : ""} ${isFree ? "free" : ""}">
-          ${priceText}
-        </div>
-      `;
+      // Custom HTML pin marker (clean teardrop pin for venue/location mode, or price pill for discover mode)
+      const markerHtml = pinMode
+        ? `
+          <div style="transform:translate(-50%,-100%);filter:drop-shadow(0 3px 6px rgba(0,0,0,0.35));cursor:pointer;">
+            <div style="background-color:#ff6b35;width:32px;height:32px;border-radius:50% 50% 50% 0;transform:rotate(-45deg);display:flex;align-items:center;justify-content:center;border:2.5px solid white;box-shadow:0 2px 6px rgba(0,0,0,0.2);">
+              <div style="width:10px;height:10px;background-color:white;border-radius:50%;transform:rotate(45deg);"></div>
+            </div>
+          </div>
+        `
+        : `
+          <div class="spott-marker-pill ${isSelected ? "selected" : ""} ${isFree ? "free" : ""}">
+            ${priceText}
+          </div>
+        `;
 
       const customIcon = L.divIcon({
         html: markerHtml,
-        className: "spott-leaflet-marker",
-        iconSize: [60, 28],
-        iconAnchor: [30, 14],
+        className: pinMode ? "spott-location-pin" : "spott-leaflet-marker",
+        iconSize: pinMode ? [32, 32] : [60, 28],
+        iconAnchor: pinMode ? [16, 32] : [30, 14],
       });
 
       const marker = L.marker([lat, lng], { icon: customIcon }).addTo(map);
@@ -109,8 +119,9 @@ export default function LeafletMap({
           <h4 style="margin:2px 0 4px 0; font-size:14px; font-weight:800; color:#171717; line-height:1.2;">
             ${event.title}
           </h4>
-          <p style="margin:0 0 6px 0; font-size:12px; color:#666;">
-            📍 ${event.location || event.city}
+          <p style="margin:0 0 6px 0; font-size:12px; color:#666; display:flex; align-items:center; gap:4px;">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#ff6b35" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0;"><path d="M20 10c0 6-8 12-8 12s-8-6-8-12a8 8 0 0 1 16 0Z"/><circle cx="12" cy="10" r="3"/></svg>
+            <span>${event.location || event.city}</span>
           </p>
           <div style="display:flex; justify-content:space-between; align-items:center; border-top:1px solid #eee; padding-top:6px;">
             <span style="font-size:12px; font-weight:900; color:#171717;">

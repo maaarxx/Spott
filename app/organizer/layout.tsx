@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname, useSearchParams, useRouter } from "next/navigation";
-import { useState, Suspense } from "react";
+import { useState, Suspense, useEffect } from "react";
 import {
   LayoutGrid,
   CalendarDays,
@@ -18,7 +18,8 @@ import {
   Shield,
   User,
 } from "lucide-react";
-import { logout } from "@/lib/auth-store";
+import { logout, getCurrentUser, SpottAccount } from "@/lib/auth-store";
+import { getVerificationState, VerificationState } from "@/lib/verification-store";
 
 interface NavItem {
   id: string;
@@ -67,7 +68,12 @@ const navItems: NavItem[] = [
     href: "/organizer?tab=verification",
     label: "Verification",
     icon: ShieldCheck,
-    badge: "Pending",
+  },
+  {
+    id: "profile",
+    href: "/organizer?tab=profile",
+    label: "Profile",
+    icon: User,
   },
 ];
 
@@ -78,6 +84,27 @@ function OrganizerNavContent({ children }: { children: React.ReactNode }) {
   const router = useRouter();
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [userDropdownOpen, setUserDropdownOpen] = useState(false);
+  const [currentUser, setCurrentUser2] = useState<SpottAccount | null>(null);
+  const [verState, setVerState] = useState<VerificationState | null>(null);
+
+  useEffect(() => {
+    setCurrentUser2(getCurrentUser());
+    const onAuthChange = () => setCurrentUser2(getCurrentUser());
+    window.addEventListener("spott_auth_changed", onAuthChange);
+
+    setVerState(getVerificationState());
+    const onVerChange = () => setVerState(getVerificationState());
+    window.addEventListener("spott_verification_updated", onVerChange);
+
+    return () => {
+      window.removeEventListener("spott_auth_changed", onAuthChange);
+      window.removeEventListener("spott_verification_updated", onVerChange);
+    };
+  }, []);
+
+  const displayName = currentUser?.name || "Organizer";
+  const displayOrg = currentUser?.organization || "Spott Organizer";
+  const initials = displayName.split(" ").map((n: string) => n[0]).join("").toUpperCase().slice(0, 2);
 
   const isItemActive = (item: NavItem) => {
     if (item.id === "create") {
@@ -115,9 +142,9 @@ function OrganizerNavContent({ children }: { children: React.ReactNode }) {
               onClick={() => setUserDropdownOpen(!userDropdownOpen)}
               className="flex items-center gap-2.5 px-2 py-1.5 rounded-full hover:bg-gray-100 transition-colors cursor-pointer"
             >
-              <span className="text-sm font-bold text-[#171717] hidden sm:block">John Doe</span>
+              <span className="text-sm font-bold text-[#171717] hidden sm:block">{displayName}</span>
               <div className="w-9 h-9 rounded-full bg-[#e8e4dc] border border-[#d5cec3] flex items-center justify-center text-sm font-black text-[#171717]">
-                JD
+                {initials}
               </div>
               <ChevronDown className="w-3.5 h-3.5 text-[#666666] hidden sm:block" />
             </button>
@@ -126,8 +153,8 @@ function OrganizerNavContent({ children }: { children: React.ReactNode }) {
             {userDropdownOpen && (
               <div className="absolute right-0 mt-2 w-52 bg-white border border-[#e6e1d8] rounded-2xl shadow-xl py-2 z-50 animate-in fade-in slide-in-from-top-2">
                 <div className="px-4 py-2 border-b border-[#e6e1d8]">
-                  <p className="text-xs font-bold text-[#171717]">John Doe</p>
-                  <p className="text-[11px] text-[#ff6b35] font-semibold">Metro Creative Group</p>
+                  <p className="text-xs font-bold text-[#171717]">{displayName}</p>
+                  <p className="text-[11px] text-[#ff6b35] font-semibold">{displayOrg}</p>
                 </div>
 
                 <div className="pt-1">
@@ -176,9 +203,45 @@ function OrganizerNavContent({ children }: { children: React.ReactNode }) {
 
           {/* Navigation Items: Only currently active tab is highlighted */}
           <nav className="space-y-1.5 flex-1">
-            {navItems.map((item) => {
-              const active = isItemActive(item);
-              const Icon = item.icon;
+            {navItems
+              .filter((item) => {
+                // If verified, hide the verification tab. It only returns if rejected or removed/reset by admin!
+                if (item.id === "verification") {
+                  return verState?.status !== "approved";
+                }
+                return true;
+              })
+              .map((item) => {
+                const active = isItemActive(item);
+                const Icon = item.icon;
+
+              let badgeText = item.badge;
+              let badgeStyle = active
+                ? "bg-[#ff6b35] text-white"
+                : item.badge === "Pending"
+                ? "bg-amber-100 text-amber-800"
+                : "bg-gray-100 text-[#555555] group-hover:bg-gray-200";
+
+              if (item.id === "verification") {
+                if (verState?.status === "approved") {
+                  badgeText = "Verified";
+                  badgeStyle = active
+                    ? "bg-emerald-600 text-white"
+                    : "bg-emerald-100 text-emerald-800";
+                } else if (verState?.status === "rejected") {
+                  badgeText = "Declined";
+                  badgeStyle = active
+                    ? "bg-rose-600 text-white"
+                    : "bg-rose-100 text-rose-800";
+                } else if (verState?.documents && verState.documents.length > 0) {
+                  badgeText = "Pending";
+                  badgeStyle = active
+                    ? "bg-amber-500 text-white"
+                    : "bg-amber-100 text-amber-800";
+                } else {
+                  badgeText = undefined;
+                }
+              }
 
               return (
                 <Link
@@ -205,17 +268,11 @@ function OrganizerNavContent({ children }: { children: React.ReactNode }) {
                     </span>
                   </div>
 
-                  {item.badge && (
+                  {badgeText && (
                     <span
-                      className={`text-[10px] font-black px-2.5 py-0.5 rounded-full transition-colors ${
-                        active
-                          ? "bg-[#ff6b35] text-white"
-                          : item.badge === "Pending"
-                          ? "bg-amber-100 text-amber-800"
-                          : "bg-gray-100 text-[#555555] group-hover:bg-gray-200"
-                      }`}
+                      className={`text-[10px] font-black px-2.5 py-0.5 rounded-full transition-colors ${badgeStyle}`}
                     >
-                      {item.badge}
+                      {badgeText}
                     </span>
                   )}
                 </Link>

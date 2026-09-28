@@ -2,6 +2,7 @@
 
 import { useState, useEffect, use } from "react";
 import { format } from "date-fns";
+import { useRouter } from "next/navigation";
 import {
   MapPin,
   CheckCircle2,
@@ -12,10 +13,26 @@ import {
   Building2,
   ExternalLink,
   ChevronLeft,
+  LogIn,
+  Lock,
+  X,
+  Users,
 } from "lucide-react";
 import Link from "next/link";
 import MapView from "@/components/MapView";
+import CancelRsvpModal from "@/components/CancelRsvpModal";
 import { DEFAULT_EVENTS } from "@/lib/default-events";
+import { getStoredEvents, saveStoredEvent, subscribeToEvents } from "@/lib/events-store";
+import { addNotification } from "@/lib/notifications-store";
+import {
+  getCurrentUser,
+  getUserSavedEvents,
+  saveUserSavedEvents,
+  getUserRegisteredEvents,
+  saveUserRegisteredEvents,
+  SPOTT_ACCOUNTS,
+  SpottAccount,
+} from "@/lib/auth-store";
 
 type EventDetail = {
   id: string;
@@ -35,6 +52,10 @@ type EventDetail = {
   latitude?: number;
   longitude?: number;
   confirmedAt?: string | null;
+  coverImage?: string | null;
+  image?: string | null;
+  capacity?: number | null;
+  requireApproval?: boolean;
 };
 
 export default function EventDetailsPage({
@@ -43,20 +64,24 @@ export default function EventDetailsPage({
   params: Promise<{ id: string }>;
 }) {
   const { id } = use(params);
-  const initialEvent = (DEFAULT_EVENTS.find((e) => e.id === id) || DEFAULT_EVENTS[0]) as EventDetail;
+  const initialEvent = (DEFAULT_EVENTS.find((e) => e.id === id) || null) as EventDetail | null;
+  const router = useRouter();
+  const [currentUser, setCurrentUser] = useState<SpottAccount | null>(null);
   const [event, setEvent] = useState<EventDetail | null>(initialEvent);
   const [loading, setLoading] = useState(false);
   const [isSaved, setIsSaved] = useState(false);
-  const [savedCount, setSavedCount] = useState(134);
+  const [savedCount, setSavedCount] = useState(0);
   const [rsvpd, setRsvpd] = useState(false);
-  const [rsvpCount, setRsvpCount] = useState(initialEvent?.registrations || 42);
+  const [attendeeStatus, setAttendeeStatus] = useState<"Confirmed" | "Pending" | "Declined" | null>(null);
+  const [rsvpCount, setRsvpCount] = useState(0);
   const [confirmationStatus, setConfirmationStatus] = useState<string | null>(null);
-  const [confirmationsCount, setConfirmationsCount] = useState(12);
+  const [confirmationsCount, setConfirmationsCount] = useState(0);
   const [showReport, setShowReport] = useState(false);
   const [reportReason, setReportReason] = useState("");
   const [reportSubmitted, setReportSubmitted] = useState(false);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
-
+  const [showCancelModal, setShowCancelModal] = useState(false);
+  const [isCancellingRsvp, setIsCancellingRsvp] = useState(false);
 
   const showToast = (msg: string) => {
     setToastMessage(msg);
@@ -66,59 +91,351 @@ export default function EventDetailsPage({
   };
 
   useEffect(() => {
-    const fetchEvent = async () => {
+    const getAccurateRsvps = (baseRegistrations: number, isUserRsvpd: boolean): number => {
+      let guestListCount = 0;
       try {
-        const res = await fetch(`/api/events/${id}`);
-        if (!res.ok) throw new Error("Failed to fetch event");
-        const data = await res.json();
-        setEvent(data);
-        if (data.registrations) setRsvpCount(data.registrations);
+        const rawGuests = localStorage.getItem("spott_guest_lists");
+        if (rawGuests) {
+          const guestMap = JSON.parse(rawGuests);
+          if (Array.isArray(guestMap[id])) {
+            guestListCount = guestMap[id].length;
+          }
+        }
+      } catch {}
+
+      return Math.max(baseRegistrations, guestListCount, isUserRsvpd ? 1 : 0);
+    };
+
+    // 1. Check saved & registered status scoped to logged-in user
+    const checkUserStatus = (): boolean => {
+      try {
+        const user = getCurrentUser();
+        setCurrentUser(user);
+
+        if (!user) {
+          setIsSaved(false);
+          setRsvpd(false);
+          setSavedCount(0);
+          return false;
+        }
+
+        const savedIds = getUserSavedEvents(user.email);
+        const hasSaved = savedIds.includes(id);
+        setIsSaved(hasSaved);
+        setSavedCount(hasSaved ? 1 : 0);
+
+        const regIds = getUserRegisteredEvents(user.email);
+        let hasReg = regIds.includes(id);
+        let foundStatus: "Confirmed" | "Pending" | "Declined" | null = null;
+
+        try {
+          const rawGuests = localStorage.getItem("spott_guest_lists");
+          if (rawGuests) {
+            const guestMap = JSON.parse(rawGuests);
+            const list = guestMap[id];
+            if (Array.isArray(list)) {
+              const matched = list.find(
+                (a: any) => a.email?.toLowerCase() === user.email.toLowerCase()
+              );
+              if (matched) {
+                foundStatus = matched.status || "Confirmed";
+                hasReg = matched.status !== "Declined";
+              }
+            }
+          }
+        } catch {}
+
+        if (hasReg && !foundStatus) {
+          foundStatus = "Confirmed";
+        }
+
+        setRsvpd(hasReg);
+        setAttendeeStatus(hasReg ? foundStatus : null);
+        return hasReg;
       } catch {
-        // Fallback to default events already initialized
+        setIsSaved(false);
+        setRsvpd(false);
+        setAttendeeStatus(null);
+        setSavedCount(0);
+        return false;
       }
     };
 
-    fetchEvent();
+    const isUserRegistered = checkUserStatus();
 
-    // Check if saved
-    try {
-      const stored = localStorage.getItem("spott_saved_events");
-      if (stored) {
-        const ids = JSON.parse(stored);
-        setIsSaved(ids.includes(id));
+    // 2. Check local storage first (organizer created events)
+    const stored = getStoredEvents();
+    const foundLocal = stored.find((e) => e.id === id);
+    if (foundLocal) {
+      setEvent(foundLocal as any);
+      const accurateCount = getAccurateRsvps(foundLocal.registrations || 0, isUserRegistered);
+      setRsvpCount(accurateCount);
+      setConfirmationsCount((foundLocal as any).confirmations || 0);
+
+      // If the directory had a lower number than the real confirmed registrations, sync it up
+      if ((foundLocal.registrations || 0) < accurateCount) {
+        foundLocal.registrations = accurateCount;
+        try {
+          const updated = stored.map((e) => (e.id === id ? { ...e, registrations: accurateCount } : e));
+          localStorage.setItem("spott_events_directory", JSON.stringify(updated));
+        } catch {}
       }
-    } catch {}
+    } else {
+      // 3. Otherwise fetch from API / fallback
+      const fetchEvent = async () => {
+        try {
+          const res = await fetch(`/api/events/${id}`);
+          if (!res.ok) throw new Error("Failed to fetch event");
+          const data = await res.json();
+          if (data && data.title) {
+            setEvent(data);
+            const accurateCount = getAccurateRsvps(data.registrations || 0, isUserRegistered);
+            setRsvpCount(accurateCount);
+            setConfirmationsCount(data.confirmations || (data.confirmedAt ? 3 : 0));
+          }
+        } catch {
+          const fallback = DEFAULT_EVENTS.find((e) => e.id === id);
+          if (fallback) {
+            setEvent(fallback as any);
+            const accurateCount = getAccurateRsvps(fallback.registrations || 0, isUserRegistered);
+            setRsvpCount(accurateCount);
+          }
+        }
+      };
+
+      fetchEvent();
+    }
+
+    const handleSyncUpdate = () => {
+      const isReg = checkUserStatus();
+      const currentStored = getStoredEvents();
+      const match = currentStored.find((e) => e.id === id);
+      const accurateCount = getAccurateRsvps(match?.registrations || 0, isReg);
+      setRsvpCount(accurateCount);
+    };
+
+    const unsubscribeEvents = subscribeToEvents(handleSyncUpdate);
+    window.addEventListener("spott_registered_updated", handleSyncUpdate);
+    window.addEventListener("spott_saved_updated", handleSyncUpdate);
+    window.addEventListener("spott_auth_changed", handleSyncUpdate);
+    return () => {
+      unsubscribeEvents();
+      window.removeEventListener("spott_registered_updated", handleSyncUpdate);
+      window.removeEventListener("spott_saved_updated", handleSyncUpdate);
+      window.removeEventListener("spott_auth_changed", handleSyncUpdate);
+    };
   }, [id]);
 
   const handleToggleSave = () => {
+    if (!currentUser) {
+      showToast("Please log in to save events.");
+      router.push(`/login?redirect=/events/${id}`);
+      return;
+    }
+
+    const user = currentUser || getCurrentUser();
+    if (!user) {
+      router.push(`/login?redirect=/events/${id}`);
+      return;
+    }
+
     try {
-      const stored = localStorage.getItem("spott_saved_events");
-      let ids: string[] = stored ? JSON.parse(stored) : [];
+      const currentSaves = getUserSavedEvents(user.email);
+      let ids = [...currentSaves];
+
       if (isSaved) {
         ids = ids.filter((itemId) => itemId !== id);
         setIsSaved(false);
         setSavedCount((c) => Math.max(0, c - 1));
         showToast("Event removed from your saved plan.");
       } else {
-        ids.push(id);
+        if (!ids.includes(id)) ids.push(id);
         setIsSaved(true);
         setSavedCount((c) => c + 1);
         showToast("Event saved to your plan!");
       }
-      localStorage.setItem("spott_saved_events", JSON.stringify(ids));
-      window.dispatchEvent(new Event("spott_saved_updated"));
+      saveUserSavedEvents(ids, user.email);
     } catch {}
   };
 
   const handleRSVP = () => {
+    if (!currentUser) {
+      showToast("Please log in to RSVP for this event.");
+      router.push(`/login?redirect=/events/${id}`);
+      return;
+    }
+
     if (rsvpd) {
-      setRsvpd(false);
-      setRsvpCount((c) => Math.max(0, c - 1));
-      showToast("RSVP cancelled.");
-    } else {
+      setShowCancelModal(true);
+      return;
+    }
+
+    try {
+      const user = currentUser || getCurrentUser();
+      if (!user) return;
+
+      const storedEvents = getStoredEvents();
+      const foundIndex = storedEvents.findIndex((e) => e.id === id);
+      const eventTarget = (foundIndex !== -1 ? storedEvents[foundIndex] : event) as EventDetail | null;
+
+      const requireApproval = Boolean(eventTarget?.requireApproval);
+      const isCapacityLimited = Boolean(eventTarget?.capacity && eventTarget.capacity > 0);
+      const currentConfirmed = eventTarget?.registrations || 0;
+      const isFull = isCapacityLimited && currentConfirmed >= (eventTarget?.capacity || 0);
+
+      const newStatus: "Confirmed" | "Pending" = (requireApproval || isFull) ? "Pending" : "Confirmed";
+
+      // 1. Update registered event IDs for user
+      const currentRegs = getUserRegisteredEvents(user.email);
+      let regIds = [...currentRegs];
+      if (!regIds.includes(id)) regIds.push(id);
+      saveUserRegisteredEvents(regIds, user.email);
+
+      // 2. Only increment registrations count if Confirmed
+      let newCount = currentConfirmed;
+      if (newStatus === "Confirmed") {
+        newCount = currentConfirmed + 1;
+        if (foundIndex !== -1) {
+          storedEvents[foundIndex].registrations = newCount;
+          localStorage.setItem("spott_events_directory", JSON.stringify(storedEvents));
+        } else if (event) {
+          const eventToSave = {
+            ...event,
+            registrations: newCount,
+          };
+          localStorage.setItem("spott_events_directory", JSON.stringify([eventToSave, ...storedEvents]));
+        }
+      }
+
+      // 3. Update organizer guest lists in spott_guest_lists
+      const rawGuests = localStorage.getItem("spott_guest_lists");
+      let guestMap: Record<string, any[]> = {};
+      try {
+        guestMap = rawGuests ? JSON.parse(rawGuests) : {};
+      } catch {}
+
+      let currentGuestList = guestMap[id] || [];
+      const alreadyAttendingIdx = currentGuestList.findIndex(
+        (a) => a.email?.toLowerCase() === user.email.toLowerCase() || a.id === user.email
+      );
+      const newAttendee = {
+        id: `att-${Date.now()}`,
+        name: user.name || "Guest Attendee",
+        email: user.email,
+        status: newStatus,
+        dateRegistered: new Date().toISOString().split("T")[0],
+        ticketType: "General Admission",
+        phone: "+63 917 123 4567",
+        notes: isFull ? "Waitlist (Event Full)" : requireApproval ? "Awaiting Screening" : "Direct RSVP",
+      };
+
+      if (alreadyAttendingIdx !== -1) {
+        currentGuestList[alreadyAttendingIdx] = newAttendee;
+      } else {
+        currentGuestList.unshift(newAttendee);
+      }
+      guestMap[id] = currentGuestList;
+      localStorage.setItem("spott_guest_lists", JSON.stringify(guestMap));
+
+      // 4. Update UI states
       setRsvpd(true);
-      setRsvpCount((c) => c + 1);
-      showToast("You are registered! See you there.");
+      setAttendeeStatus(newStatus);
+      setRsvpCount(newCount);
+      setEvent((prev) => (prev ? { ...prev, registrations: newCount } : null));
+
+      // 5. Notify organizer
+      addNotification({
+        type: newStatus === "Pending" ? "reminder" : "announcement",
+        title: newStatus === "Pending" ? `RSVP Needs Approval: "${eventTarget?.title}"` : `New Confirmed RSVP: "${eventTarget?.title}"`,
+        message: `${user.name} (${user.email}) registered for your event. Status: ${newStatus}.`,
+        targetRole: "organizer",
+        link: `/organizer/rsvp?eventId=${id}`,
+      });
+
+      // 6. Broadcast updates
+      window.dispatchEvent(new Event("spott_registered_updated"));
+      window.dispatchEvent(new Event("spott_events_updated"));
+
+      if (newStatus === "Pending") {
+        if (isFull) {
+          showToast("Event is full! You have been placed on the Pending waitlist.");
+        } else {
+          showToast("RSVP Submitted! Your registration is pending organizer review.");
+        }
+      } else {
+        showToast("You are registered! Check My Events to view your ticket.");
+      }
+    } catch (e) {
+      console.error("Failed to update RSVP:", e);
+    }
+  };
+
+  const handleConfirmCancelRSVP = () => {
+    const user = currentUser || getCurrentUser();
+    if (!user) return;
+    setIsCancellingRsvp(true);
+
+    try {
+      // 1. Remove from user registered IDs
+      const currentRegs = getUserRegisteredEvents(user.email);
+      const regIds = currentRegs.filter((itemId) => itemId !== id);
+      saveUserRegisteredEvents(regIds, user.email);
+
+      // Check if user was previously confirmed
+      const rawGuests = localStorage.getItem("spott_guest_lists");
+      let guestMap: Record<string, any[]> = {};
+      try {
+        guestMap = rawGuests ? JSON.parse(rawGuests) : {};
+      } catch {}
+
+      let currentGuestList = guestMap[id] || [];
+      const userAtt = currentGuestList.find(
+        (a) => a.email?.toLowerCase() === user.email.toLowerCase() || a.id === user.email
+      );
+      const wasConfirmed = userAtt?.status === "Confirmed";
+
+      // 2. Decrement registrations count in directory ONLY if was Confirmed
+      const storedEvents = getStoredEvents();
+      const foundIndex = storedEvents.findIndex((e) => e.id === id);
+      let newCount = event?.registrations || 0;
+
+      if (wasConfirmed) {
+        if (foundIndex !== -1) {
+          const currentCount = storedEvents[foundIndex].registrations || 0;
+          newCount = Math.max(0, currentCount - 1);
+          storedEvents[foundIndex].registrations = newCount;
+          localStorage.setItem("spott_events_directory", JSON.stringify(storedEvents));
+        } else if (event) {
+          const currentCount = event.registrations || 0;
+          newCount = Math.max(0, currentCount - 1);
+          const eventToSave = { ...event, registrations: newCount };
+          localStorage.setItem("spott_events_directory", JSON.stringify([eventToSave, ...storedEvents]));
+        }
+      }
+
+      // 3. Remove or mark declined in organizer guest lists
+      currentGuestList = currentGuestList.filter(
+        (a) => a.email?.toLowerCase() !== user.email.toLowerCase() && a.id !== user.email
+      );
+      guestMap[id] = currentGuestList;
+      localStorage.setItem("spott_guest_lists", JSON.stringify(guestMap));
+
+      // 4. Update UI states
+      setRsvpd(false);
+      setAttendeeStatus(null);
+      setRsvpCount(newCount);
+      setEvent((prev) => (prev ? { ...prev, registrations: newCount } : null));
+      setIsCancellingRsvp(false);
+      setShowCancelModal(false);
+
+      // 5. Broadcast updates
+      window.dispatchEvent(new Event("spott_registered_updated"));
+      window.dispatchEvent(new Event("spott_events_updated"));
+
+      showToast("RSVP cancelled. Your slot has been released.");
+    } catch {
+      setIsCancellingRsvp(false);
+      setShowCancelModal(false);
     }
   };
 
@@ -240,16 +557,26 @@ export default function EventDetailsPage({
           {/* ========================================================= */}
           <div className="lg:col-span-2 space-y-6">
             {/* Event Image Banner */}
-            <div className="w-full h-72 md:h-96 rounded-2xl bg-gradient-to-br from-[#222] via-[#2f3238] to-[#1e2025] flex flex-col items-center justify-center p-8 text-center text-white relative overflow-hidden select-none border border-line shadow-sm">
-              <span className="text-xs font-black uppercase tracking-[3px] text-accent/80 mb-2">
-                {categoryLabel}
-              </span>
-              <h2 className="text-2xl md:text-3xl font-black max-w-lg leading-tight m-0 text-white/90">
-                {event.title}
-              </h2>
-              <span className="text-xs text-gray-400 mt-2 font-medium">
-                📍 {event.location}
-              </span>
+            <div className="w-full h-72 md:h-96 rounded-2xl bg-[#faf8f3] relative overflow-hidden select-none border border-line shadow-sm">
+              {(event.coverImage || event.image) ? (
+                <img
+                  src={(event.coverImage || event.image)!}
+                  alt={event.title}
+                  className="w-full h-full object-cover"
+                />
+              ) : (
+                <div className="w-full h-full bg-gradient-to-br from-[#222] via-[#2f3238] to-[#1e2025] flex flex-col items-center justify-center p-8 text-center text-white">
+                  <span className="text-xs font-black uppercase tracking-[3px] text-accent/80 mb-2">
+                    {categoryLabel}
+                  </span>
+                  <h2 className="text-2xl md:text-3xl font-black max-w-lg leading-tight m-0 text-white/90">
+                    {event.title}
+                  </h2>
+                  <span className="text-xs text-gray-400 mt-2 font-medium flex items-center justify-center gap-1">
+                    <MapPin className="w-3.5 h-3.5 text-accent" /> {event.location}
+                  </span>
+                </div>
+              )}
             </div>
 
             {/* Badges Row */}
@@ -318,10 +645,18 @@ export default function EventDetailsPage({
                   ORGANIZER
                 </span>
                 <span className="col-span-2 md:col-span-3 font-semibold text-ink flex items-center gap-1.5">
-                  {event.organizer}
-                  {event.verified && (
-                    <CheckCircle2 className="w-4 h-4 text-[#14804a]" />
-                  )}
+                  <Link
+                    href={`/organizers/${encodeURIComponent(event.organizer || "Metro Creative Group")}`}
+                    className="inline-flex items-center gap-1.5 text-ink hover:text-accent font-semibold group transition-colors"
+                  >
+                    <span className="group-hover:underline underline-offset-2">
+                      {event.organizer || "Metro Creative Group"}
+                    </span>
+                    {event.verified && (
+                      <CheckCircle2 className="w-4 h-4 text-[#14804a] shrink-0" />
+                    )}
+                    <ExternalLink className="w-3.5 h-3.5 text-muted group-hover:text-accent transition-colors ml-0.5 opacity-70 group-hover:opacity-100" />
+                  </Link>
                 </span>
               </div>
             </div>
@@ -352,6 +687,7 @@ export default function EventDetailsPage({
               <div className="h-64 rounded-xl overflow-hidden border border-line relative shadow-xs">
                 <MapView
                   events={[event]}
+                  pinMode={true}
                   center={
                     event.latitude && event.longitude
                       ? { lat: event.latitude, lng: event.longitude }
@@ -431,41 +767,137 @@ export default function EventDetailsPage({
                 </h3>
               </div>
 
-              {/* RSVP Button */}
-              <button
-                type="button"
-                onClick={handleRSVP}
-                className={`w-full py-3.5 px-4 rounded-xl font-bold text-sm transition-all cursor-pointer ${
-                  rsvpd
-                    ? "bg-[#14804a] text-white shadow-sm hover:bg-[#0f683a]"
-                    : "bg-dark hover:bg-ink text-white"
-                }`}
-              >
-                {rsvpd ? "✓ Registered for this Event" : "RSVP / Register"}
-              </button>
+              {/* Event Capacity / Slots Progress Bar */}
+              {event?.capacity && event.capacity > 0 && (() => {
+                const slotsTaken = rsvpCount || 0;
+                const capacity = event.capacity;
+                const slotsLeft = Math.max(0, capacity - slotsTaken);
+                const percent = Math.min(100, Math.round((slotsTaken / capacity) * 100));
+                const isFull = slotsLeft === 0;
 
-              {/* Save & Share Buttons */}
-              <div className="grid grid-cols-2 gap-3">
+                return (
+                  <div className="bg-[#faf8f3] border border-[#e6e1d8] rounded-xl p-3.5 space-y-2">
+                    <div className="flex items-center justify-between text-xs">
+                      <span className="font-bold text-[#171717] flex items-center gap-1.5">
+                        <Users className="w-3.5 h-3.5 text-[#ff6b35]" />
+                        <span>Event Capacity</span>
+                      </span>
+                      <span className={`font-black text-xs ${isFull ? "text-rose-600" : slotsLeft <= 5 ? "text-amber-600" : "text-emerald-700"}`}>
+                        {isFull ? "Event Full (Waitlist)" : `${slotsLeft} spot${slotsLeft !== 1 ? "s" : ""} left`}
+                      </span>
+                    </div>
+
+                    <div className="w-full bg-[#e6e1d8] h-2 rounded-full overflow-hidden">
+                      <div
+                        className={`h-full rounded-full transition-all duration-500 ${
+                          isFull
+                            ? "bg-rose-500"
+                            : slotsLeft <= 5
+                            ? "bg-amber-500"
+                            : "bg-[#ff6b35]"
+                        }`}
+                        style={{ width: `${percent}%` }}
+                      />
+                    </div>
+
+                    <div className="flex justify-between items-center text-[11px] text-[#777]">
+                      <span>{slotsTaken} registered</span>
+                      <span>{capacity} total slots</span>
+                    </div>
+                  </div>
+                );
+              })()}
+
+              {/* Require Approval Notice */}
+              {event?.requireApproval && (
+                <div className="p-2.5 rounded-xl bg-amber-50 border border-amber-200 text-amber-900 text-xs flex items-center gap-2">
+                  <Clock className="w-4 h-4 text-amber-600 shrink-0" />
+                  <span>
+                    <strong>Screening Active:</strong> RSVPs require organizer confirmation before admission.
+                  </span>
+                </div>
+              )}
+
+              {/* RSVP Button / Registered Status Card */}
+              {!currentUser ? (
                 <button
                   type="button"
-                  onClick={handleToggleSave}
-                  className={`border py-2.5 px-3 rounded-xl flex items-center justify-center gap-1.5 text-xs font-bold transition-colors cursor-pointer ${
-                    isSaved
-                      ? "bg-[#fff0e8] text-accent border-accent/40"
-                      : "border-line text-ink hover:bg-gray-50"
+                  onClick={handleRSVP}
+                  className="w-full py-3.5 px-4 rounded-xl font-bold text-sm bg-[#ff6b35] hover:bg-[#e0531f] text-white shadow-xs transition-all cursor-pointer flex items-center justify-center gap-2"
+                >
+                  <LogIn className="w-4 h-4 shrink-0" />
+                  <span>Log in to RSVP</span>
+                </button>
+              ) : rsvpd ? (
+                <div className="space-y-2">
+                  {attendeeStatus === "Pending" ? (
+                    <div className="w-full py-3 px-4 rounded-xl font-bold text-xs bg-amber-50 text-amber-900 border border-amber-300 flex items-center justify-center gap-2 shadow-xs text-center">
+                      <Clock className="w-4 h-4 text-amber-600 shrink-0" />
+                      <span>⏳ RSVP Pending Organizer Approval</span>
+                    </div>
+                  ) : (
+                    <div className="w-full py-3 px-4 rounded-xl font-bold text-sm bg-emerald-50 text-emerald-800 border border-emerald-200/80 flex items-center justify-center gap-2 shadow-xs">
+                      <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+                      <span>✓ Registered for this Event</span>
+                    </div>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => setShowCancelModal(true)}
+                    className="w-full py-2 px-3 text-xs font-semibold text-rose-600 hover:text-rose-700 hover:bg-rose-50/70 rounded-xl transition-colors border border-rose-200/80 flex items-center justify-center gap-1.5 cursor-pointer"
+                  >
+                    <X className="w-3.5 h-3.5" />
+                    <span>Cancel RSVP</span>
+                  </button>
+                </div>
+              ) : (
+                <button
+                  type="button"
+                  onClick={handleRSVP}
+                  className={`w-full py-3.5 px-4 rounded-xl font-bold text-sm transition-all cursor-pointer flex items-center justify-center gap-2 text-white ${
+                    event?.capacity && (event.registrations || 0) >= event.capacity
+                      ? "bg-amber-600 hover:bg-amber-700 shadow-sm"
+                      : event?.requireApproval
+                      ? "bg-[#ff6b35] hover:bg-[#e0531f] shadow-sm"
+                      : "bg-dark hover:bg-ink"
                   }`}
                 >
-                  <Bookmark
-                    className="w-4 h-4"
-                    fill={isSaved ? "currentColor" : "none"}
-                  />
-                  <span>{isSaved ? "Saved" : "Save"}</span>
+                  {event?.capacity && (event.registrations || 0) >= event.capacity ? (
+                    <span>Join Waitlist (RSVP Pending)</span>
+                  ) : event?.requireApproval ? (
+                    <span>Request RSVP (Awaits Approval)</span>
+                  ) : (
+                    <span>RSVP / Register</span>
+                  )}
                 </button>
+              )}
+
+              {/* Save & Share Buttons */}
+              <div className={currentUser ? "grid grid-cols-2 gap-3" : "flex"}>
+                {currentUser && (
+                  <button
+                    type="button"
+                    onClick={handleToggleSave}
+                    className={`border py-2.5 px-3 rounded-xl flex items-center justify-center gap-1.5 text-xs font-bold transition-colors cursor-pointer ${
+                      isSaved
+                        ? "bg-[#fff0e8] text-accent border-accent/40"
+                        : "border-line text-ink hover:bg-gray-50"
+                    }`}
+                  >
+                    <Bookmark
+                      className="w-4 h-4"
+                      fill={isSaved ? "currentColor" : "none"}
+                    />
+                    <span>{isSaved ? "Saved" : "Save"}</span>
+                  </button>
+                )}
 
                 <button
                   type="button"
                   onClick={handleShare}
-                  className="border border-line hover:bg-gray-50 text-ink py-2.5 px-3 rounded-xl flex items-center justify-center gap-1.5 text-xs font-bold transition-colors cursor-pointer"
+                  className={`border border-line hover:bg-gray-50 text-ink py-2.5 px-3 rounded-xl flex items-center justify-center gap-1.5 text-xs font-bold transition-colors cursor-pointer ${
+                    !currentUser ? "w-full" : ""
+                  }`}
                 >
                   <Share2 className="w-4 h-4" />
                   <span>Share</span>
@@ -473,119 +905,194 @@ export default function EventDetailsPage({
               </div>
 
               <div className="text-[11px] text-muted text-center">
-                Last updated: Sep 11, 2026 · 2:34 PM
+                Last updated: {event.confirmedAt ? format(new Date(event.confirmedAt), "MMM d, yyyy · h:mm a") : "Recently updated"}
               </div>
 
               <hr className="border-line m-0" />
 
-              {/* Still happening? Feedback */}
-              <div className="space-y-2.5">
-                <h4 className="font-bold text-sm text-ink m-0">Still happening?</h4>
-                <p className="text-xs text-muted m-0">
-                  {confirmationsCount} attendees confirmed this event is still on.
-                </p>
+              {/* Still happening? Feedback - only visible to logged-in users */}
+              {currentUser && (
+                <>
+                  <hr className="border-line m-0" />
+                  <div className="space-y-2.5">
+                    <h4 className="font-bold text-sm text-ink m-0">Still happening?</h4>
+                    <p className="text-xs text-muted m-0">
+                      {confirmationsCount > 0
+                        ? `${confirmationsCount} attendee${confirmationsCount > 1 ? "s" : ""} confirmed this event is still on.`
+                        : "No confirmations yet. Be the first to confirm!"}
+                    </p>
 
-                {confirmationStatus ? (
-                  <div className="p-2.5 bg-[#f0f9f4] border border-[#14804a]/20 rounded-lg text-xs font-bold text-[#14804a] text-center">
-                    ✓ {confirmationStatus}
-                  </div>
-                ) : (
-                  <div className="grid grid-cols-2 gap-2">
-                    <button
-                      type="button"
-                      onClick={() => handleConfirmation("yes")}
-                      className="py-2 px-3 border border-line rounded-lg text-xs font-bold hover:bg-[#faf8f3] hover:border-ink transition-colors cursor-pointer"
-                    >
-                      Yes, still on
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => handleConfirmation("not_sure")}
-                      className="py-2 px-3 border border-line rounded-lg text-xs font-bold hover:bg-[#faf8f3] transition-colors cursor-pointer text-muted"
-                    >
-                      Not sure
-                    </button>
-                  </div>
-                )}
-              </div>
-
-              <hr className="border-line m-0" />
-
-              {/* Activity Signal matching wireframe */}
-              <div className="space-y-2">
-                <h4 className="font-bold text-xs uppercase tracking-wider text-muted m-0 mb-3">
-                  Activity Signal
-                </h4>
-                <div className="flex justify-between text-xs py-1">
-                  <span className="text-muted">RSVPs</span>
-                  <span className="font-bold text-ink">{rsvpCount}</span>
-                </div>
-                <div className="flex justify-between text-xs py-1">
-                  <span className="text-muted">Saves</span>
-                  <span className="font-bold text-ink">{savedCount}</span>
-                </div>
-                <div className="flex justify-between text-xs py-1">
-                  <span className="text-muted">Confirmations</span>
-                  <span className="font-bold text-ink">{confirmationsCount}</span>
-                </div>
-              </div>
-
-              <hr className="border-line m-0" />
-
-              {/* POTENTIALLY OUTDATED Alert Box */}
-              <div className="p-3 bg-[#faf8f3] border border-line rounded-xl space-y-1">
-                <b className="text-[11px] font-black uppercase text-ink tracking-wider block">
-                  POTENTIALLY OUTDATED
-                </b>
-                <p className="text-[11px] text-muted leading-relaxed m-0">
-                  This event info was last verified over 14 days ago. Confirm with organizer.
-                </p>
-              </div>
-
-              {/* Report link & form */}
-              <div className="pt-1 text-center">
-                {reportSubmitted ? (
-                  <span className="text-xs text-[#14804a] font-bold">
-                    ✓ Report submitted to administrator
-                  </span>
-                ) : (
-                  <>
-                    <button
-                      type="button"
-                      onClick={() => setShowReport(!showReport)}
-                      className="text-xs text-muted hover:text-ink hover:underline cursor-pointer border-0 bg-transparent p-0"
-                    >
-                      Report this event
-                    </button>
-
-                    {showReport && (
-                      <form
-                        onSubmit={handleReportSubmit}
-                        className="mt-3 text-left space-y-2 p-3 bg-gray-50 border border-line rounded-xl animate-in fade-in"
-                      >
-                        <textarea
-                          value={reportReason}
-                          onChange={(e) => setReportReason(e.target.value)}
-                          maxLength={500}
-                          placeholder="Reason for report (required)..."
-                          className="w-full min-h-[70px] p-2 text-xs border border-line rounded-lg bg-white outline-none focus:border-accent"
-                          required
-                        />
+                    {confirmationStatus ? (
+                      <div className="p-2.5 bg-[#f0f9f4] border border-[#14804a]/20 rounded-lg text-xs font-bold text-[#14804a] text-center">
+                        ✓ {confirmationStatus}
+                      </div>
+                    ) : (
+                      <div className="grid grid-cols-2 gap-2">
                         <button
-                          type="submit"
-                          className="w-full py-1.5 bg-dark hover:bg-ink text-white font-bold text-xs rounded-lg cursor-pointer"
+                          type="button"
+                          onClick={() => handleConfirmation("yes")}
+                          className="py-2 px-3 border border-line rounded-lg text-xs font-bold hover:bg-[#faf8f3] hover:border-ink transition-colors cursor-pointer"
                         >
-                          Submit Report
+                          Yes, still on
                         </button>
-                      </form>
+                        <button
+                          type="button"
+                          onClick={() => handleConfirmation("not_sure")}
+                          className="py-2 px-3 border border-line rounded-lg text-xs font-bold hover:bg-[#faf8f3] transition-colors cursor-pointer text-muted"
+                        >
+                          Not sure
+                        </button>
+                      </div>
                     )}
-                  </>
-                )}
+                  </div>
+                </>
+              )}
+
+              <hr className="border-line m-0" />
+
+              {/* Activity Signal - numbers blurred for anonymous users */}
+              <div className="space-y-2">
+                <div className="flex items-center justify-between mb-3">
+                  <h4 className="font-bold text-xs uppercase tracking-wider text-muted m-0">
+                    Activity Signal
+                  </h4>
+                  {!currentUser && (
+                    <Link
+                      href={`/login?redirect=/events/${id}`}
+                      className="inline-flex items-center gap-1 text-[10px] font-bold text-[#ff6b35] hover:underline"
+                    >
+                      <Lock className="w-2.5 h-2.5" />
+                      <span>Log in to view</span>
+                    </Link>
+                  )}
+                </div>
+                <div className="flex justify-between items-center text-xs py-1">
+                  <span className="text-muted">RSVPs</span>
+                  {!currentUser ? (
+                    <span className="font-bold text-ink filter blur-[5px] select-none opacity-60">
+                      {rsvpCount > 0 ? rsvpCount : 12}
+                    </span>
+                  ) : (
+                    <span className="font-bold text-ink">{rsvpCount}</span>
+                  )}
+                </div>
+                <div className="flex justify-between items-center text-xs py-1">
+                  <span className="text-muted">Saves</span>
+                  {!currentUser ? (
+                    <span className="font-bold text-ink filter blur-[5px] select-none opacity-60">
+                      {savedCount > 0 ? savedCount : 8}
+                    </span>
+                  ) : (
+                    <span className="font-bold text-ink">{savedCount}</span>
+                  )}
+                </div>
+                <div className="flex justify-between items-center text-xs py-1">
+                  <span className="text-muted">Confirmations</span>
+                  {!currentUser ? (
+                    <span className="font-bold text-ink filter blur-[5px] select-none opacity-60">
+                      {confirmationsCount > 0 ? confirmationsCount : 5}
+                    </span>
+                  ) : (
+                    <span className="font-bold text-ink">{confirmationsCount}</span>
+                  )}
+                </div>
               </div>
+
+              <hr className="border-line m-0" />
+
+              {/* Dynamic Status / Outdated Alert Box */}
+              {(() => {
+                let isOutdated = false;
+                try {
+                  if (event.date) {
+                    const eventTime = new Date(event.date.replace(" ", "T")).getTime();
+                    isOutdated = Date.now() - eventTime > 14 * 24 * 60 * 60 * 1000;
+                  }
+                } catch {}
+
+                if (isOutdated) {
+                  return (
+                    <div className="p-3 bg-amber-50 border border-amber-200 rounded-xl space-y-1">
+                      <b className="text-[11px] font-black uppercase text-amber-900 tracking-wider block">
+                        POTENTIALLY OUTDATED
+                      </b>
+                      <p className="text-[11px] text-amber-800 leading-relaxed m-0">
+                        This event was scheduled over 14 days ago. Please confirm details with organizer.
+                      </p>
+                    </div>
+                  );
+                }
+
+                return (
+                  <div className="p-3 bg-emerald-50 border border-emerald-200 rounded-xl space-y-1">
+                    <div className="flex items-center gap-1.5 text-emerald-800">
+                      <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+                      <b className="text-[11px] font-black uppercase tracking-wider">
+                        VERIFIED & ACTIVE
+                      </b>
+                    </div>
+                    <p className="text-[11px] text-emerald-700 leading-relaxed m-0">
+                      This event is active and verified by {event.organizer || "Metro Creative Group"}.
+                    </p>
+                  </div>
+                );
+              })()}
+
+              {/* Report link & form - only for logged-in users */}
+              {currentUser && (
+                <div className="pt-1 text-center">
+                  {reportSubmitted ? (
+                    <span className="text-xs text-[#14804a] font-bold">
+                      ✓ Report submitted to administrator
+                    </span>
+                  ) : (
+                    <>
+                      <button
+                        type="button"
+                        onClick={() => setShowReport(!showReport)}
+                        className="text-xs text-muted hover:text-ink hover:underline cursor-pointer border-0 bg-transparent p-0"
+                      >
+                        Report this event
+                      </button>
+
+                      {showReport && (
+                        <form
+                          onSubmit={handleReportSubmit}
+                          className="mt-3 text-left space-y-2 p-3 bg-gray-50 border border-line rounded-xl animate-in fade-in"
+                        >
+                          <textarea
+                            value={reportReason}
+                            onChange={(e) => setReportReason(e.target.value)}
+                            maxLength={500}
+                            placeholder="Reason for report (required)..."
+                            className="w-full min-h-[70px] p-2 text-xs border border-line rounded-lg bg-white outline-none focus:border-accent"
+                            required
+                          />
+                          <button
+                            type="submit"
+                            className="w-full py-1.5 bg-dark hover:bg-ink text-white font-bold text-xs rounded-lg cursor-pointer"
+                          >
+                            Submit Report
+                          </button>
+                        </form>
+                      )}
+                    </>
+                  )}
+                </div>
+              )}
             </div>
           </div>
         </div>
       </div>
+
+      {/* Cancel RSVP Confirmation Modal */}
+      <CancelRsvpModal
+        isOpen={showCancelModal}
+        onClose={() => setShowCancelModal(false)}
+        onConfirm={handleConfirmCancelRSVP}
+        eventTitle={event?.title}
+        isSubmitting={isCancellingRsvp}
+      />
     </div>
   );
 }

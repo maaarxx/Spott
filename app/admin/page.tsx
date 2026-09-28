@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, Suspense } from "react";
+import { useState, useEffect, useMemo, Suspense } from "react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import {
@@ -52,7 +52,26 @@ import {
 } from "@/lib/verification-store";
 import PdfViewerModal from "@/components/PdfViewerModal";
 import { addNotification, removeNotificationsForEvent } from "@/lib/notifications-store";
-import { getStoredEvents, deleteStoredEvent } from "@/lib/events-store";
+import { getStoredEvents, deleteStoredEvent, saveStoredEvent, subscribeToEvents } from "@/lib/events-store";
+import {
+  getPendingOrganizers,
+  approveOrganizer,
+  rejectOrganizer,
+  subscribeToPendingOrganizers,
+  PendingOrganizer,
+  PENDING_ORGANIZERS_EVENT,
+} from "@/lib/pending-organizers-store";
+import {
+  AdminUser,
+  getAdminUsers,
+  saveAdminUsers,
+  subscribeToUsers,
+  registerUserInAdmin,
+  INITIAL_ADMIN_USERS,
+  USERS_STORE_KEY,
+  SIGNUP_STORE_KEY,
+} from "@/lib/users-store";
+
 
 interface Report {
   id: string;
@@ -76,15 +95,6 @@ interface VerificationReq {
   decisionReason?: string;
 }
 
-interface AdminUser {
-  id: string;
-  name: string;
-  email: string;
-  role: "Student" | "Organizer" | "SuperAdmin";
-  status: "Active" | "Pending" | "Suspended";
-  joined: string;
-}
-
 interface AdminEvent {
   id: string;
   title: string;
@@ -103,31 +113,13 @@ interface MonthlyData {
 }
 
 const initialReports: Report[] = [];
+const initialVerifications: VerificationReq[] = [];
 
-const now = new Date();
-const currentYear = now.getFullYear();
+const currentYear = new Date().getFullYear();
 const formatDate = (daysOffset: number = 0) => {
   const d = new Date(Date.now() + daysOffset * 86400000);
   return d.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
 };
-
-const initialVerifications: VerificationReq[] = [];
-
-const monthlyActivity: MonthlyData[] = [
-  { month: "May", events: 0, rsvps: 0, heightPercent: 4 },
-  { month: "Jun", events: 0, rsvps: 0, heightPercent: 4 },
-  { month: "Jul", events: 0, rsvps: 0, heightPercent: 4 },
-  { month: "Aug", events: 0, rsvps: 0, heightPercent: 4 },
-  { month: "Sep", events: 0, rsvps: 0, heightPercent: 4 },
-  { month: "Oct", events: 0, rsvps: 0, heightPercent: 4 },
-  { month: "Nov", events: 0, rsvps: 0, heightPercent: 4 },
-];
-
-const initialUsersList: AdminUser[] = [
-  { id: "u-1", name: "SuperAdmin", email: "admin@spott.ph", role: "SuperAdmin", status: "Active", joined: `Jan 01, ${currentYear}` },
-  { id: "u-2", name: "Metro Creative Group", email: "organizer@spott.ph", role: "Organizer", status: "Active", joined: `Jan 01, ${currentYear}` },
-  { id: "u-3", name: "Juan Dela Cruz", email: "user@spott.ph", role: "Student", status: "Active", joined: `Jan 01, ${currentYear}` },
-];
 
 const initialEventsList: AdminEvent[] = [];
 
@@ -137,10 +129,66 @@ function AdminContent() {
 
   const [reports, setReports] = useState<Report[]>(initialReports);
   const [verifications, setVerifications] = useState<VerificationReq[]>(initialVerifications);
-  const [usersList, setUsersList] = useState<AdminUser[]>(initialUsersList);
+  const [usersList, setUsersList] = useState<AdminUser[]>(INITIAL_ADMIN_USERS);
   const [eventsList, setEventsList] = useState<AdminEvent[]>(initialEventsList);
   const [hoveredMonth, setHoveredMonth] = useState<MonthlyData | null>(null);
   const [actionNotice, setActionNotice] = useState<string | null>(null);
+  const [pendingOrganizers, setPendingOrganizers] = useState<PendingOrganizer[]>([]);
+
+  // Dynamically compute monthly activity from eventsList
+  const monthlyActivity: MonthlyData[] = useMemo(() => {
+    const months = ["May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov"];
+    const monthStats: Record<string, { events: number; rsvps: number }> = {
+      May: { events: 0, rsvps: 0 },
+      Jun: { events: 0, rsvps: 0 },
+      Jul: { events: 0, rsvps: 0 },
+      Aug: { events: 0, rsvps: 0 },
+      Sep: { events: 0, rsvps: 0 },
+      Oct: { events: 0, rsvps: 0 },
+      Nov: { events: 0, rsvps: 0 },
+    };
+
+    eventsList.forEach((evt) => {
+      let mName = "";
+      if (evt.date) {
+        try {
+          const d = new Date(evt.date.includes(" ") ? evt.date.replace(" ", "T") : evt.date);
+          if (!isNaN(d.getTime())) {
+            mName = d.toLocaleString("en-US", { month: "short" });
+          }
+        } catch {}
+        if (!mName || !monthStats[mName]) {
+          const raw = evt.date.toLowerCase();
+          if (raw.includes("-05-") || raw.includes("may")) mName = "May";
+          else if (raw.includes("-06-") || raw.includes("jun")) mName = "Jun";
+          else if (raw.includes("-07-") || raw.includes("jul")) mName = "Jul";
+          else if (raw.includes("-08-") || raw.includes("aug")) mName = "Aug";
+          else if (raw.includes("-09-") || raw.includes("sep")) mName = "Sep";
+          else if (raw.includes("-10-") || raw.includes("oct")) mName = "Oct";
+          else if (raw.includes("-11-") || raw.includes("nov")) mName = "Nov";
+        }
+      }
+      if (mName && monthStats[mName]) {
+        monthStats[mName].events += 1;
+        monthStats[mName].rsvps += (evt.rsvps || 0);
+      }
+    });
+
+    const maxCount = Math.max(...Object.values(monthStats).map((s) => s.events), 1);
+
+    return months.map((m) => {
+      const stat = monthStats[m];
+      const heightPercent = stat.events > 0 
+        ? Math.max(25, Math.round((stat.events / maxCount) * 85))
+        : 6;
+      return {
+        month: m,
+        events: stat.events,
+        rsvps: stat.rsvps,
+        heightPercent,
+      };
+    });
+  }, [eventsList]);
 
   // Verification store state & PDF preview (SSR-safe initial baseline)
   const [verState, setVerState] = useState<VerificationState>(defaultVerificationState);
@@ -167,9 +215,8 @@ function AdminContent() {
       }
     };
 
-    const syncAdminEvents = () => {
-      const stored = getStoredEvents();
-      const mapped: AdminEvent[] = stored.map((e) => ({
+    const mapToAdminEvents = (list: any[]): AdminEvent[] => {
+      return list.map((e) => ({
         id: e.id,
         title: e.title,
         organizer: e.organizer || "Metro Creative Group",
@@ -178,17 +225,64 @@ function AdminContent() {
         rsvps: e.registrations || 0,
         status: (e.status === "active" ? "Active" : e.status === "draft" ? "Draft" : "Past") as any,
       }));
-      setEventsList(mapped);
+    };
+
+    const syncAdminEvents = async () => {
+      const stored = getStoredEvents();
+      setEventsList(mapToAdminEvents(stored));
+
+      try {
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), 1200);
+        const res = await fetch("/api/events", { signal: controller.signal });
+        clearTimeout(timer);
+        if (res.ok) {
+          const apiData = await res.json();
+          if (Array.isArray(apiData)) {
+            const freshStored = getStoredEvents();
+            const existingIds = new Set(freshStored.map((e) => e.id));
+            const newFromApi = apiData.filter((e: any) => !existingIds.has(e.id));
+            if (newFromApi.length > 0) {
+              newFromApi.forEach((item: any) => saveStoredEvent(item));
+            }
+            const merged = [...freshStored, ...newFromApi];
+            setEventsList(mapToAdminEvents(merged));
+          }
+        }
+      } catch {}
     };
 
     syncVerifications();
     syncAdminEvents();
 
+    // Real-time Users sync
+    const syncUsers = () => {
+      setUsersList(getAdminUsers());
+    };
+    syncUsers();
+    const unsubUsers = subscribeToUsers(syncUsers);
+
+    // Real-time Pending Organizers sync
+    const syncPendingOrgs = () => setPendingOrganizers(getPendingOrganizers());
+    syncPendingOrgs();
+    const unsubPendingOrgs = subscribeToPendingOrganizers(syncPendingOrgs);
+
+    // Heartbeat to guarantee multi-tab real-time sync even across backgrounded tabs
+    const syncInterval = setInterval(() => {
+      syncUsers();
+      syncPendingOrgs();
+    }, 1500);
+
+    const unsubscribeEvents = subscribeToEvents(syncAdminEvents);
     window.addEventListener("spott_verification_updated", syncVerifications);
-    window.addEventListener("spott_events_updated", syncAdminEvents);
+    window.addEventListener(PENDING_ORGANIZERS_EVENT, syncPendingOrgs);
     return () => {
+      unsubscribeEvents();
+      unsubUsers();
+      unsubPendingOrgs();
+      clearInterval(syncInterval);
       window.removeEventListener("spott_verification_updated", syncVerifications);
-      window.removeEventListener("spott_events_updated", syncAdminEvents);
+      window.removeEventListener(PENDING_ORGANIZERS_EVENT, syncPendingOrgs);
     };
   }, []);
 
@@ -210,13 +304,80 @@ function AdminContent() {
 
   // 1. User Management Handlers
   const handleSaveUser = (updated: AdminUser) => {
-    setUsersList((prev) => prev.map((u) => (u.id === updated.id ? updated : u)));
+    setUsersList((prev) => {
+      const next = prev.map((u) => (u.id === updated.id ? updated : u));
+      saveAdminUsers(next);
+      return next;
+    });
     setSelectedUser(null);
     showNotice(`Successfully updated account settings for ${updated.name}.`);
   };
 
+  const handleDeleteUser = (id: string, name: string) => {
+    if (!confirm(`Are you sure you want to remove ${name}'s account?`)) return;
+    setUsersList((prev) => {
+      const next = prev.filter((u) => u.id !== id);
+      saveAdminUsers(next);
+      return next;
+    });
+    setSelectedUser(null);
+    showNotice(`Removed ${name}'s account from system.`);
+  };
+
+  // Pending Organizer Approval Handlers
+  const handleApproveOrg = (org: PendingOrganizer) => {
+    // 1. Mark as approved in pending store
+    approveOrganizer(org.id);
+    // 2. Add to the signed-up users store so they can now log in
+    try {
+      const raw = localStorage.getItem(SIGNUP_STORE_KEY);
+      const existing = raw ? JSON.parse(raw) : [];
+      existing.push({
+        email: org.email,
+        password: org.password,
+        name: org.name,
+        role: "organizer",
+        destination: "/organizer",
+        organization: org.name,
+      });
+      localStorage.setItem(SIGNUP_STORE_KEY, JSON.stringify(existing));
+    } catch {}
+    // 3. Register into Admin store and sync
+    registerUserInAdmin({
+      name: org.name,
+      email: org.email,
+      role: "Organizer",
+      status: "Active",
+    });
+    setPendingOrganizers(getPendingOrganizers());
+    setUsersList(getAdminUsers());
+    showNotice(`✓ Approved organizer "${org.name}" — they can now log in.`);
+    addNotification({
+      type: "announcement",
+      title: "Organizer Account Approved",
+      message: `Your organizer account for "${org.name}" has been approved! You can now log in at Spott.`,
+      targetRole: "organizer",
+      link: "/login",
+    });
+  };
+
+  const handleRejectOrg = (org: PendingOrganizer) => {
+    rejectOrganizer(org.id);
+    setPendingOrganizers(getPendingOrganizers());
+    showNotice(`✕ Rejected organizer application for "${org.name}".`);
+  };
+
   // 2. Event Moderation Handlers
   const handleSaveEvent = (updated: AdminEvent) => {
+    try {
+      const stored = getStoredEvents();
+      const target = stored.find((e) => e.id === updated.id);
+      if (target) {
+        target.title = updated.title;
+        target.status = updated.status.toLowerCase() as any;
+        saveStoredEvent(target);
+      }
+    } catch {}
     setEventsList((prev) => prev.map((e) => (e.id === updated.id ? updated : e)));
     setSelectedEvent(null);
     showNotice(`Event "${updated.title}" status updated to ${updated.status}.`);
@@ -291,10 +452,8 @@ function AdminContent() {
           : v
       )
     );
-    if (name === "Metro Creative Group") {
-      setApprovalStatus("approved");
-      setVerState(getVerificationState());
-    }
+    setApprovalStatus("approved", undefined, name);
+    setVerState(getVerificationState("Metro Creative Group"));
     setSelectedVerification(null);
     showNotice(`✓ Approved verification for ${name}. Record moved to 30-Day Archive History.`);
     addNotification({
@@ -321,10 +480,8 @@ function AdminContent() {
           : v
       )
     );
-    if (name === "Metro Creative Group") {
-      setApprovalStatus("rejected");
-      setVerState(getVerificationState());
-    }
+    setApprovalStatus("rejected", undefined, name);
+    setVerState(getVerificationState("Metro Creative Group"));
     setSelectedVerification(null);
     showNotice(`✕ Declined verification for ${name}. Record moved to 30-Day Archive History.`);
     addNotification({
@@ -351,10 +508,8 @@ function AdminContent() {
           : v
       )
     );
-    if (name === "Metro Creative Group") {
-      setApprovalStatus("pending");
-      setVerState(getVerificationState());
-    }
+    setApprovalStatus("pending", undefined, name);
+    setVerState(getVerificationState("Metro Creative Group"));
     showNotice(`Restored ${name} to Active Verification Queue.`);
   };
 
@@ -415,12 +570,6 @@ function AdminContent() {
               <p className="text-sm text-[#666666] font-medium mt-1">
                 System moderation, organization verifications, and platform activity metrics.
               </p>
-            </div>
-            <div className="flex items-center gap-2">
-              <span className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-emerald-50 text-emerald-700 text-xs font-bold border border-emerald-200">
-                <span className="w-2 h-2 rounded-full bg-emerald-500 animate-ping" />
-                Live Supabase Sync
-              </span>
             </div>
           </div>
 
@@ -679,20 +828,35 @@ function AdminContent() {
                 </p>
               </div>
 
-              {hoveredMonth && (
+              {hoveredMonth ? (
                 <div className="inline-flex items-center gap-3 px-3 py-1.5 rounded-xl bg-[#fff0e8] border border-[#ff6b35]/20 text-xs font-bold text-[#ff6b35]">
-                  <span>{hoveredMonth.month} 2025:</span>
-                  <span className="text-[#171717]">{hoveredMonth.events} Events</span>
+                  <span>{hoveredMonth.month} {currentYear}:</span>
+                  <span className="text-[#171717]">{hoveredMonth.events} {hoveredMonth.events === 1 ? "Event" : "Events"}</span>
                   <span>•</span>
-                  <span className="text-[#171717]">{hoveredMonth.rsvps} RSVPs</span>
+                  <span className="text-[#171717]">{hoveredMonth.rsvps} {hoveredMonth.rsvps === 1 ? "RSVP" : "RSVPs"}</span>
                 </div>
+              ) : (
+                (() => {
+                  const activeOrPeak =
+                    monthlyActivity.find((m) => m.events > 0) ||
+                    monthlyActivity.find((m) => m.month === "Oct") ||
+                    monthlyActivity[0];
+                  return (
+                    <div className="inline-flex items-center gap-3 px-3 py-1.5 rounded-xl bg-[#faf8f3] border border-[#e6e1d8] text-xs font-bold text-[#666666]">
+                      <span>{activeOrPeak.month} {currentYear}:</span>
+                      <span className="text-[#171717]">{activeOrPeak.events} {activeOrPeak.events === 1 ? "Event" : "Events"}</span>
+                      <span>•</span>
+                      <span className="text-[#171717]">{activeOrPeak.rsvps} {activeOrPeak.rsvps === 1 ? "RSVP" : "RSVPs"}</span>
+                    </div>
+                  );
+                })()
               )}
             </div>
 
             <div className="pt-8 pb-4">
               <div className="h-52 flex items-end justify-between gap-3 sm:gap-8 px-4 border-b border-[#e6e1d8]">
                 {monthlyActivity.map((item) => {
-                  const isPeak = item.month === "Oct";
+                  const hasEvents = item.events > 0;
                   return (
                     <div
                       key={item.month}
@@ -700,7 +864,13 @@ function AdminContent() {
                       onMouseEnter={() => setHoveredMonth(item)}
                       onMouseLeave={() => setHoveredMonth(null)}
                     >
-                      <div className="opacity-0 group-hover:opacity-100 transition-opacity text-[11px] font-black text-[#171717] bg-white border border-[#e6e1d8] shadow-md px-2 py-0.5 rounded-md whitespace-nowrap mb-1">
+                      <div
+                        className={`text-[11px] font-black px-2 py-0.5 rounded-md whitespace-nowrap mb-1 transition-all ${
+                          hasEvents
+                            ? "opacity-100 text-[#ff6b35] bg-[#fff0e8] border border-[#ff6b35]/30 shadow-xs"
+                            : "opacity-0 group-hover:opacity-100 text-[#171717] bg-white border border-[#e6e1d8] shadow-md"
+                        }`}
+                      >
                         {item.events} evts
                       </div>
 
@@ -709,7 +879,7 @@ function AdminContent() {
                         className={`
                           w-full max-w-[48px] rounded-t-xl transition-all duration-300
                           ${
-                            isPeak
+                            hasEvents
                               ? "bg-gradient-to-t from-[#ff6b35] to-[#ff8c42] shadow-md group-hover:brightness-110"
                               : "bg-[#e6e1d8] group-hover:bg-[#ff6b35]/70"
                           }
@@ -717,7 +887,7 @@ function AdminContent() {
                       />
                       <span
                         className={`text-xs font-bold transition-colors ${
-                          isPeak ? "text-[#ff6b35]" : "text-[#666666] group-hover:text-[#171717]"
+                          hasEvents ? "text-[#ff6b35]" : "text-[#666666] group-hover:text-[#171717]"
                         }`}
                       >
                         {item.month}
@@ -731,7 +901,7 @@ function AdminContent() {
                 <span>May {currentYear}</span>
                 <span className="flex items-center gap-1.5 text-xs font-bold text-[#888888]">
                   {eventsList.length > 0 ? (
-                    <><TrendingUp className="w-3.5 h-3.5 text-[#ff6b35]" /> Event data accumulates as organizers publish listings</>
+                    <><TrendingUp className="w-3.5 h-3.5 text-[#ff6b35]" /> Event data accumulates as organizers publish listings ({eventsList.length} published)</>
                   ) : (
                     "No event data yet — chart will populate when events are published"
                   )}
@@ -767,6 +937,101 @@ function AdminContent() {
             </div>
           </div>
 
+          {/* ── Pending Organizer Approvals ── */}
+          {(() => {
+            const pendingOnes = pendingOrganizers.filter((o) => o.status === "pending");
+            const decidedOnes = pendingOrganizers.filter((o) => o.status !== "pending");
+            return (
+              <div className="bg-white border border-[#e6e1d8] rounded-2xl shadow-sm overflow-hidden">
+                <div className="p-5 border-b border-[#e6e1d8] flex items-center justify-between">
+                  <div>
+                    <h2 className="text-base font-black text-[#171717] flex items-center gap-2">
+                      Organizer Account Approvals
+                      {pendingOnes.length > 0 && (
+                        <span className="text-[10px] font-black px-2 py-0.5 rounded-full bg-amber-100 text-amber-700 border border-amber-200 animate-pulse">
+                          {pendingOnes.length} Pending
+                        </span>
+                      )}
+                    </h2>
+                    <p className="text-xs text-[#666666] mt-0.5">Review and approve or reject organizer registration requests.</p>
+                  </div>
+                </div>
+                {pendingOrganizers.length === 0 ? (
+                  <div className="py-10 text-center text-xs text-[#888888]">
+                    <UserCheck className="w-8 h-8 mx-auto mb-2 text-[#ccc]" />
+                    No organizer applications yet. New sign-ups will appear here.
+                  </div>
+                ) : (
+                  <table className="w-full text-left text-sm">
+                    <thead>
+                      <tr className="bg-[#faf8f3] border-b border-[#e6e1d8] text-[11px] font-black uppercase text-[#666666]">
+                        <th className="py-3 px-6">Organizer Name</th>
+                        <th className="py-3 px-6">Email</th>
+                        <th className="py-3 px-6">Submitted</th>
+                        <th className="py-3 px-6">Status</th>
+                        <th className="py-3 px-6 text-right">Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-[#e6e1d8]">
+                      {pendingOnes.map((org) => (
+                        <tr key={org.id} className="hover:bg-amber-50/30 transition-colors">
+                          <td className="py-4 px-6 font-bold text-[#171717]">{org.name}</td>
+                          <td className="py-4 px-6 text-xs text-[#555555] font-mono">{org.email}</td>
+                          <td className="py-4 px-6 text-xs text-[#666666]">
+                            {new Date(org.submittedAt).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}
+                          </td>
+                          <td className="py-4 px-6">
+                            <span className="text-xs font-bold text-amber-700 bg-amber-50 border border-amber-200 px-2 py-0.5 rounded-full">
+                              Pending
+                            </span>
+                          </td>
+                          <td className="py-4 px-6 text-right">
+                            <div className="flex items-center justify-end gap-2">
+                              <button
+                                onClick={() => handleApproveOrg(org)}
+                                className="px-3 py-1.5 bg-emerald-500 hover:bg-emerald-600 text-white rounded-lg text-xs font-black transition-colors cursor-pointer flex items-center gap-1"
+                              >
+                                <Check className="w-3 h-3" /> Approve
+                              </button>
+                              <button
+                                onClick={() => handleRejectOrg(org)}
+                                className="px-3 py-1.5 bg-rose-500 hover:bg-rose-600 text-white rounded-lg text-xs font-black transition-colors cursor-pointer flex items-center gap-1"
+                              >
+                                <X className="w-3 h-3" /> Reject
+                              </button>
+                            </div>
+                          </td>
+                        </tr>
+                      ))}
+                      {decidedOnes.map((org) => (
+                        <tr key={org.id} className="opacity-60">
+                          <td className="py-3 px-6 font-bold text-[#171717]">{org.name}</td>
+                          <td className="py-3 px-6 text-xs text-[#555555] font-mono">{org.email}</td>
+                          <td className="py-3 px-6 text-xs text-[#666666]">
+                            {new Date(org.submittedAt).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}
+                          </td>
+                          <td className="py-3 px-6">
+                            <span className={`text-xs font-bold px-2 py-0.5 rounded-full border ${
+                              org.status === "approved"
+                                ? "text-emerald-700 bg-emerald-50 border-emerald-200"
+                                : "text-rose-700 bg-rose-50 border-rose-200"
+                            }`}>
+                              {org.status === "approved" ? "Approved" : "Rejected"}
+                            </span>
+                          </td>
+                          <td className="py-3 px-6 text-right text-xs text-[#888888]">
+                            {org.decidedAt ? new Date(org.decidedAt).toLocaleDateString("en-US", { month: "short", day: "numeric" }) : "—"}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                )}
+              </div>
+            );
+          })()}
+
+          {/* ── Registered Users Table ── */}
           <div className="bg-white border border-[#e6e1d8] rounded-2xl shadow-sm overflow-hidden">
             <table className="w-full text-left text-sm">
               <thead>
@@ -788,7 +1053,7 @@ function AdminContent() {
                       <td className="py-4 px-6 text-xs text-[#555555] font-mono">{u.email}</td>
                       <td className="py-4 px-6">
                         <span className={`text-xs font-extrabold px-2.5 py-1 rounded-md ${
-                          u.role === "SuperAdmin" ? "bg-black text-white" : u.role === "Organizer" ? "bg-[#fff0e8] text-[#ff6b35]" : "bg-gray-100 text-gray-700"
+                          u.role === "Admin" ? "bg-black text-white" : u.role === "Organizer" ? "bg-[#fff0e8] text-[#ff6b35]" : "bg-gray-100 text-gray-700"
                         }`}>
                           {u.role}
                         </span>
@@ -1541,7 +1806,7 @@ function AdminContent() {
                 >
                   <option value="Student">Student (Standard Attendee)</option>
                   <option value="Organizer">Organizer (Event Creator)</option>
-                  <option value="SuperAdmin">SuperAdmin (Full Control)</option>
+                  <option value="Admin">Admin (Full Control)</option>
                 </select>
               </div>
 
@@ -1570,19 +1835,29 @@ function AdminContent() {
               </div>
             </div>
 
-            <div className="pt-3 border-t border-[#e6e1d8] flex justify-end gap-2">
+            <div className="pt-3 border-t border-[#e6e1d8] flex items-center justify-between gap-2">
               <button
-                onClick={() => setSelectedUser(null)}
-                className="px-4 py-2 border border-[#e6e1d8] rounded-xl text-xs font-bold text-[#555555] hover:bg-gray-50"
+                type="button"
+                onClick={() => handleDeleteUser(selectedUser.id, selectedUser.name)}
+                className="px-3.5 py-2 bg-rose-50 text-rose-700 hover:bg-rose-100 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-colors cursor-pointer"
               >
-                Cancel
+                <Trash2 className="w-3.5 h-3.5" />
+                <span>Delete</span>
               </button>
-              <button
-                onClick={() => handleSaveUser(selectedUser)}
-                className="px-5 py-2 bg-[#171717] hover:bg-[#ff6b35] text-white rounded-xl text-xs font-black shadow-md transition-colors"
-              >
-                Save Changes
-              </button>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => setSelectedUser(null)}
+                  className="px-4 py-2 border border-[#e6e1d8] rounded-xl text-xs font-bold text-[#555555] hover:bg-gray-50 cursor-pointer"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={() => handleSaveUser(selectedUser)}
+                  className="px-5 py-2 bg-[#171717] hover:bg-[#ff6b35] text-white rounded-xl text-xs font-black shadow-md transition-colors cursor-pointer"
+                >
+                  Save Changes
+                </button>
+              </div>
             </div>
           </div>
         </div>

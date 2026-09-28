@@ -1,9 +1,11 @@
 "use client";
 
+import { useState, useEffect } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { format } from "date-fns";
-import { CheckCircle2, Bookmark, MapPin, Calendar, ArrowUpRight } from "lucide-react";
+import { CheckCircle2, Bookmark, MapPin, Calendar, ArrowUpRight, Sparkles, Lock } from "lucide-react";
+import { getCurrentUser, SpottAccount } from "@/lib/auth-store";
 
 export type EventData = {
   id: string;
@@ -24,6 +26,12 @@ export type EventData = {
   longitude?: number;
   confirmedAt?: string | null;
   isSaved?: boolean;
+  coverImage?: string | null;
+  image?: string | null;
+  imageUrl?: string | null;
+  featuredReason?: string;
+  capacity?: number | null;
+  requireApproval?: boolean;
 };
 
 type EventCardProps = {
@@ -40,6 +48,14 @@ export default function EventCard({
   onClick,
 }: EventCardProps) {
   const router = useRouter();
+  const [currentUser, setCurrentUser] = useState<SpottAccount | null>(null);
+
+  useEffect(() => {
+    const sync = () => setCurrentUser(getCurrentUser());
+    sync();
+    window.addEventListener("spott_auth_changed", sync);
+    return () => window.removeEventListener("spott_auth_changed", sync);
+  }, []);
 
   let dateFormatted = "Upcoming";
   let shortDate = "Upcoming";
@@ -54,6 +70,7 @@ export default function EventCard({
   const priceLabel =
     Number(event.price) === 0 ? "Free Entry" : `₱${Number(event.price).toLocaleString()}`;
   const categoryLabel = event.categories?.[0] || "Community";
+  const eventImage = event.coverImage || event.image || event.imageUrl;
 
   const handleCardClick = (e: React.MouseEvent) => {
     // If the click originated from inside a button, let the button handle it
@@ -91,14 +108,24 @@ export default function EventCard({
       >
         {/* Thumbnail Visual */}
         <div
-          className="w-20 h-20 rounded-xl bg-gradient-to-br from-[#262626] to-[#444] text-white flex-shrink-0 flex flex-col items-center justify-center p-2 text-center transition-transform duration-200 group-hover:scale-105 shadow-sm"
+          className="w-20 h-20 rounded-xl bg-gradient-to-br from-[#262626] to-[#444] text-white flex-shrink-0 flex flex-col items-center justify-center text-center transition-transform duration-200 group-hover:scale-105 shadow-sm overflow-hidden relative"
         >
-          <span className="text-[10px] font-black uppercase text-accent tracking-wider">
-            {categoryLabel.slice(0, 4)}
-          </span>
-          <span className="text-xs font-black leading-tight mt-0.5">
-            {shortDate}
-          </span>
+          {eventImage ? (
+            <img
+              src={eventImage}
+              alt={event.title}
+              className="w-full h-full object-cover"
+            />
+          ) : (
+            <div className="p-2 flex flex-col items-center justify-center">
+              <span className="text-[10px] font-black uppercase text-accent tracking-wider">
+                {categoryLabel.slice(0, 4)}
+              </span>
+              <span className="text-xs font-black leading-tight mt-0.5">
+                {shortDate}
+              </span>
+            </div>
+          )}
         </div>
 
         {/* Middle Details */}
@@ -132,21 +159,23 @@ export default function EventCard({
         {/* Right Price & Save Button */}
         <div className="flex items-center gap-3 flex-shrink-0">
           <span className="text-sm font-bold text-ink">{priceLabel}</span>
-          <button
-            type="button"
-            onClick={handleSaveClick}
-            className={`flex items-center gap-1.5 text-xs font-bold px-3 py-2 rounded-lg border transition-all cursor-pointer relative z-10 ${
-              event.isSaved
-                ? "bg-[#fff0e8] text-accent border-accent/30 shadow-xs"
-                : "bg-white text-ink border-line hover:border-accent hover:text-accent hover:bg-[#faf8f3]"
-            }`}
-          >
-            <Bookmark
-              className="w-3.5 h-3.5"
-              fill={event.isSaved ? "currentColor" : "none"}
-            />
-            {event.isSaved ? "Saved" : "Save"}
-          </button>
+          {currentUser && (
+            <button
+              type="button"
+              onClick={handleSaveClick}
+              className={`flex items-center gap-1.5 text-xs font-bold px-3 py-2 rounded-lg border transition-all cursor-pointer relative z-10 ${
+                event.isSaved
+                  ? "bg-[#fff0e8] text-accent border-accent/30 shadow-xs"
+                  : "bg-white text-ink border-line hover:border-accent hover:text-accent hover:bg-[#faf8f3]"
+              }`}
+            >
+              <Bookmark
+                className="w-3.5 h-3.5"
+                fill={event.isSaved ? "currentColor" : "none"}
+              />
+              {event.isSaved ? "Saved" : "Save"}
+            </button>
+          )}
         </div>
       </div>
     );
@@ -167,28 +196,38 @@ export default function EventCard({
         }}
         className="bg-white border border-line rounded-2xl overflow-hidden hover:border-accent/40 hover:shadow-lg transition-all duration-200 flex flex-col group cursor-pointer"
       >
-        <div className="relative h-36 bg-gradient-to-br from-[#262626] to-[#4a4a4a] flex items-center justify-center text-white p-4 overflow-hidden">
-          <div className="absolute inset-0 bg-black/10 group-hover:bg-transparent transition-colors" />
-          <span className="text-xs font-black uppercase tracking-widest text-[#ff6b35]/80 group-hover:scale-105 transition-transform duration-300">
-            {categoryLabel}
-          </span>
+        <div className="relative h-36 bg-gradient-to-br from-[#262626] to-[#4a4a4a] flex items-center justify-center text-white overflow-hidden">
+          {eventImage ? (
+            <img
+              src={eventImage}
+              alt={event.title}
+              className="absolute inset-0 w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
+            />
+          ) : (
+            <span className="text-xs font-black uppercase tracking-widest text-[#ff6b35]/80 group-hover:scale-105 transition-transform duration-300">
+              {categoryLabel}
+            </span>
+          )}
+          <div className="absolute inset-0 bg-gradient-to-t from-black/60 via-transparent to-black/20" />
           <span className="absolute top-3 left-3 text-[10px] font-black uppercase bg-white text-ink px-2 py-0.5 rounded shadow-sm">
             {priceLabel}
           </span>
-          <button
-            type="button"
-            onClick={handleSaveClick}
-            className={`absolute top-3 right-3 w-8 h-8 rounded-full flex items-center justify-center transition-colors cursor-pointer z-10 ${
-              event.isSaved
-                ? "bg-accent text-white"
-                : "bg-white/90 text-ink hover:bg-white"
-            }`}
-          >
-            <Bookmark
-              className="w-4 h-4"
-              fill={event.isSaved ? "currentColor" : "none"}
-            />
-          </button>
+          {currentUser && (
+            <button
+              type="button"
+              onClick={handleSaveClick}
+              className={`absolute top-3 right-3 w-8 h-8 rounded-full flex items-center justify-center transition-colors cursor-pointer z-10 ${
+                event.isSaved
+                  ? "bg-accent text-white"
+                  : "bg-white/90 text-ink hover:bg-white"
+              }`}
+            >
+              <Bookmark
+                className="w-4 h-4"
+                fill={event.isSaved ? "currentColor" : "none"}
+              />
+            </button>
+          )}
         </div>
         <div className="p-4 flex flex-col flex-1">
           <div className="flex items-center gap-2 mb-1.5">
@@ -229,35 +268,51 @@ export default function EventCard({
       className="bg-white border border-line rounded-2xl overflow-hidden hover:border-accent/40 hover:shadow-xl hover:-translate-y-1 transition-all duration-200 flex flex-col group cursor-pointer select-none"
     >
       {/* Top Visual Area with Verified Pill */}
-      <div className="relative h-44 bg-gradient-to-br from-[#262626] via-[#333] to-[#4a4a4a] flex items-center justify-center p-4 overflow-hidden">
-        {/* Subtle decorative mesh shine */}
-        <div className="absolute inset-0 bg-radial from-white/5 to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-300" />
-
-        <span className="text-sm font-black tracking-widest text-[#ff6b35]/80 uppercase group-hover:scale-110 group-hover:text-[#ff6b35] transition-all duration-300">
-          {categoryLabel}
-        </span>
-
-        {event.verified && (
-          <div className="absolute top-3 left-3 bg-dark/95 backdrop-blur-xs text-white text-[10px] font-black px-2.5 py-1 rounded-md flex items-center gap-1 uppercase tracking-wider shadow-sm border border-white/10">
-            <CheckCircle2 className="w-3 h-3 text-[#14804a]" /> Verified
-          </div>
-        )}
-
-        <button
-          type="button"
-          onClick={handleSaveClick}
-          className={`absolute top-3 right-3 w-8 h-8 rounded-full flex items-center justify-center transition-transform hover:scale-110 cursor-pointer z-10 ${
-            event.isSaved
-              ? "bg-accent text-white shadow-sm"
-              : "bg-white/90 text-ink hover:bg-white shadow-sm"
-          }`}
-          title={event.isSaved ? "Remove from saved" : "Save event"}
-        >
-          <Bookmark
-            className="w-4 h-4"
-            fill={event.isSaved ? "currentColor" : "none"}
+      <div className="relative h-44 bg-gradient-to-br from-[#262626] via-[#333] to-[#4a4a4a] flex items-center justify-center overflow-hidden">
+        {eventImage ? (
+          <img
+            src={eventImage}
+            alt={event.title}
+            className="absolute inset-0 w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
           />
-        </button>
+        ) : (
+          <span className="text-sm font-black tracking-widest text-[#ff6b35]/80 uppercase group-hover:scale-110 group-hover:text-[#ff6b35] transition-all duration-300">
+            {categoryLabel}
+          </span>
+        )}
+        <div className="absolute inset-0 bg-gradient-to-t from-black/60 via-transparent to-black/20" />
+
+        <div className="absolute top-3 left-3 flex items-center gap-1.5 flex-wrap z-10">
+          {event.featuredReason && (
+            <div className="bg-[#ff6b35] text-white text-[10px] font-black px-2.5 py-1 rounded-md flex items-center gap-1 uppercase tracking-wider shadow-sm">
+              <Sparkles className="w-3 h-3 shrink-0" />
+              <span>{event.featuredReason}</span>
+            </div>
+          )}
+          {event.verified && (
+            <div className="bg-dark/95 backdrop-blur-xs text-white text-[10px] font-black px-2.5 py-1 rounded-md flex items-center gap-1 uppercase tracking-wider shadow-sm border border-white/10">
+              <CheckCircle2 className="w-3 h-3 text-[#14804a]" /> Verified
+            </div>
+          )}
+        </div>
+
+        {currentUser && (
+          <button
+            type="button"
+            onClick={handleSaveClick}
+            className={`absolute top-3 right-3 w-8 h-8 rounded-full flex items-center justify-center transition-transform hover:scale-110 cursor-pointer z-10 ${
+              event.isSaved
+                ? "bg-accent text-white shadow-sm"
+                : "bg-white/90 text-ink hover:bg-white shadow-sm"
+            }`}
+            title={event.isSaved ? "Remove from saved" : "Save event"}
+          >
+            <Bookmark
+              className="w-4 h-4"
+              fill={event.isSaved ? "currentColor" : "none"}
+            />
+          </button>
+        )}
       </div>
 
       {/* Card Content matching wireframe */}

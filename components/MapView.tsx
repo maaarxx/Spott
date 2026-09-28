@@ -20,6 +20,7 @@ export type MapViewProps = {
   onSelectEvent?: (event: EventData) => void;
   center?: { lat: number; lng: number };
   zoom?: number;
+  pinMode?: boolean;
 };
 
 export default function MapView({
@@ -28,6 +29,7 @@ export default function MapView({
   onSelectEvent,
   center,
   zoom = 13,
+  pinMode,
 }: MapViewProps) {
   return (
     <div className="w-full h-full min-h-[400px] rounded-xl overflow-hidden shadow-sm relative">
@@ -37,6 +39,7 @@ export default function MapView({
         onSelectEvent={onSelectEvent}
         center={center}
         zoom={zoom}
+        pinMode={pinMode}
       />
     </div>
   );

@@ -1,6 +1,7 @@
 "use client";
 
-import { useState, useMemo, useEffect } from "react";
+import { useState, useMemo, useEffect, Suspense } from "react";
+import { useSearchParams } from "next/navigation";
 import {
   Download,
   Search,
@@ -17,7 +18,8 @@ import {
   UserCheck,
   FileSpreadsheet,
 } from "lucide-react";
-import { getStoredEvents } from "@/lib/events-store";
+import { getStoredEvents, saveStoredEvent, subscribeToEvents } from "@/lib/events-store";
+import { addNotification } from "@/lib/notifications-store";
 
 interface Attendee {
   id: string;
@@ -30,8 +32,11 @@ interface Attendee {
   notes?: string;
 }
 
-export default function RsvpManagementPage() {
-  const [availableEvents, setAvailableEvents] = useState<{ id: string; title: string }[]>([]);
+function RsvpManagementContent() {
+  const searchParams = useSearchParams();
+  const urlEventId = searchParams.get("eventId");
+
+  const [availableEvents, setAvailableEvents] = useState<{ id: string; title: string; capacity?: number | null; requireApproval?: boolean }[]>([]);
   const [selectedEventKey, setSelectedEventKey] = useState<string>("");
   const [attendees, setAttendees] = useState<Attendee[]>([]);
   const [searchQuery, setSearchQuery] = useState("");
@@ -41,43 +46,83 @@ export default function RsvpManagementPage() {
   useEffect(() => {
     const loadEvents = () => {
       const stored = getStoredEvents();
-      const list = stored.map((e) => ({ id: e.id, title: e.title }));
+      const list = stored.map((e) => ({
+        id: e.id,
+        title: e.title,
+        capacity: e.capacity,
+        requireApproval: e.requireApproval,
+      }));
       setAvailableEvents(list);
-      if (list.length > 0 && !selectedEventKey) {
+      if (urlEventId && list.some((e) => e.id === urlEventId)) {
+        setSelectedEventKey(urlEventId);
+      } else if (list.length > 0 && (!selectedEventKey || !list.some((e) => e.id === selectedEventKey))) {
         setSelectedEventKey(list[0].id);
       }
     };
     loadEvents();
-    window.addEventListener("spott_events_updated", loadEvents);
-    return () => window.removeEventListener("spott_events_updated", loadEvents);
-  }, [selectedEventKey]);
+    const unsubscribeEvents = subscribeToEvents(loadEvents);
+    return () => {
+      unsubscribeEvents();
+    };
+  }, [urlEventId, selectedEventKey]);
+
+  const loadAttendeesForEvent = (eventKey: string) => {
+    if (!eventKey) {
+      setAttendees([]);
+      return;
+    }
+    try {
+      const raw = localStorage.getItem("spott_guest_lists");
+      const parsed = raw ? JSON.parse(raw) : {};
+      const list: Attendee[] = parsed[eventKey] || [];
+
+      // If attendee list is empty in storage but event has registrations in directory:
+      const stored = getStoredEvents();
+      const currentEvt = stored.find((e) => e.id === eventKey);
+      if (list.length === 0 && currentEvt && (currentEvt.registrations || 0) > 0) {
+        const autoAttendee: Attendee = {
+          id: "att-student-1",
+          name: "Juan Dela Cruz",
+          email: "jdc@spott.ph",
+          status: "Confirmed",
+          dateRegistered: new Date().toISOString().split("T")[0],
+          ticketType: "General Admission",
+          phone: "+63 917 123 4567",
+          notes: "Campus Student RSVP",
+        };
+        parsed[eventKey] = [autoAttendee];
+        localStorage.setItem("spott_guest_lists", JSON.stringify(parsed));
+        setAttendees([autoAttendee]);
+        return;
+      }
+
+      setAttendees(list);
+    } catch {
+      setAttendees([]);
+    }
+  };
 
   // Switch event handler
   const handleEventChange = (key: string) => {
     setSelectedEventKey(key);
-    try {
-      const raw = localStorage.getItem("spott_guest_lists");
-      if (raw) {
-        const parsed = JSON.parse(raw);
-        setAttendees(parsed[key] || []);
-        return;
-      }
-    } catch {}
-    setAttendees([]);
+    loadAttendeesForEvent(key);
   };
 
   useEffect(() => {
     if (selectedEventKey) {
-      try {
-        const raw = localStorage.getItem("spott_guest_lists");
-        if (raw) {
-          const parsed = JSON.parse(raw);
-          setAttendees(parsed[selectedEventKey] || []);
-          return;
-        }
-      } catch {}
-      setAttendees([]);
+      loadAttendeesForEvent(selectedEventKey);
     }
+    const handleSync = () => {
+      if (selectedEventKey) {
+        loadAttendeesForEvent(selectedEventKey);
+      }
+    };
+    const unsubscribeEvents = subscribeToEvents(handleSync);
+    window.addEventListener("spott_registered_updated", handleSync);
+    return () => {
+      unsubscribeEvents();
+      window.removeEventListener("spott_registered_updated", handleSync);
+    };
   }, [selectedEventKey]);
 
   // Stats calculation
@@ -127,11 +172,61 @@ export default function RsvpManagementPage() {
     document.body.removeChild(link);
   };
 
-  // Toggle status (e.g. Cancel or Confirm)
+  const selectedEvent = availableEvents.find((e) => e.id === selectedEventKey);
+
+  // Toggle status (e.g. Cancel or Confirm / Approve)
   const handleToggleStatus = (id: string, newStatus: "Confirmed" | "Pending" | "Declined") => {
-    setAttendees((prev) =>
-      prev.map((a) => (a.id === id ? { ...a, status: newStatus } : a))
-    );
+    let affectedAttendee: Attendee | null = null;
+
+    setAttendees((prev) => {
+      const target = prev.find((a) => a.id === id);
+      if (target) affectedAttendee = target;
+      const updated = prev.map((a) => (a.id === id ? { ...a, status: newStatus } : a));
+      if (selectedEventKey) {
+        try {
+          const raw = localStorage.getItem("spott_guest_lists");
+          const map = raw ? JSON.parse(raw) : {};
+          map[selectedEventKey] = updated;
+          localStorage.setItem("spott_guest_lists", JSON.stringify(map));
+        } catch {}
+
+        // Keep registrations counter in sync with confirmed attendees
+        try {
+          const stored = getStoredEvents();
+          const evtIdx = stored.findIndex((e) => e.id === selectedEventKey);
+          if (evtIdx !== -1) {
+            const confirmedTotal = updated.filter((a) => a.status === "Confirmed").length;
+            stored[evtIdx].registrations = confirmedTotal;
+            saveStoredEvent(stored[evtIdx]);
+          }
+        } catch {}
+
+        window.dispatchEvent(new Event("spott_events_updated"));
+        window.dispatchEvent(new Event("spott_registered_updated"));
+      }
+      return updated;
+    });
+
+    if (affectedAttendee && selectedEvent) {
+      if (newStatus === "Confirmed") {
+        addNotification({
+          type: "announcement",
+          title: `RSVP Approved: "${selectedEvent.title}"`,
+          message: `Great news! Your reservation for "${selectedEvent.title}" has been approved by the organizer. See you there!`,
+          targetRole: "user",
+          link: `/events/${selectedEventKey}`,
+        });
+      } else if (newStatus === "Declined") {
+        addNotification({
+          type: "cancellation",
+          title: `RSVP Update: "${selectedEvent.title}"`,
+          message: `Your reservation for "${selectedEvent.title}" has been declined or released.`,
+          targetRole: "user",
+          link: `/events/${selectedEventKey}`,
+        });
+      }
+    }
+
     if (selectedAttendee && selectedAttendee.id === id) {
       setSelectedAttendee((prev) => (prev ? { ...prev, status: newStatus } : null));
     }
@@ -199,26 +294,50 @@ export default function RsvpManagementPage() {
             Confirmed
           </span>
           <div className="flex items-baseline gap-2">
-            <span className="text-3xl sm:text-4xl font-black text-emerald-600">{confirmedCount}</span>
+            <span className="text-3xl sm:text-4xl font-black text-emerald-600">
+              {confirmedCount}
+              {selectedEvent?.capacity ? (
+                <span className="text-sm sm:text-base text-[#888] font-bold"> / {selectedEvent.capacity}</span>
+              ) : null}
+            </span>
             <span className="text-xs font-bold text-emerald-600 bg-emerald-50 px-2 py-0.5 rounded-md">
-              {Math.round((confirmedCount / Math.max(totalRsvps, 1)) * 100)}%
+              {selectedEvent?.capacity
+                ? `${Math.round((confirmedCount / selectedEvent.capacity) * 100)}% capacity`
+                : `${Math.round((confirmedCount / Math.max(totalRsvps, 1)) * 100)}%`}
             </span>
           </div>
-          <p className="text-[11px] text-[#888888] mt-2">Checked-in & reserved</p>
+          <p className="text-[11px] text-[#888888] mt-2">
+            {selectedEvent?.capacity
+              ? `${Math.max(0, selectedEvent.capacity - confirmedCount)} spots remaining`
+              : "Checked-in & reserved"}
+          </p>
         </div>
 
         {/* Pending */}
-        <div className="bg-white border border-[#e6e1d8] rounded-2xl p-5 shadow-sm hover:border-[#ff6b35]/40 transition-colors">
-          <span className="text-xs font-bold text-[#ff6b35] uppercase tracking-wide block mb-2">
-            Pending
-          </span>
+        <div className={`bg-white border rounded-2xl p-5 shadow-sm transition-colors ${
+          pendingCount > 0 ? "border-[#ff6b35] bg-[#fffbf9]" : "border-[#e6e1d8] hover:border-[#ff6b35]/40"
+        }`}>
+          <div className="flex items-center justify-between mb-2">
+            <span className="text-xs font-bold text-[#ff6b35] uppercase tracking-wide">
+              Pending
+            </span>
+            {pendingCount > 0 && (
+              <span className="text-[10px] font-black uppercase px-2 py-0.5 rounded-full bg-amber-100 text-amber-800 animate-pulse">
+                Needs review
+              </span>
+            )}
+          </div>
           <div className="flex items-baseline gap-2">
             <span className="text-3xl sm:text-4xl font-black text-[#ff6b35]">{pendingCount}</span>
             <span className="text-xs font-bold text-[#ff6b35] bg-[#fff0e8] px-2 py-0.5 rounded-md">
               Awaiting review
             </span>
           </div>
-          <p className="text-[11px] text-[#888888] mt-2">Needs confirmation</p>
+          <p className="text-[11px] text-[#888888] mt-2">
+            {pendingCount > 0
+              ? `${pendingCount} attendee${pendingCount > 1 ? "s" : ""} waiting for approval`
+              : "No pending reviews"}
+          </p>
         </div>
 
         {/* Declined */}
@@ -330,7 +449,22 @@ export default function RsvpManagementPage() {
                         >
                           Detail
                         </button>
-                        {attendee.status !== "Declined" ? (
+                        {attendee.status === "Pending" ? (
+                          <>
+                            <button
+                              onClick={() => handleToggleStatus(attendee.id, "Confirmed")}
+                              className="px-2.5 py-1 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-xs font-bold transition-all shadow-xs flex items-center gap-1 cursor-pointer"
+                            >
+                              <Check className="w-3 h-3" /> Approve
+                            </button>
+                            <button
+                              onClick={() => handleToggleStatus(attendee.id, "Declined")}
+                              className="px-2 py-1 bg-rose-50 text-rose-700 hover:bg-rose-100 rounded-lg text-xs font-bold transition-all cursor-pointer"
+                            >
+                              Decline
+                            </button>
+                          </>
+                        ) : attendee.status === "Confirmed" ? (
                           <button
                             onClick={() => handleToggleStatus(attendee.id, "Declined")}
                             className="text-xs font-bold text-rose-600 hover:text-rose-700 hover:underline cursor-pointer"
@@ -450,5 +584,19 @@ export default function RsvpManagementPage() {
         </div>
       )}
     </div>
+  );
+}
+
+export default function RsvpManagementPage() {
+  return (
+    <Suspense
+      fallback={
+        <div className="max-w-6xl mx-auto py-12 text-center text-sm font-semibold text-[#666666]">
+          Loading RSVP Management...
+        </div>
+      }
+    >
+      <RsvpManagementContent />
+    </Suspense>
   );
 }

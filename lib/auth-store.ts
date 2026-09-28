@@ -13,14 +13,14 @@ export type SpottAccount = {
 
 export const SPOTT_ACCOUNTS: Record<RoleType, SpottAccount> = {
   user: {
-    email: "user@spott.ph",
+    email: "jdc@spott.ph",
     password: "user123",
     name: "Juan Dela Cruz",
     role: "user",
-    destination: "/", // User route to Home as requested
+    destination: "/",
   },
   organizer: {
-    email: "organizer@spott.ph",
+    email: "mcg@spott.ph",
     password: "organizer123",
     name: "Metro Creative Group",
     role: "organizer",
@@ -62,7 +62,204 @@ export function logout() {
   if (typeof window === "undefined") return;
   try {
     localStorage.removeItem(STORAGE_KEY_AUTH);
+    // Legacy global keys cleared so anonymous visitors never see leftover data
+    localStorage.removeItem("spott_saved_events");
+    localStorage.removeItem("spott_registered_events");
+    localStorage.removeItem("spott_event_reminders");
     window.dispatchEvent(new Event("spott_auth_changed"));
+    window.dispatchEvent(new Event("spott_saved_updated"));
+    window.dispatchEvent(new Event("spott_registered_updated"));
+  } catch {}
+}
+
+/**
+ * Multi-tenant Isolated Saved & Registered Events Store
+ * Each user's saved items, registrations, and reminders are keyed strictly by user email.
+ * Anonymous users always return empty arrays and cannot persist data.
+ */
+
+export function getUserSavedEvents(email?: string): string[] {
+  if (typeof window === "undefined") return [];
+  const current = email ? { email } : getCurrentUser();
+  if (!current?.email) return []; // Anonymous has NO saved events
+
+  const userEmail = current.email.trim().toLowerCase();
+  const key = `spott_saved_events_${userEmail}`;
+  const raw = localStorage.getItem(key);
+
+  if (raw !== null) {
+    try {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) return parsed.map(String);
+    } catch {
+      return [];
+    }
+  }
+
+  // Restore/seed default saved events for Juan Dela Cruz if key wasn't initialized yet
+  if (userEmail === "jdc@spott.ph") {
+    const defaultJdcSaved = ["event-1", "event-2"];
+    try {
+      localStorage.setItem(key, JSON.stringify(defaultJdcSaved));
+    } catch {}
+    return defaultJdcSaved;
+  }
+
+  return [];
+}
+
+export function saveUserSavedEvents(ids: string[], email?: string) {
+  if (typeof window === "undefined") return;
+  const current = email ? { email } : getCurrentUser();
+  if (!current?.email) return; // Anonymous cannot save
+
+  const userEmail = current.email.trim().toLowerCase();
+  const key = `spott_saved_events_${userEmail}`;
+  try {
+    localStorage.setItem(key, JSON.stringify(ids));
+    // Clear legacy global key so no cross-contamination occurs
+    localStorage.removeItem("spott_saved_events");
+    window.dispatchEvent(new Event("spott_saved_updated"));
+  } catch {}
+}
+
+export function getUserRegisteredEvents(email?: string): string[] {
+  if (typeof window === "undefined") return [];
+  const current = getCurrentUser();
+  const userEmail = (email || current?.email || "").trim().toLowerCase();
+  if (!userEmail) return []; // Anonymous has NO registrations
+
+  const key = `spott_registered_events_${userEmail}`;
+  const seededKey = `spott_registered_reconciled_${userEmail}`;
+  const registeredSet = new Set<string>();
+
+  // 1. Read existing user-scoped registered key
+  const raw = localStorage.getItem(key);
+  if (raw !== null) {
+    try {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) {
+        parsed.forEach((id) => registeredSet.add(String(id)));
+      }
+    } catch {}
+  }
+
+  // 2. Cross-reference spott_guest_lists to recover any RSVPs from guest lists
+  try {
+    const rawGuests = localStorage.getItem("spott_guest_lists");
+    if (rawGuests) {
+      const guestMap = JSON.parse(rawGuests);
+      for (const [eventId, guestList] of Object.entries(guestMap)) {
+        if (Array.isArray(guestList)) {
+          const isAttending = guestList.some(
+            (g: any) =>
+              (g.email && g.email.trim().toLowerCase() === userEmail) ||
+              (current?.name && g.name && g.name.trim().toLowerCase() === current.name.trim().toLowerCase())
+          );
+          if (isAttending) {
+            registeredSet.add(eventId);
+          }
+        }
+      }
+    }
+  } catch {}
+
+  // 3. Self-healing recovery for Juan Dela Cruz:
+  // If registeredSet is empty or not yet reconciled, check active events with registrations > 0
+  const alreadyReconciled = localStorage.getItem(seededKey) === "true";
+  if ((!alreadyReconciled || registeredSet.size === 0) && userEmail === "jdc@spott.ph") {
+    try {
+      const rawEvents = localStorage.getItem("spott_events_directory");
+      if (rawEvents) {
+        const eventsList = JSON.parse(rawEvents);
+        if (Array.isArray(eventsList)) {
+          eventsList.forEach((e: any) => {
+            if (e && e.id && (e.registrations || 0) > 0) {
+              registeredSet.add(String(e.id));
+
+              // Ensure Juan Dela Cruz is recorded in the guest list for this event
+              try {
+                const rawGuests = localStorage.getItem("spott_guest_lists");
+                const guestMap = rawGuests ? JSON.parse(rawGuests) : {};
+                let list = guestMap[e.id] || [];
+                if (!list.some((g: any) => g.email?.toLowerCase() === "jdc@spott.ph")) {
+                  list.unshift({
+                    id: `att-jdc-${e.id}`,
+                    name: "Juan Dela Cruz",
+                    email: "jdc@spott.ph",
+                    status: "Confirmed",
+                    dateRegistered: new Date().toISOString().split("T")[0],
+                    ticketType: "General Admission",
+                    phone: "+63 917 123 4567",
+                    notes: "Campus Student RSVP",
+                  });
+                  guestMap[e.id] = list;
+                  localStorage.setItem("spott_guest_lists", JSON.stringify(guestMap));
+                }
+              } catch {}
+            }
+          });
+        }
+      }
+    } catch {}
+
+    localStorage.setItem(seededKey, "true");
+  }
+
+  const result = Array.from(registeredSet);
+
+  // Sync to user's storage key
+  try {
+    localStorage.setItem(key, JSON.stringify(result));
+  } catch {}
+
+  return result;
+}
+
+export function saveUserRegisteredEvents(ids: string[], email?: string) {
+  if (typeof window === "undefined") return;
+  const current = email ? { email } : getCurrentUser();
+  if (!current?.email) return; // Anonymous cannot register
+
+  const userEmail = current.email.trim().toLowerCase();
+  const key = `spott_registered_events_${userEmail}`;
+  const seededKey = `spott_registered_reconciled_${userEmail}`;
+  try {
+    localStorage.setItem(key, JSON.stringify(ids));
+    localStorage.setItem(seededKey, "true");
+    // Clear legacy global key so no cross-contamination occurs
+    localStorage.removeItem("spott_registered_events");
+    window.dispatchEvent(new Event("spott_registered_updated"));
+  } catch {}
+}
+
+export function getUserReminders(email?: string): string[] {
+  if (typeof window === "undefined") return [];
+  const current = email ? { email } : getCurrentUser();
+  if (!current?.email) return [];
+
+  const userEmail = current.email.trim().toLowerCase();
+  const key = `spott_event_reminders_${userEmail}`;
+  const raw = localStorage.getItem(key);
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed.map(String) : [];
+  } catch {
+    return [];
+  }
+}
+
+export function saveUserReminders(ids: string[], email?: string) {
+  if (typeof window === "undefined") return;
+  const current = email ? { email } : getCurrentUser();
+  if (!current?.email) return;
+
+  const userEmail = current.email.trim().toLowerCase();
+  const key = `spott_event_reminders_${userEmail}`;
+  try {
+    localStorage.setItem(key, JSON.stringify(ids));
+    localStorage.removeItem("spott_event_reminders");
   } catch {}
 }
 

@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname, useSearchParams, useRouter } from "next/navigation";
-import { useState, Suspense } from "react";
+import { useState, Suspense, useEffect } from "react";
 import {
   LayoutDashboard,
   Users,
@@ -19,7 +19,7 @@ import {
   Layers,
   Sparkles,
 } from "lucide-react";
-import { logout } from "@/lib/auth-store";
+import { logout, getCurrentUser, SpottAccount } from "@/lib/auth-store";
 
 interface AdminNavItem {
   id: string;
@@ -82,6 +82,18 @@ function AdminNavContent({ children }: { children: React.ReactNode }) {
   const router = useRouter();
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [userDropdownOpen, setUserDropdownOpen] = useState(false);
+  const [currentUser, setCurrentUser2] = useState<SpottAccount | null>(null);
+
+  useEffect(() => {
+    setCurrentUser2(getCurrentUser());
+    const onAuthChange = () => setCurrentUser2(getCurrentUser());
+    window.addEventListener("spott_auth_changed", onAuthChange);
+    return () => window.removeEventListener("spott_auth_changed", onAuthChange);
+  }, []);
+
+  const displayName = currentUser?.name || "Admin";
+  const displayRole = currentUser?.organization || "Admin Portal";
+  const initials = displayName.split(" ").map((n: string) => n[0]).join("").toUpperCase().slice(0, 2);
 
   const isItemActive = (item: AdminNavItem) => {
     if (pathname === "/admin") {
@@ -113,9 +125,9 @@ function AdminNavContent({ children }: { children: React.ReactNode }) {
               onClick={() => setUserDropdownOpen(!userDropdownOpen)}
               className="flex items-center gap-2.5 px-2 py-1.5 rounded-full hover:bg-gray-100 transition-colors cursor-pointer"
             >
-              <span className="text-sm font-bold text-[#171717] hidden sm:block">John Doe</span>
+              <span className="text-sm font-bold text-[#171717] hidden sm:block">{displayName}</span>
               <div className="w-9 h-9 rounded-full bg-[#171717] border border-[#ff6b35]/40 flex items-center justify-center text-sm font-black text-white">
-                JD
+                {initials}
               </div>
               <ChevronDown className="w-3.5 h-3.5 text-[#666666] hidden sm:block" />
             </button>
@@ -124,8 +136,8 @@ function AdminNavContent({ children }: { children: React.ReactNode }) {
             {userDropdownOpen && (
               <div className="absolute right-0 mt-2 w-52 bg-white border border-[#e6e1d8] rounded-2xl shadow-xl py-2 z-50 animate-in fade-in slide-in-from-top-2">
                 <div className="px-4 py-2 border-b border-[#e6e1d8]">
-                  <p className="text-xs font-bold text-[#171717]">John Doe</p>
-                  <p className="text-[11px] text-[#ff6b35] font-semibold">University SuperAdmin</p>
+                  <p className="text-xs font-bold text-[#171717]">{displayName}</p>
+                  <p className="text-[11px] text-[#ff6b35] font-semibold">{displayRole}</p>
                 </div>
 
                 <div className="pt-1">

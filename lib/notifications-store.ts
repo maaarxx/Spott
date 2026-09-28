@@ -1,5 +1,7 @@
 "use client";
 
+import { getCurrentUser } from "./auth-store";
+
 export type NotificationType = "all" | "reminder" | "update" | "cancellation" | "announcement";
 export type TargetRole = "all" | "user" | "organizer" | "admin";
 
@@ -15,10 +17,39 @@ export type NotificationItem = {
 };
 
 const STORAGE_KEY_NOTIFS = "spott_notifications";
+const STORAGE_PREFIX_READ = "spott_read_notifs_";
 
 const INITIAL_NOTIFICATIONS: NotificationItem[] = [];
 
-export function getNotifications(role: TargetRole = "all"): NotificationItem[] {
+function getUserReadStorageKey(email?: string): string {
+  const current = getCurrentUser();
+  const userEmail = (email || current?.email || "guest").trim().toLowerCase();
+  return `${STORAGE_PREFIX_READ}${userEmail}`;
+}
+
+export function getUserReadNotifIds(email?: string): Set<string> {
+  if (typeof window === "undefined") return new Set();
+  try {
+    const key = getUserReadStorageKey(email);
+    const raw = localStorage.getItem(key);
+    if (!raw) return new Set();
+    const arr = JSON.parse(raw);
+    return new Set(Array.isArray(arr) ? arr : []);
+  } catch {
+    return new Set();
+  }
+}
+
+export function setUserReadNotifIds(ids: Set<string>, email?: string) {
+  if (typeof window === "undefined") return;
+  try {
+    const key = getUserReadStorageKey(email);
+    localStorage.setItem(key, JSON.stringify(Array.from(ids)));
+    window.dispatchEvent(new Event("spott_notifications_updated"));
+  } catch {}
+}
+
+export function getNotifications(role: TargetRole = "all", email?: string): NotificationItem[] {
   if (typeof window === "undefined") return INITIAL_NOTIFICATIONS;
   try {
     const raw = localStorage.getItem(STORAGE_KEY_NOTIFS);
@@ -26,8 +57,19 @@ export function getNotifications(role: TargetRole = "all"): NotificationItem[] {
     if (!raw) {
       localStorage.setItem(STORAGE_KEY_NOTIFS, JSON.stringify(INITIAL_NOTIFICATIONS));
     }
-    if (role === "all") return list;
-    return list.filter((n) => n.targetRole === role || n.targetRole === "all");
+
+    // Role filtering
+    let filtered = list;
+    if (role !== "all") {
+      filtered = list.filter((n) => n.targetRole === role || n.targetRole === "all");
+    }
+
+    // User-scoped read tracking: each user (especially new users) has their own read status
+    const readIds = getUserReadNotifIds(email);
+    return filtered.map((n) => ({
+      ...n,
+      isRead: readIds.has(n.id),
+    }));
   } catch {
     return INITIAL_NOTIFICATIONS;
   }
@@ -55,7 +97,8 @@ export function addNotification(
 
   if (typeof window !== "undefined") {
     try {
-      const existing = getNotifications("all");
+      const raw = localStorage.getItem(STORAGE_KEY_NOTIFS);
+      const existing: NotificationItem[] = raw ? JSON.parse(raw) : [];
       const updated = [newItem, ...existing];
       localStorage.setItem(STORAGE_KEY_NOTIFS, JSON.stringify(updated));
       window.dispatchEvent(new Event("spott_notifications_updated"));
@@ -65,34 +108,28 @@ export function addNotification(
   return newItem;
 }
 
-export function markAsRead(id: string) {
+export function markAsRead(id: string, email?: string) {
   if (typeof window === "undefined") return;
   try {
-    const list = getNotifications("all");
-    const updated = list.map((n) => (n.id === id ? { ...n, isRead: true } : n));
-    localStorage.setItem(STORAGE_KEY_NOTIFS, JSON.stringify(updated));
-    window.dispatchEvent(new Event("spott_notifications_updated"));
+    const readIds = getUserReadNotifIds(email);
+    readIds.add(id);
+    setUserReadNotifIds(readIds, email);
   } catch {}
 }
 
-export function markAllAsRead(role: TargetRole = "all") {
+export function markAllAsRead(role: TargetRole = "all", email?: string) {
   if (typeof window === "undefined") return;
   try {
-    const list = getNotifications("all");
-    const updated = list.map((n) => {
-      if (role === "all" || n.targetRole === role || n.targetRole === "all") {
-        return { ...n, isRead: true };
-      }
-      return n;
-    });
-    localStorage.setItem(STORAGE_KEY_NOTIFS, JSON.stringify(updated));
-    window.dispatchEvent(new Event("spott_notifications_updated"));
+    const list = getNotifications(role, email);
+    const readIds = getUserReadNotifIds(email);
+    list.forEach((n) => readIds.add(n.id));
+    setUserReadNotifIds(readIds, email);
   } catch {}
 }
 
-export function getUnreadCount(role: TargetRole = "user"): number {
+export function getUnreadCount(role: TargetRole = "user", email?: string): number {
   if (typeof window === "undefined") return 0;
-  const list = getNotifications(role);
+  const list = getNotifications(role, email);
   return list.filter((n) => !n.isRead).length;
 }
 
@@ -104,10 +141,40 @@ export function clearAllNotifications() {
   } catch {}
 }
 
+export function deleteNotification(id: string) {
+  if (typeof window === "undefined") return;
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY_NOTIFS);
+    const list: NotificationItem[] = raw ? JSON.parse(raw) : [];
+    const updated = list.filter((n) => n.id !== id);
+    localStorage.setItem(STORAGE_KEY_NOTIFS, JSON.stringify(updated));
+    window.dispatchEvent(new Event("spott_notifications_updated"));
+  } catch {}
+}
+
+export function cleanupGhostNotifications(validEventIds: string[]) {
+  if (typeof window === "undefined") return;
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY_NOTIFS);
+    const list: NotificationItem[] = raw ? JSON.parse(raw) : [];
+    const validSet = new Set(validEventIds);
+    const updated = list.filter((n) => {
+      if (n.link && n.link.startsWith("/events/")) {
+        const id = n.link.replace("/events/", "").trim();
+        return validSet.has(id);
+      }
+      return true;
+    });
+    localStorage.setItem(STORAGE_KEY_NOTIFS, JSON.stringify(updated));
+    window.dispatchEvent(new Event("spott_notifications_updated"));
+  } catch {}
+}
+
 export function removeNotificationsForEvent(eventId: string, eventTitle?: string) {
   if (typeof window === "undefined") return;
   try {
-    const list = getNotifications("all");
+    const raw = localStorage.getItem(STORAGE_KEY_NOTIFS);
+    const list: NotificationItem[] = raw ? JSON.parse(raw) : [];
     const idClean = eventId ? eventId.trim().toLowerCase() : "";
     const titleClean = eventTitle ? eventTitle.trim().toLowerCase() : "";
 
@@ -122,7 +189,6 @@ export function removeNotificationsForEvent(eventId: string, eventTitle?: string
         (idClean && n.message.toLowerCase().includes(idClean))
       );
 
-      // Filter out notifications associated with this removed event
       return !(linkMatch || titleMatch || messageMatch);
     });
 
@@ -130,4 +196,3 @@ export function removeNotificationsForEvent(eventId: string, eventTitle?: string
     window.dispatchEvent(new Event("spott_notifications_updated"));
   } catch {}
 }
-

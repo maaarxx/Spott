@@ -2,14 +2,18 @@
 
 import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
-import { Bell, RefreshCw, CheckCircle2, ArrowRight } from "lucide-react";
+import { Bell, RefreshCw, CheckCircle2, ArrowRight, Trash2, X, FileEdit, XCircle, Megaphone } from "lucide-react";
 import {
   getNotifications,
   markAsRead,
   markAllAsRead,
+  deleteNotification,
+  clearAllNotifications,
+  cleanupGhostNotifications,
   NotificationItem,
   NotificationType,
 } from "@/lib/notifications-store";
+import { getStoredEvents } from "@/lib/events-store";
 import { getCurrentUser } from "@/lib/auth-store";
 
 export default function NotificationsPage() {
@@ -18,15 +22,33 @@ export default function NotificationsPage() {
   const [notifications, setNotifications] = useState<NotificationItem[]>([]);
   const [loading, setLoading] = useState(false);
 
+  // Silently prune any notifications pointing to deleted/non-existent events in background
+  const silentCleanupOrphans = async () => {
+    const local = getStoredEvents();
+    const validIds = new Set(local.map((e) => e.id));
+    try {
+      const res = await fetch("/api/events");
+      if (res.ok) {
+        const apiData = await res.json();
+        if (Array.isArray(apiData)) {
+          apiData.forEach((e: any) => validIds.add(e.id));
+        }
+      }
+    } catch {}
+    cleanupGhostNotifications(Array.from(validIds));
+    loadNotifs();
+  };
+
   const loadNotifs = () => {
     const user = getCurrentUser();
     const role = user?.role || "user";
-    const data = getNotifications(role);
+    const data = getNotifications(role, user?.email);
     setNotifications(data);
   };
 
   useEffect(() => {
     loadNotifs();
+    silentCleanupOrphans();
 
     const handleUpdate = () => {
       loadNotifs();
@@ -42,7 +64,8 @@ export default function NotificationsPage() {
   }, []);
 
   const handleItemClick = (notification: NotificationItem) => {
-    markAsRead(notification.id);
+    const user = getCurrentUser();
+    markAsRead(notification.id, user?.email);
     if (notification.link) {
       router.push(notification.link);
     }
@@ -90,7 +113,7 @@ export default function NotificationsPage() {
           <h1 className="text-3xl font-black text-ink tracking-tight flex items-center gap-2.5">
             <span>Notifications</span>
             {unreadCount > 0 && (
-              <span className="text-xs font-bold bg-accent text-white px-2.5 py-0.5 rounded-full">
+              <span className="text-xs font-bold bg-red-500 text-white px-2.5 py-0.5 rounded-full shadow-xs animate-pulse">
                 {unreadCount} new
               </span>
             )}
@@ -100,12 +123,29 @@ export default function NotificationsPage() {
           </p>
         </div>
 
-        <button
-          onClick={() => markAllAsRead()}
-          className="text-xs font-bold text-ink hover:text-accent border border-line hover:border-accent/40 bg-white px-3.5 py-1.5 rounded-xl transition-all cursor-pointer shadow-xs"
-        >
-          Mark all as read
-        </button>
+        <div className="flex items-center gap-2 flex-wrap">
+          <button
+            onClick={() => {
+              const user = getCurrentUser();
+              markAllAsRead(user?.role || "user", user?.email);
+            }}
+            className="text-xs font-bold text-ink hover:text-accent border border-line hover:border-accent/40 bg-white px-3.5 py-1.5 rounded-xl transition-all cursor-pointer shadow-xs"
+          >
+            Mark all read
+          </button>
+          <button
+            onClick={() => {
+              if (confirm("Are you sure you want to clear all notifications?")) {
+                clearAllNotifications();
+                setNotifications([]);
+              }
+            }}
+            className="text-xs font-bold text-rose-600 hover:bg-rose-50 border border-rose-200 bg-white px-3.5 py-1.5 rounded-xl transition-all cursor-pointer shadow-xs inline-flex items-center gap-1"
+          >
+            <Trash2 className="w-3.5 h-3.5" />
+            <span>Clear all</span>
+          </button>
+        </div>
       </div>
 
       {/* Tabs */}
@@ -173,16 +213,16 @@ export default function NotificationsPage() {
                 onClick={() => handleItemClick(notification)}
                 className={`flex items-start gap-4 p-4 sm:p-5 transition-all cursor-pointer group ${
                   !notification.isRead
-                    ? "bg-[#fff9f5] hover:bg-[#fff0e8]/50"
+                    ? "bg-red-50/30 hover:bg-red-50/60 border-l-4 border-l-red-500"
                     : "hover:bg-[#faf8f3]"
                 }`}
               >
                 {/* Icon Avatar */}
                 <div className="w-10 h-10 rounded-xl bg-white border border-line flex-shrink-0 flex items-center justify-center text-base shadow-xs group-hover:scale-105 transition-transform">
-                  {notification.type === "reminder" && "🔔"}
-                  {notification.type === "update" && "📝"}
-                  {notification.type === "cancellation" && "❌"}
-                  {notification.type === "announcement" && "📢"}
+                  {notification.type === "reminder" && <Bell className="w-4 h-4 text-amber-600" />}
+                  {notification.type === "update" && <FileEdit className="w-4 h-4 text-blue-600" />}
+                  {notification.type === "cancellation" && <XCircle className="w-4 h-4 text-rose-600" />}
+                  {notification.type === "announcement" && <Megaphone className="w-4 h-4 text-[#ff6b35]" />}
                 </div>
 
                 {/* Content */}
@@ -221,14 +261,25 @@ export default function NotificationsPage() {
                   )}
                 </div>
 
-                {/* Unread indicator / Link Arrow */}
+                {/* Actions: Unread indicator, Link Arrow & Delete */}
                 <div className="flex-shrink-0 flex items-center gap-2 pt-1">
                   {!notification.isRead && (
-                    <span className="w-2.5 h-2.5 bg-accent rounded-full shrink-0 shadow-xs" />
+                    <span className="w-2.5 h-2.5 bg-red-500 rounded-full shrink-0 shadow-xs ring-4 ring-red-100" />
                   )}
                   {notification.link && (
                     <ArrowRight className="w-4 h-4 text-muted opacity-0 group-hover:opacity-100 group-hover:text-accent transition-all shrink-0" />
                   )}
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      deleteNotification(notification.id);
+                    }}
+                    title="Delete notification"
+                    className="p-1 rounded-lg text-gray-400 hover:text-rose-600 hover:bg-rose-50 transition-colors cursor-pointer"
+                  >
+                    <X className="w-3.5 h-3.5" />
+                  </button>
                 </div>
               </div>
             ))}

@@ -1,13 +1,15 @@
 "use client";
 
 import { useState, useEffect, Suspense } from "react";
-import { useSearchParams } from "next/navigation";
+import { useSearchParams, useRouter } from "next/navigation";
 import { Search, SlidersHorizontal, MapPin, X } from "lucide-react";
 import EventCard, { type EventData } from "@/components/EventCard";
 import MapView from "@/components/MapView";
-import { getStoredEvents } from "@/lib/events-store";
+import { getStoredEvents, subscribeToEvents } from "@/lib/events-store";
+import { getCurrentUser, getUserSavedEvents, saveUserSavedEvents } from "@/lib/auth-store";
 
 function DiscoverContent() {
+  const router = useRouter();
   const searchParams = useSearchParams();
   const initialQuery = searchParams.get("q") || "";
   const initialCategory = searchParams.get("category") || "";
@@ -26,31 +28,50 @@ function DiscoverContent() {
 
   const loadAllEvents = async () => {
     const local = getStoredEvents();
+    // Show local events immediately
+    setEvents(local);
+
     try {
-      const res = await fetch("/api/events");
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 1200);
+      const res = await fetch("/api/events", { signal: controller.signal });
+      clearTimeout(timer);
       if (res.ok) {
         const apiData = await res.json();
         if (Array.isArray(apiData)) {
-          const existingIds = new Set(local.map((e) => e.id));
-          const merged = [...local, ...apiData.filter((e: any) => !existingIds.has(e.id))];
+          const freshLocal = getStoredEvents();
+          const existingIds = new Set(freshLocal.map((e) => e.id));
+          const merged = [...freshLocal, ...apiData.filter((e: any) => !existingIds.has(e.id))];
           setEvents(merged);
-          return;
         }
       }
     } catch {}
-    setEvents(local);
   };
 
   useEffect(() => {
-    try {
-      const stored = localStorage.getItem("spott_saved_events");
-      if (stored) setSavedIds(JSON.parse(stored).map(String));
-    } catch {}
+    const syncSaved = () => {
+      const user = getCurrentUser();
+      if (!user) {
+        setSavedIds([]);
+        return;
+      }
+      setSavedIds(getUserSavedEvents(user.email));
+    };
+
+    syncSaved();
     loadAllEvents();
 
-    const handleUpdate = () => loadAllEvents();
-    window.addEventListener("spott_events_updated", handleUpdate);
-    return () => window.removeEventListener("spott_events_updated", handleUpdate);
+    const unsubscribe = subscribeToEvents(() => loadAllEvents());
+    window.addEventListener("spott_saved_updated", syncSaved);
+    window.addEventListener("spott_auth_changed", syncSaved);
+    window.addEventListener("storage", syncSaved);
+
+    return () => {
+      unsubscribe();
+      window.removeEventListener("spott_saved_updated", syncSaved);
+      window.removeEventListener("spott_auth_changed", syncSaved);
+      window.removeEventListener("storage", syncSaved);
+    };
   }, []);
 
   // Update when URL search parameters change
@@ -77,15 +98,17 @@ function DiscoverContent() {
   };
 
   const handleToggleSave = (eventId: string) => {
+    const user = getCurrentUser();
+    if (!user) {
+      router.push(`/login?redirect=/events/${eventId}`);
+      return;
+    }
     const isAlreadySaved = savedIds.includes(eventId);
     const updated = isAlreadySaved
       ? savedIds.filter((id) => id !== eventId)
       : [...savedIds, eventId];
     setSavedIds(updated);
-    try {
-      localStorage.setItem("spott_saved_events", JSON.stringify(updated));
-      window.dispatchEvent(new Event("spott_saved_updated"));
-    } catch {}
+    saveUserSavedEvents(updated, user.email);
   };
 
   // Filter events based on search and category

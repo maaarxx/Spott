@@ -13,14 +13,28 @@ import {
   ExternalLink,
   Clock,
   X,
+  Lock,
+  LogIn,
 } from "lucide-react";
 import Link from "next/link";
 import { format, addDays, isBefore, parseISO } from "date-fns";
 import type { EventData } from "@/components/EventCard";
 import { DEFAULT_EVENTS } from "@/lib/default-events";
+import { getStoredEvents, subscribeToEvents } from "@/lib/events-store";
 import { addNotification } from "@/lib/notifications-store";
+import {
+  getCurrentUser,
+  getUserSavedEvents,
+  saveUserSavedEvents,
+  getUserRegisteredEvents,
+  saveUserRegisteredEvents,
+  getUserReminders,
+  saveUserReminders,
+  SpottAccount,
+} from "@/lib/auth-store";
+import CancelRsvpModal from "@/components/CancelRsvpModal";
 
-type Tab = "saved" | "registered" | "upcoming" | "past";
+type Tab = "saved" | "registered" | "created" | "upcoming" | "past";
 
 // ─── Google Calendar URL builder ────────────────────────────────────────────
 function buildGoogleCalendarUrl(event: EventData): string {
@@ -44,28 +58,16 @@ function buildGoogleCalendarUrl(event: EventData): string {
   return `https://calendar.google.com/calendar/render?${params.toString()}`;
 }
 
-// ─── Reminder store (localStorage) ──────────────────────────────────────────
-const REMINDER_KEY = "spott_event_reminders";
-
-function getReminders(): string[] {
-  if (typeof window === "undefined") return [];
-  try {
-    return JSON.parse(localStorage.getItem(REMINDER_KEY) || "[]");
-  } catch {
-    return [];
-  }
-}
-
-function toggleReminder(eventId: string): boolean {
-  const reminders = getReminders();
+function toggleUserReminder(eventId: string, email?: string): boolean {
+  const reminders = getUserReminders(email);
   const idx = reminders.indexOf(eventId);
   if (idx === -1) {
     reminders.push(eventId);
-    localStorage.setItem(REMINDER_KEY, JSON.stringify(reminders));
+    saveUserReminders(reminders, email);
     return true; // added
   } else {
     reminders.splice(idx, 1);
-    localStorage.setItem(REMINDER_KEY, JSON.stringify(reminders));
+    saveUserReminders(reminders, email);
     return false; // removed
   }
 }
@@ -73,30 +75,147 @@ function toggleReminder(eventId: string): boolean {
 // ─── Component ───────────────────────────────────────────────────────────────
 export default function MyEventsPage() {
   const router = useRouter();
+  const [currentUser, setCurrentUser] = useState<SpottAccount | null>(null);
+  const [mounted, setMounted] = useState(false);
   const [activeTab, setActiveTab] = useState<Tab>("saved");
-  const [events, setEvents] = useState<EventData[]>(DEFAULT_EVENTS);
+  const [events, setEvents] = useState<EventData[]>([]);
   const [savedIds, setSavedIds] = useState<string[]>([]);
+  const [registeredIds, setRegisteredIds] = useState<string[]>([]);
   const [reminders, setReminders] = useState<string[]>([]);
   const [toast, setToast] = useState<{ msg: string; type: "success" | "info" } | null>(null);
   const [calendarEventId, setCalendarEventId] = useState<string | null>(null);
   const [reminderPickerOpen, setReminderPickerOpen] = useState(false);
+  const [showCancelModal, setShowCancelModal] = useState(false);
+  const [eventToCancel, setEventToCancel] = useState<EventData | null>(null);
+  const [isCancellingRsvp, setIsCancellingRsvp] = useState(false);
+
+  const loadAllEvents = async () => {
+    const local = getStoredEvents();
+    // Show local events immediately
+    setEvents(local);
+
+    try {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 1200);
+      const res = await fetch("/api/events", { signal: controller.signal });
+      clearTimeout(timer);
+      if (res.ok) {
+        const apiData = await res.json();
+        if (Array.isArray(apiData)) {
+          const freshLocal = getStoredEvents();
+          const existingIds = new Set(freshLocal.map((e) => e.id));
+          const merged = [...freshLocal, ...apiData.filter((e: any) => !existingIds.has(e.id))];
+          setEvents(merged);
+        }
+      }
+    } catch {}
+  };
+
+  const syncStorage = () => {
+    const user = getCurrentUser();
+    setCurrentUser(user);
+    setMounted(true);
+
+    if (!user) {
+      setSavedIds([]);
+      setRegisteredIds([]);
+      setReminders([]);
+      return;
+    }
+
+    setSavedIds(getUserSavedEvents(user.email));
+    setRegisteredIds(getUserRegisteredEvents(user.email));
+    setReminders(getUserReminders(user.email));
+  };
 
   useEffect(() => {
-    try {
-      const stored = localStorage.getItem("spott_saved_events");
-      if (stored) setSavedIds(JSON.parse(stored).map(String));
-    } catch {}
-    setReminders(getReminders());
-    fetchEvents();
+    syncStorage();
+    loadAllEvents();
+
+    const onStorageChange = () => {
+      syncStorage();
+      loadAllEvents();
+    };
+
+    const unsubscribeEvents = subscribeToEvents(onStorageChange);
+    window.addEventListener("spott_saved_updated", onStorageChange);
+    window.addEventListener("spott_registered_updated", onStorageChange);
+    window.addEventListener("spott_auth_changed", onStorageChange);
+    window.addEventListener("storage", onStorageChange);
+
+    return () => {
+      unsubscribeEvents();
+      window.removeEventListener("spott_saved_updated", onStorageChange);
+      window.removeEventListener("spott_registered_updated", onStorageChange);
+      window.removeEventListener("spott_auth_changed", onStorageChange);
+      window.removeEventListener("storage", onStorageChange);
+    };
   }, []);
 
-  const fetchEvents = async () => {
+  const handleToggleSave = (eventId: string, e?: React.MouseEvent) => {
+    e?.stopPropagation();
+    if (!currentUser) return;
+    const current = getUserSavedEvents(currentUser.email);
+    let ids = [...current];
+    if (ids.includes(eventId)) {
+      ids = ids.filter((id) => id !== eventId);
+      showToast("Event removed from your saved list.", "info");
+    } else {
+      ids.push(eventId);
+      showToast("Event saved!", "success");
+    }
+    saveUserSavedEvents(ids, currentUser.email);
+    setSavedIds(ids);
+  };
+
+  const handleConfirmCancelRSVP = () => {
+    if (!currentUser || !eventToCancel) return;
+    setIsCancellingRsvp(true);
+
     try {
-      const res = await fetch("/api/events");
-      if (!res.ok) throw new Error("Failed to fetch");
-      const data = await res.json();
-      if (Array.isArray(data) && data.length > 0) setEvents(data);
-    } catch {}
+      const eventId = eventToCancel.id;
+      // 1. Remove from registered events
+      const currentRegs = getUserRegisteredEvents(currentUser.email);
+      const regIds = currentRegs.filter((id) => id !== eventId);
+      saveUserRegisteredEvents(regIds, currentUser.email);
+      setRegisteredIds(regIds);
+
+      // 2. Decrement registrations count in directory
+      const storedEvents = getStoredEvents();
+      const foundIndex = storedEvents.findIndex((e) => e.id === eventId);
+      if (foundIndex !== -1) {
+        const currentCount = storedEvents[foundIndex].registrations || 0;
+        storedEvents[foundIndex].registrations = Math.max(0, currentCount - 1);
+        localStorage.setItem("spott_events_directory", JSON.stringify(storedEvents));
+      }
+
+      // 3. Remove from guest list
+      const rawGuests = localStorage.getItem("spott_guest_lists");
+      let guestMap: Record<string, any[]> = {};
+      try {
+        guestMap = rawGuests ? JSON.parse(rawGuests) : {};
+      } catch {}
+      let currentGuestList = guestMap[eventId] || [];
+      currentGuestList = currentGuestList.filter(
+        (a) => a.email?.toLowerCase() !== currentUser.email.toLowerCase() && a.id !== currentUser.email
+      );
+      guestMap[eventId] = currentGuestList;
+      localStorage.setItem("spott_guest_lists", JSON.stringify(guestMap));
+
+      // 4. Update UI & broadcast
+      setIsCancellingRsvp(false);
+      setShowCancelModal(false);
+      setEventToCancel(null);
+
+      window.dispatchEvent(new Event("spott_registered_updated"));
+      window.dispatchEvent(new Event("spott_events_updated"));
+
+      showToast("RSVP cancelled. Your slot has been released.", "info");
+    } catch {
+      setIsCancellingRsvp(false);
+      setShowCancelModal(false);
+      setEventToCancel(null);
+    }
   };
 
   const showToast = (msg: string, type: "success" | "info" = "success") => {
@@ -105,19 +224,32 @@ export default function MyEventsPage() {
   };
 
   const now = new Date();
-  const savedEvents = savedIds.length > 0 ? events.filter((e) => savedIds.includes(e.id)) : events.slice(0, 3);
-  const registeredEvents = events.slice(0, 1);
-  const upcomingEvents = events.filter((e) => new Date(e.date) > now);
-  const pastEvents = events.filter((e) => new Date(e.date) <= now);
+  const savedEvents = events.filter((e) => savedIds.includes(e.id));
+  const registeredEvents = events.filter((e) => registeredIds.includes(e.id));
+  const userOrgName = (currentUser?.organization || currentUser?.name || "").toLowerCase();
+  const createdEvents = currentUser && currentUser.role === "organizer"
+    ? events.filter((e) => (e.organizer || "").toLowerCase() === userOrgName)
+    : [];
+  const userEventIds = new Set([...savedIds, ...registeredIds]);
+  const userEvents = events.filter((e) => userEventIds.has(e.id));
+  const upcomingEvents = userEvents.filter((e) => new Date(e.date) > now);
+  const pastEvents = userEvents.filter((e) => new Date(e.date) <= now);
 
   const tabs: { key: Tab; label: string; count: number }[] = [
     { key: "saved", label: "Saved", count: savedEvents.length },
     { key: "registered", label: "Registered", count: registeredEvents.length },
+    { key: "created", label: "Created Events", count: createdEvents.length },
     { key: "upcoming", label: "Upcoming", count: upcomingEvents.length },
     { key: "past", label: "Past", count: pastEvents.length },
   ];
 
-  const currentEvents = { saved: savedEvents, registered: registeredEvents, upcoming: upcomingEvents, past: pastEvents }[activeTab];
+  const currentEvents = {
+    saved: savedEvents,
+    registered: registeredEvents,
+    created: createdEvents,
+    upcoming: upcomingEvents,
+    past: pastEvents,
+  }[activeTab];
 
   // The "selected" event for Quick Actions = first upcoming, else first in current tab, else null
   const quickActionEvent: EventData | null = upcomingEvents[0] ?? currentEvents[0] ?? null;
@@ -142,8 +274,9 @@ export default function MyEventsPage() {
 
   const handleSetReminder = (event: EventData, minutesBefore: number, e?: React.MouseEvent) => {
     e?.stopPropagation();
-    const added = toggleReminder(event.id);
-    setReminders(getReminders());
+    if (!currentUser) return;
+    const added = toggleUserReminder(event.id, currentUser.email);
+    setReminders(getUserReminders(currentUser.email));
     setReminderPickerOpen(false);
 
     if (added) {
@@ -155,7 +288,7 @@ export default function MyEventsPage() {
         targetRole: "user",
         link: `/events/${event.id}`,
       });
-      showToast(`🔔 Reminder set for "${event.title}"!`);
+      showToast(`Reminder set for "${event.title}"!`);
     } else {
       showToast(`Reminder removed for "${event.title}".`, "info");
     }
@@ -170,6 +303,57 @@ export default function MyEventsPage() {
   };
 
   const isReminderSet = (id: string) => reminders.includes(id);
+
+  // 1. Loading state before client hydration
+  if (!mounted) {
+    return (
+      <div className="min-h-[60vh] flex items-center justify-center">
+        <div className="w-8 h-8 border-3 border-[#ff6b35] border-t-transparent rounded-full animate-spin" />
+      </div>
+    );
+  }
+
+  // 2. Anonymous / Guest user: Clean, minimal locked screen
+  if (!currentUser) {
+    return (
+      <div className="min-h-[65vh] flex items-center justify-center px-4 py-12">
+        <div className="max-w-sm w-full bg-white rounded-3xl border border-line shadow-xs p-8 text-center space-y-5">
+          {/* Lock Icon Badge */}
+          <div className="w-14 h-14 rounded-2xl bg-[#fff0e8] border border-[#ff6b35]/20 flex items-center justify-center mx-auto text-[#ff6b35]">
+            <Lock className="w-6 h-6 stroke-[2.2]" />
+          </div>
+
+          <div className="space-y-1.5">
+            <h2 className="text-xl font-bold text-ink tracking-tight m-0">
+              Log in to view your events
+            </h2>
+            <p className="text-xs text-muted m-0 leading-relaxed max-w-xs mx-auto">
+              Sign in to manage your registered tickets, saved events, and personal reminders.
+            </p>
+          </div>
+
+          {/* Action Buttons */}
+          <div className="space-y-2.5 pt-1">
+            <Link
+              href="/login?redirect=/my-events"
+              className="w-full flex items-center justify-center gap-2 bg-[#ff6b35] hover:bg-[#e0531f] text-white font-bold text-xs sm:text-sm py-3 px-5 rounded-xl transition-all shadow-xs no-underline cursor-pointer"
+            >
+              <LogIn className="w-4 h-4 shrink-0" />
+              <span>Log in to continue</span>
+            </Link>
+
+            <Link
+              href="/discover"
+              className="inline-flex items-center gap-1.5 text-xs font-semibold text-muted hover:text-ink transition-colors no-underline pt-1"
+            >
+              <span>Explore public events</span>
+              <ArrowUpRight className="w-3.5 h-3.5" />
+            </Link>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="max-w-7xl mx-auto px-4 md:px-8 py-8">
@@ -243,26 +427,42 @@ export default function MyEventsPage() {
                 }}
                 className="bg-white border border-line rounded-2xl p-5 flex flex-col sm:flex-row justify-between gap-4 hover:border-accent/40 hover:shadow-md hover:-translate-y-0.5 transition-all duration-200 cursor-pointer group"
               >
-                <div className="space-y-1 flex-1">
-                  <div className="flex items-center gap-2">
-                    <span className="text-xs font-bold text-accent">
-                      {event.categories?.[0] || "Event"}
-                    </span>
-                    {event.verified && (
-                      <span className="flex items-center gap-1 text-[11px] font-bold text-[#14804a]">
-                        <CheckCircle2 className="w-3 h-3" /> Verified
+                <div className="flex gap-4 items-start flex-1 min-w-0">
+                  {(event.coverImage || event.image) ? (
+                    <img
+                      src={(event.coverImage || event.image)!}
+                      alt={event.title}
+                      className="w-16 h-16 sm:w-20 sm:h-20 rounded-xl object-cover shrink-0 border border-line"
+                    />
+                  ) : (
+                    <div className="w-16 h-16 sm:w-20 sm:h-20 rounded-xl bg-gradient-to-br from-[#262626] to-[#444] text-white flex flex-col items-center justify-center shrink-0 text-center p-1">
+                      <span className="text-[10px] font-black uppercase text-[#ff6b35]">
+                        {(event.categories?.[0] || "EVT").slice(0, 4)}
                       </span>
-                    )}
-                  </div>
-                  <h3 className="text-lg font-bold text-ink group-hover:text-accent transition-colors flex items-center gap-1 m-0">
-                    <span>{event.title}</span>
-                    <ArrowUpRight className="w-4 h-4 text-muted opacity-0 group-hover:opacity-100 group-hover:text-accent transition-all shrink-0" />
-                  </h3>
-                  <div className="flex items-center gap-4 text-xs text-muted pt-1">
-                    <span>{format(new Date(event.date), "EEE, MMM d • h:mm a")}</span>
-                    <span className="flex items-center gap-1">
-                      <MapPin className="w-3 h-3" /> {event.location}
-                    </span>
+                    </div>
+                  )}
+
+                  <div className="space-y-1 flex-1 min-w-0">
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs font-bold text-accent">
+                        {event.categories?.[0] || "Event"}
+                      </span>
+                      {event.verified && (
+                        <span className="flex items-center gap-1 text-[11px] font-bold text-[#14804a]">
+                          <CheckCircle2 className="w-3 h-3" /> Verified
+                        </span>
+                      )}
+                    </div>
+                    <h3 className="text-lg font-bold text-ink group-hover:text-accent transition-colors flex items-center gap-1 m-0 truncate">
+                      <span className="truncate">{event.title}</span>
+                      <ArrowUpRight className="w-4 h-4 text-muted opacity-0 group-hover:opacity-100 group-hover:text-accent transition-all shrink-0" />
+                    </h3>
+                    <div className="flex items-center gap-4 text-xs text-muted pt-1 truncate">
+                      <span>{format(new Date(event.date), "EEE, MMM d • h:mm a")}</span>
+                      <span className="flex items-center gap-1 truncate">
+                        <MapPin className="w-3 h-3 shrink-0" /> {event.location}
+                      </span>
+                    </div>
                   </div>
                 </div>
 
@@ -293,10 +493,55 @@ export default function MyEventsPage() {
                       {isReminderSet(event.id) ? <BellRing className="w-3.5 h-3.5" /> : <Bell className="w-3.5 h-3.5" />}
                     </button>
                     {activeTab === "saved" && (
-                      <span className="flex items-center gap-1.5 text-xs font-bold text-white bg-dark px-3 py-1.5 rounded-lg">
-                        <CheckCircle2 className="w-3 h-3" /> Saved
-                      </span>
+                      <button
+                        type="button"
+                        onClick={(e) => handleToggleSave(event.id, e)}
+                        className="flex items-center gap-1.5 text-xs font-bold text-white bg-dark hover:bg-rose-600 px-3 py-1.5 rounded-lg transition-colors cursor-pointer"
+                        title="Click to remove from saved"
+                      >
+                        <Bookmark className="w-3 h-3 fill-current" /> Saved
+                      </button>
                     )}
+                    {activeTab === "registered" && (() => {
+                      let isPending = false;
+                      try {
+                        const raw = localStorage.getItem("spott_guest_lists");
+                        if (raw && currentUser?.email) {
+                          const map = JSON.parse(raw);
+                          const list = map[event.id];
+                          if (Array.isArray(list)) {
+                            const att = list.find((a: any) => a.email?.toLowerCase() === currentUser.email.toLowerCase());
+                            if (att?.status === "Pending") isPending = true;
+                          }
+                        }
+                      } catch {}
+
+                      return (
+                        <div className="flex items-center gap-1.5">
+                          {isPending ? (
+                            <span className="flex items-center gap-1.5 text-xs font-bold text-amber-900 bg-amber-100 border border-amber-300 px-3 py-1.5 rounded-lg shadow-2xs">
+                              <Clock className="w-3 h-3 text-amber-600" /> Pending Approval
+                            </span>
+                          ) : (
+                            <span className="flex items-center gap-1.5 text-xs font-bold text-white bg-[#14804a] px-3 py-1.5 rounded-lg">
+                              <CheckCircle2 className="w-3 h-3" /> Registered
+                            </span>
+                          )}
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setEventToCancel(event);
+                              setShowCancelModal(true);
+                            }}
+                            className="flex items-center gap-1 text-xs font-semibold text-rose-600 hover:text-rose-700 bg-rose-50/60 hover:bg-rose-100 border border-rose-200/80 px-2 py-1.5 rounded-lg transition-colors cursor-pointer"
+                            title="Cancel RSVP"
+                          >
+                            <X className="w-3 h-3" /> Cancel
+                          </button>
+                        </div>
+                      );
+                    })()}
                   </div>
                 </div>
               </div>
@@ -433,6 +678,18 @@ export default function MyEventsPage() {
           </div>
         </div>
       </div>
+
+      {/* Cancel RSVP Confirmation Modal */}
+      <CancelRsvpModal
+        isOpen={showCancelModal}
+        onClose={() => {
+          setShowCancelModal(false);
+          setEventToCancel(null);
+        }}
+        onConfirm={handleConfirmCancelRSVP}
+        eventTitle={eventToCancel?.title}
+        isSubmitting={isCancellingRsvp}
+      />
     </div>
   );
 }
