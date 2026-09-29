@@ -3,11 +3,12 @@
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { useState, useEffect, useRef } from "react";
-import { Menu, X, ChevronDown, LogOut } from "lucide-react";
+import { Menu, X, ChevronDown, LogOut, User } from "lucide-react";
 import { createClient } from "@/lib/supabase-browser";
 import { getCurrentUser, logout, SpottAccount } from "@/lib/auth-store";
 import { getUnreadCount } from "@/lib/notifications-store";
-import type { User } from "@supabase/supabase-js";
+import { getUserProfile, subscribeToProfile, getInitials } from "@/lib/user-profile-store";
+import type { User as SupaUser } from "@supabase/supabase-js";
 
 const navLinks = [
   { href: "/", label: "Home" },
@@ -20,11 +21,12 @@ export default function Navbar() {
   const pathname = usePathname();
   const router = useRouter();
   const [mobileOpen, setMobileOpen] = useState(false);
-  const [user, setUser] = useState<User | null>(null);
+  const [user, setUser] = useState<SupaUser | null>(null);
   const [localUser, setLocalUser] = useState<SpottAccount | null>(null);
   const [unreadNotifs, setUnreadNotifs] = useState(0);
   const [mounted, setMounted] = useState(false);
   const [dropdownOpen, setDropdownOpen] = useState(false);
+  const [avatarUrl, setAvatarUrl] = useState<string>("");
   const dropdownRef = useRef<HTMLDivElement>(null);
   const supabase = createClient();
 
@@ -32,6 +34,12 @@ export default function Navbar() {
     const cur = getCurrentUser();
     setLocalUser(cur);
     setUnreadNotifs(getUnreadCount(cur?.role || "user", cur?.email));
+    if (cur?.email) {
+      const profile = getUserProfile(cur.email);
+      setAvatarUrl(profile.avatarUrl || "");
+    } else {
+      setAvatarUrl("");
+    }
   };
 
   useEffect(() => {
@@ -55,12 +63,14 @@ export default function Navbar() {
     window.addEventListener("spott_auth_changed", syncState);
     window.addEventListener("spott_notifications_updated", syncState);
     window.addEventListener("storage", syncState);
+    window.addEventListener("spott_profile_updated", syncState);
 
     return () => {
       subscription.unsubscribe();
       window.removeEventListener("spott_auth_changed", syncState);
       window.removeEventListener("spott_notifications_updated", syncState);
       window.removeEventListener("storage", syncState);
+      window.removeEventListener("spott_profile_updated", syncState);
     };
   }, []);
 
@@ -97,6 +107,7 @@ export default function Navbar() {
     user?.email?.split("@")[0] ||
     "User";
   const initial = displayName.charAt(0).toUpperCase();
+  const initials = getInitials(displayName);
 
   const isUserLoggedIn = mounted && Boolean(user || localUser);
 
@@ -147,22 +158,43 @@ export default function Navbar() {
               className="flex items-center gap-2 px-2 py-1.5 rounded-full hover:bg-gray-100 transition-colors cursor-pointer"
             >
               <span className="text-sm font-bold text-ink hidden sm:block">{displayName}</span>
-              <div className="w-9 h-9 rounded-full bg-[#eee9e1] border border-line flex items-center justify-center text-sm font-bold text-ink">
-                {initial}
+              <div className="w-9 h-9 rounded-full overflow-hidden bg-[#eee9e1] border border-line flex items-center justify-center text-sm font-bold text-ink shrink-0">
+                {avatarUrl ? (
+                  <img src={avatarUrl} alt={displayName} className="w-full h-full object-cover" />
+                ) : (
+                  <span>{initials}</span>
+                )}
               </div>
               <ChevronDown className="w-3.5 h-3.5 text-[#666666] hidden sm:block" />
             </button>
 
             {/* Dropdown */}
             {dropdownOpen && (
-              <div className="absolute right-0 mt-2 w-52 bg-white border border-[#e6e1d8] rounded-2xl shadow-xl py-2 z-50">
-                <div className="px-4 py-2 border-b border-[#e6e1d8]">
-                  <p className="text-xs font-bold text-[#171717]">{displayName}</p>
-                  <p className="text-[11px] text-[#ff6b35] font-semibold capitalize">
-                    {(mounted && localUser?.role) || "User"}
-                  </p>
+              <div className="absolute right-0 mt-2 w-56 bg-white border border-[#e6e1d8] rounded-2xl shadow-xl py-2 z-50">
+                <div className="px-4 py-3 border-b border-[#e6e1d8] flex items-center gap-3">
+                  <div className="w-10 h-10 rounded-full overflow-hidden bg-[#eee9e1] border border-line flex items-center justify-center text-sm font-bold text-ink shrink-0">
+                    {avatarUrl ? (
+                      <img src={avatarUrl} alt={displayName} className="w-full h-full object-cover" />
+                    ) : (
+                      <span>{initials}</span>
+                    )}
+                  </div>
+                  <div className="min-w-0">
+                    <p className="text-xs font-bold text-[#171717] truncate">{displayName}</p>
+                    <p className="text-[11px] text-[#ff6b35] font-semibold capitalize">
+                      {(mounted && localUser?.role) || "User"}
+                    </p>
+                  </div>
                 </div>
-                <div className="pt-1">
+                <div className="py-1">
+                  <Link
+                    href="/profile"
+                    onClick={() => setDropdownOpen(false)}
+                    className="w-full flex items-center gap-2 px-4 py-2.5 text-xs font-bold text-[#171717] hover:bg-[#faf8f3] cursor-pointer transition-colors no-underline"
+                  >
+                    <User className="w-3.5 h-3.5 text-[#ff6b35]" />
+                    <span>My Profile</span>
+                  </Link>
                   <button
                     onClick={handleSignOut}
                     className="w-full flex items-center gap-2 px-4 py-2.5 text-xs font-bold text-rose-600 hover:bg-rose-50 cursor-pointer text-left transition-colors"
@@ -226,15 +258,25 @@ export default function Navbar() {
             })}
             <div className="pt-2 border-t border-line mt-2">
               {isUserLoggedIn ? (
-                <button
-                  onClick={() => {
-                    setMobileOpen(false);
-                    handleSignOut();
-                  }}
-                  className="w-full text-left px-4 py-2 text-sm font-bold text-rose-600 hover:bg-rose-50 rounded"
-                >
-                  Log Out ({displayName})
-                </button>
+                <>
+                  <Link
+                    href="/profile"
+                    onClick={() => setMobileOpen(false)}
+                    className="flex items-center gap-2 px-4 py-2.5 text-sm font-bold text-[#171717] hover:bg-[#faf8f3] rounded transition-colors no-underline"
+                  >
+                    <User className="w-4 h-4 text-[#ff6b35]" />
+                    My Profile
+                  </Link>
+                  <button
+                    onClick={() => {
+                      setMobileOpen(false);
+                      handleSignOut();
+                    }}
+                    className="w-full text-left px-4 py-2 text-sm font-bold text-rose-600 hover:bg-rose-50 rounded"
+                  >
+                    Log Out ({displayName})
+                  </button>
+                </>
               ) : pathname !== "/login" ? (
                 <Link
                   href="/login"

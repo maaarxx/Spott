@@ -22,7 +22,8 @@ import {
 } from "lucide-react";
 import EventCard, { type EventData } from "@/components/EventCard";
 import CategoryPills from "@/components/CategoryPills";
-import { getStoredEvents, subscribeToEvents } from "@/lib/events-store";
+import { getStoredEvents, subscribeToEvents, saveStoredEvents } from "@/lib/events-store";
+import { syncNotificationsForEvents } from "@/lib/notifications-store";
 import { getRecommendedFeaturedEvents } from "@/lib/featured-recommendation";
 import { getCurrentUser, getUserSavedEvents, saveUserSavedEvents } from "@/lib/auth-store";
 import {
@@ -30,28 +31,14 @@ import {
   subscribeToOrganizerProfile,
   OrganizerProfile,
 } from "@/lib/organizer-store";
-
-const POPULAR_CATEGORIES = [
-  "Music & Concerts",
-  "Night Markets",
-  "School Events",
-  "Food & Drinks",
-  "Art & Culture",
-  "Workshops",
-  "Sports & Fitness",
-  "Tech",
-  "Comedy",
-  "Outdoor",
-  "Networking",
-];
-
-const CATEGORIES = POPULAR_CATEGORIES;
+import { getAllCategories, matchesCategory, matchesSearchQuery, matchesDirectText, DEFAULT_APP_CATEGORIES } from "@/lib/categories";
 
 export default function Home() {
   const router = useRouter();
   const [events, setEvents] = useState<EventData[]>([]);
   const [loading, setLoading] = useState(false);
   const [savedIds, setSavedIds] = useState<string[]>([]);
+  const [categoriesList, setCategoriesList] = useState<string[]>(DEFAULT_APP_CATEGORIES);
   const [organizers, setOrganizers] = useState<
     Array<OrganizerProfile & { eventCount: number; isVerified: boolean }>
   >([]);
@@ -77,13 +64,12 @@ export default function Home() {
     setEvents(local);
 
     try {
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), 1200);
-      const res = await fetch("/api/events", { signal: controller.signal });
-      clearTimeout(timer);
+      const res = await fetch("/api/events");
       if (res.ok) {
         const apiData = await res.json();
-        if (Array.isArray(apiData)) {
+        if (Array.isArray(apiData) && apiData.length > 0) {
+          saveStoredEvents(apiData, false);
+          syncNotificationsForEvents(apiData);
           const freshLocal = getStoredEvents();
           const existingIds = new Set(freshLocal.map((e) => e.id));
           const merged = [...freshLocal, ...apiData.filter((e: any) => !existingIds.has(e.id))];
@@ -106,7 +92,9 @@ export default function Home() {
     syncSaved();
     loadAllEvents();
 
-    const unsubscribe = subscribeToEvents(() => loadAllEvents());
+    const unsubscribe = subscribeToEvents(() => {
+      setEvents(getStoredEvents());
+    });
     window.addEventListener("spott_saved_updated", syncSaved);
     window.addEventListener("spott_auth_changed", syncSaved);
     window.addEventListener("storage", syncSaved);
@@ -130,6 +118,15 @@ export default function Home() {
       unsubProfile();
       unsubEvents();
     };
+  }, [events]);
+
+  useEffect(() => {
+    const syncCats = () => {
+      setCategoriesList(getAllCategories(events));
+    };
+    syncCats();
+    window.addEventListener("spott_categories_updated", syncCats);
+    return () => window.removeEventListener("spott_categories_updated", syncCats);
   }, [events]);
 
   const handleToggleSave = (eventId: string) => {
@@ -210,25 +207,23 @@ export default function Home() {
       pool = pool.filter((e) => featIds.has(e.id));
     }
 
-    // Category filter
+    // Category filter: applies unless the event has a direct keyword match in address, venue, or title
     if (selectedCategory && selectedCategory !== "All") {
-      pool = pool.filter((e) =>
-        e.categories?.some(
-          (c) => c.toLowerCase() === selectedCategory.toLowerCase()
-        )
-      );
+      pool = pool.filter((e) => {
+        if (matchesCategory(e.categories || (e as any).category, selectedCategory)) {
+          return true;
+        }
+        // Direct keyword match in address, venue, or title should not be hidden
+        if (searchQuery.trim() && matchesDirectText(e, searchQuery)) {
+          return true;
+        }
+        return false;
+      });
     }
 
-    // Search Query (Title, description, venue, address, organizer)
+    // Search Query (Title, description, venue, address, organizer, categories, synonyms)
     if (searchQuery.trim()) {
-      const q = searchQuery.toLowerCase().trim();
-      pool = pool.filter(
-        (e) =>
-          e.title?.toLowerCase().includes(q) ||
-          e.location?.toLowerCase().includes(q) ||
-          e.description?.toLowerCase().includes(q) ||
-          e.organizer?.toLowerCase().includes(q)
-      );
+      pool = pool.filter((e) => matchesSearchQuery(e, searchQuery));
     }
 
     // Date Filter
@@ -315,22 +310,17 @@ export default function Home() {
   // Search submit on Home
   const handleSearchSubmit = (e: React.FormEvent) => {
     e.preventDefault();
+    setSelectedCategory("");
     setNearMeOnly(false);
     setViewMode("all");
     setFilterFeaturedOnly(false);
     window.scrollTo({ top: 380, behavior: "smooth" });
   };
 
-  // Near me button click on Home
+  // Near me button click on Home: Navigate to discover with location map
   const handleNearMeClick = (e: React.MouseEvent) => {
     e.preventDefault();
-    setNearMeOnly(true);
-    setSearchQuery("");
-    setSelectedCategory("");
-    setViewMode("all");
-    setFilterFeaturedOnly(false);
-    setSortBy("soonest");
-    window.scrollTo({ top: 380, behavior: "smooth" });
+    router.push("/discover?nearMe=true");
   };
 
   // "See all" on Featured Events
@@ -446,7 +436,7 @@ export default function Home() {
           )}
         </div>
         <CategoryPills
-          categories={CATEGORIES}
+          categories={categoriesList}
           selected={selectedCategory}
           onSelect={handleCategorySelect}
         />
@@ -615,19 +605,21 @@ export default function Home() {
                         className="group bg-white border border-line rounded-2xl p-4 flex flex-col items-center justify-between text-center aspect-square hover:border-accent/40 hover:shadow-md hover:-translate-y-1 transition-all select-none cursor-pointer relative overflow-hidden"
                       >
                         {/* Avatar / Logo */}
-                        <div className="w-14 h-14 sm:w-16 sm:h-16 rounded-2xl bg-gradient-to-br from-[#171717] via-[#262626] to-[#3a3a3a] text-white flex items-center justify-center font-extrabold text-base sm:text-lg tracking-wider shadow-xs relative overflow-hidden shrink-0 group-hover:scale-105 transition-transform">
-                          {org.avatarUrl ? (
-                            <img
-                              src={org.avatarUrl}
-                              alt={org.name}
-                              className="w-full h-full object-cover"
-                            />
-                          ) : (
-                            <span>{initials}</span>
-                          )}
+                        <div className="relative shrink-0 group-hover:scale-105 transition-transform">
+                          <div className="w-14 h-14 sm:w-16 sm:h-16 rounded-2xl bg-gradient-to-br from-[#171717] via-[#262626] to-[#3a3a3a] text-white flex items-center justify-center font-extrabold text-base sm:text-lg tracking-wider shadow-xs overflow-hidden">
+                            {org.avatarUrl ? (
+                              <img
+                                src={org.avatarUrl}
+                                alt={org.name}
+                                className="w-full h-full object-cover"
+                              />
+                            ) : (
+                              <span>{initials}</span>
+                            )}
+                          </div>
                           {org.isVerified && (
                             <div
-                              className="absolute -bottom-1 -right-1 bg-white p-0.5 rounded-full shadow-xs"
+                              className="absolute -bottom-1 -right-1 bg-white p-0.5 rounded-full shadow-md z-10 flex items-center justify-center"
                               title="Verified Organizer"
                             >
                               <CheckCircle2 className="w-4 h-4 text-[#14804a]" />
@@ -688,6 +680,8 @@ export default function Home() {
                   <span>
                     {nearMeOnly
                       ? "Events Near You"
+                      : searchQuery.trim() && selectedCategory
+                      ? `${selectedCategory} • Search: "${searchQuery}"`
                       : searchQuery.trim()
                       ? `Search: "${searchQuery}"`
                       : filterFeaturedOnly

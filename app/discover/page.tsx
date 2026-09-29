@@ -1,12 +1,28 @@
 "use client";
 
-import { useState, useEffect, Suspense } from "react";
+import { useState, useEffect, useRef, Suspense } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
-import { Search, SlidersHorizontal, MapPin, X } from "lucide-react";
+import { Search, SlidersHorizontal, MapPin, X, ChevronDown, Check } from "lucide-react";
 import EventCard, { type EventData } from "@/components/EventCard";
 import MapView from "@/components/MapView";
 import { getStoredEvents, subscribeToEvents } from "@/lib/events-store";
 import { getCurrentUser, getUserSavedEvents, saveUserSavedEvents } from "@/lib/auth-store";
+import { getAllCategories, matchesCategory, matchesSearchQuery, matchesDirectText } from "@/lib/categories";
+
+const RADIUS_OPTIONS = [
+  { label: "1 kilometer", value: 1 },
+  { label: "2 kilometers", value: 2 },
+  { label: "5 kilometers", value: 5 },
+  { label: "10 kilometers", value: 10 },
+  { label: "19 kilometers", value: 19 },
+  { label: "20 kilometers", value: 20 },
+  { label: "40 kilometers", value: 40 },
+  { label: "60 kilometers", value: 60 },
+  { label: "80 kilometers", value: 80 },
+  { label: "100 kilometers", value: 100 },
+  { label: "250 kilometers", value: 250 },
+  { label: "500 kilometers", value: 500 },
+];
 
 function DiscoverContent() {
   const router = useRouter();
@@ -25,6 +41,29 @@ function DiscoverContent() {
   const [selectedEventId, setSelectedEventId] = useState<string | null>(null);
   const [showFilterModal, setShowFilterModal] = useState(false);
   const [showMapMobile, setShowMapMobile] = useState(false);
+  const [categoriesList, setCategoriesList] = useState<string[]>(["All"]);
+  const [userLocation, setUserLocation] = useState<{ lat: number; lng: number } | null>(null);
+  const [selectedRadius, setSelectedRadius] = useState<number | null>(null);
+  const [showRadiusDropdown, setShowRadiusDropdown] = useState(false);
+  const [isLocating, setIsLocating] = useState(false);
+  const [locationNotice, setLocationNotice] = useState<string | null>(null);
+
+  const mapRadiusDropdownRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const handleClickOutside = (e: MouseEvent) => {
+      const target = e.target as Node;
+      if (mapRadiusDropdownRef.current && !mapRadiusDropdownRef.current.contains(target)) {
+        setShowRadiusDropdown(false);
+      }
+    };
+    if (showRadiusDropdown) {
+      document.addEventListener("mousedown", handleClickOutside);
+    }
+    return () => {
+      document.removeEventListener("mousedown", handleClickOutside);
+    };
+  }, [showRadiusDropdown]);
 
   const loadAllEvents = async () => {
     const local = getStoredEvents();
@@ -41,7 +80,17 @@ function DiscoverContent() {
         if (Array.isArray(apiData)) {
           const freshLocal = getStoredEvents();
           const existingIds = new Set(freshLocal.map((e) => e.id));
-          const merged = [...freshLocal, ...apiData.filter((e: any) => !existingIds.has(e.id))];
+          const apiFormatted = apiData
+            .filter((e: any) => !existingIds.has(e.id))
+            .map((e: any) => ({
+              ...e,
+              categories: Array.isArray(e.categories)
+                ? e.categories
+                : [e.category || "Community"].filter(Boolean),
+              latitude: typeof e.latitude === "string" ? parseFloat(e.latitude) : e.latitude,
+              longitude: typeof e.longitude === "string" ? parseFloat(e.longitude) : e.longitude,
+            }));
+          const merged = [...freshLocal, ...apiFormatted];
           setEvents(merged);
         }
       }
@@ -61,7 +110,9 @@ function DiscoverContent() {
     syncSaved();
     loadAllEvents();
 
-    const unsubscribe = subscribeToEvents(() => loadAllEvents());
+    const unsubscribe = subscribeToEvents(() => {
+      setEvents(getStoredEvents());
+    });
     window.addEventListener("spott_saved_updated", syncSaved);
     window.addEventListener("spott_auth_changed", syncSaved);
     window.addEventListener("storage", syncSaved);
@@ -74,6 +125,15 @@ function DiscoverContent() {
     };
   }, []);
 
+  useEffect(() => {
+    const syncCats = () => {
+      setCategoriesList(["All", ...getAllCategories(events)]);
+    };
+    syncCats();
+    window.addEventListener("spott_categories_updated", syncCats);
+    return () => window.removeEventListener("spott_categories_updated", syncCats);
+  }, [events]);
+
   // Update when URL search parameters change
   useEffect(() => {
     if (searchParams.get("q") !== null) {
@@ -83,19 +143,6 @@ function DiscoverContent() {
       setSelectedCategory(searchParams.get("category") || "");
     }
   }, [searchParams]);
-
-  const fetchEvents = async () => {
-    try {
-      const res = await fetch("/api/events");
-      if (!res.ok) throw new Error("Failed to fetch");
-      const data = await res.json();
-      if (Array.isArray(data) && data.length > 0) {
-        setEvents(data);
-      }
-    } catch (error) {
-      console.error("Error fetching events:", error);
-    }
-  };
 
   const handleToggleSave = (eventId: string) => {
     const user = getCurrentUser();
@@ -111,47 +158,172 @@ function DiscoverContent() {
     saveUserSavedEvents(updated, user.email);
   };
 
-  // Filter events based on search and category
+  // Haversine distance calculator in km
+  function getDistanceKm(lat1: number, lon1: number, lat2: number, lon2: number) {
+    const R = 6371;
+    const dLat = ((lat2 - lat1) * Math.PI) / 180;
+    const dLon = ((lon2 - lon1) * Math.PI) / 180;
+    const a =
+      Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+      Math.cos((lat1 * Math.PI) / 180) *
+        Math.cos((lat2 * Math.PI) / 180) *
+        Math.sin(dLon / 2) *
+        Math.sin(dLon / 2);
+    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+    return R * c;
+  }
+
+  const refLat = userLocation?.lat ?? 14.5547;
+  const refLng = userLocation?.lng ?? 121.0244;
+
+  // Filter events based on search, category, and radius
   let filteredEvents = events.filter((event) => {
-    const matchesSearch =
-      !searchQuery.trim() ||
-      event.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      event.location?.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      event.city?.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      event.categories.some((c) => c.toLowerCase().includes(searchQuery.toLowerCase()));
+    const categories = Array.isArray(event.categories) ? event.categories : [];
+    const matchesSearch = matchesSearchQuery(event, searchQuery);
+    const hasDirectMatch = searchQuery.trim() ? matchesDirectText(event, searchQuery) : false;
 
     const matchesCat =
       !selectedCategory ||
-      event.categories.some((c) => c.toLowerCase() === selectedCategory.toLowerCase());
+      matchesCategory(categories, selectedCategory) ||
+      hasDirectMatch;
 
-    return matchesSearch && matchesCat;
+    if (!matchesSearch || !matchesCat) return false;
+
+    // Radius filter
+    if (selectedRadius) {
+      const dist = getDistanceKm(
+        refLat,
+        refLng,
+        event.latitude || 14.5995,
+        event.longitude || 120.9842
+      );
+      if (dist > selectedRadius) {
+        return false;
+      }
+    }
+
+    return true;
   });
 
   // Sort events
-  if (sortBy === "price") {
+  if (sortBy === "nearest") {
+    filteredEvents.sort((a, b) => {
+      const distA = getDistanceKm(refLat, refLng, a.latitude || 14.5995, a.longitude || 120.9842);
+      const distB = getDistanceKm(refLat, refLng, b.latitude || 14.5995, b.longitude || 120.9842);
+      return distA - distB;
+    });
+  } else if (sortBy === "price") {
     filteredEvents.sort((a, b) => a.price - b.price);
   } else if (sortBy === "date") {
     filteredEvents.sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
   }
 
-  const allCategories = [
-    "All",
-    "Music",
-    "Sports",
-    "Food",
-    "Art",
-    "Tech",
-    "Comedy",
-    "Night Markets",
-    "School Events",
-    "Concerts",
-    "Workshops",
-    "Community",
-  ];
+  const requestUserLocation = (onSuccess?: (coords: { lat: number; lng: number }) => void) => {
+    if (typeof window === "undefined" || !navigator.geolocation) {
+      alert("Geolocation is not supported by your browser.");
+      return;
+    }
+
+    setIsLocating(true);
+    setLocationNotice("Requesting device location permission to find events near you...");
+
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        setIsLocating(false);
+        const coords = { lat: pos.coords.latitude, lng: pos.coords.longitude };
+        setUserLocation(coords);
+        setSortBy("nearest");
+        setLocationNotice("✓ Location enabled: Showing events closest to you!");
+        setTimeout(() => setLocationNotice(null), 4000);
+        onSuccess?.(coords);
+      },
+      (err) => {
+        setIsLocating(false);
+        if (err.code === 1) {
+          setLocationNotice("Location permission denied. Showing events from standard Manila baseline.");
+        } else {
+          setLocationNotice("Could not determine your location. Showing events from standard Manila baseline.");
+        }
+        setTimeout(() => setLocationNotice(null), 5000);
+      },
+      { enableHighAccuracy: true, timeout: 10000, maximumAge: 30000 }
+    );
+  };
+
+  const handleNearMeClick = () => {
+    if (userLocation) {
+      // Toggle off
+      setUserLocation(null);
+      setSelectedRadius(null);
+      setLocationNotice(null);
+      return;
+    }
+    requestUserLocation();
+  };
+
+  const handleSelectRadius = (value: number | null) => {
+    setSelectedRadius(value);
+    setShowRadiusDropdown(false);
+    if (value !== null && !userLocation) {
+      requestUserLocation();
+    }
+  };
+
+  useEffect(() => {
+    if (initialNearMe) {
+      requestUserLocation();
+    }
+  }, [initialNearMe]);
+
+  // Radius Dropdown Component matching exact user reference styling
+  const RadiusDropdownMenu = () => (
+    <div className="absolute right-0 top-full mt-2 w-60 bg-[#1c1f22] border border-[#2b3036] rounded-xl shadow-2xl py-1.5 z-50 text-[#e2e8f0] animate-in fade-in zoom-in-95 duration-150">
+      <div className="max-h-72 overflow-y-auto">
+        {selectedRadius !== null && (
+          <button
+            type="button"
+            onClick={() => handleSelectRadius(null)}
+            className="w-full text-left px-4 py-2 text-xs font-bold text-muted hover:text-white hover:bg-[#282d32] border-b border-[#2b3036] cursor-pointer flex items-center justify-between transition-colors"
+          >
+            <span>Any Distance (Clear)</span>
+            <X className="w-3.5 h-3.5 text-muted hover:text-red-400" />
+          </button>
+        )}
+        {RADIUS_OPTIONS.map((opt) => {
+          const isSelected = selectedRadius === opt.value;
+          return (
+            <button
+              key={opt.value}
+              type="button"
+              onClick={() => handleSelectRadius(opt.value)}
+              className={`w-full text-left px-4 py-2.5 text-sm font-medium transition-colors flex items-center justify-between cursor-pointer ${
+                isSelected
+                  ? "bg-[#2d3236] text-white"
+                  : "text-[#d1d5db] hover:bg-[#282d32] hover:text-white"
+              }`}
+            >
+              <span>{opt.label}</span>
+              {isSelected && (
+                <svg
+                  className="w-4 h-4 text-[#38bdf8]"
+                  fill="none"
+                  viewBox="0 0 24 24"
+                  stroke="currentColor"
+                  strokeWidth={2.5}
+                >
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+                </svg>
+              )}
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
 
   return (
     <div className="h-[calc(100vh-72px)] flex flex-col bg-white">
-      {/* 1. TOP SEARCH & FILTER BAR (from screen-discover wireframe) */}
+      {/* 1. TOP SEARCH & FILTER BAR */}
       <div className="bg-white border-b border-line px-4 md:px-8 py-3 flex items-center gap-3 flex-shrink-0">
         <div className="relative flex-1 max-w-2xl">
           <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-muted" />
@@ -172,6 +344,7 @@ function DiscoverContent() {
           )}
         </div>
 
+        {/* Category Filters Button */}
         <button
           onClick={() => setShowFilterModal(!showFilterModal)}
           className={`flex items-center gap-1.5 px-4 py-2 border rounded-lg text-sm font-bold transition-colors cursor-pointer ${
@@ -200,7 +373,7 @@ function DiscoverContent() {
       {showFilterModal && (
         <div className="bg-[#faf8f3] border-b border-line p-4 px-4 md:px-8 flex flex-wrap gap-2 items-center animate-in slide-in-from-top-2 duration-150">
           <span className="text-xs font-bold text-muted mr-2">Filter by Category:</span>
-          {allCategories.map((cat) => {
+          {categoriesList.map((cat) => {
             const isSelected = (cat === "All" && !selectedCategory) || selectedCategory === cat;
             return (
               <button
@@ -222,7 +395,7 @@ function DiscoverContent() {
         </div>
       )}
 
-      {/* 2. DUAL-PANEL CONTENT (from screen-discover wireframe) */}
+      {/* 2. DUAL-PANEL CONTENT */}
       <div className="flex-1 flex overflow-hidden">
         {/* Left Panel: Events List */}
         <div
@@ -232,9 +405,24 @@ function DiscoverContent() {
         >
           {/* Results Header */}
           <div className="px-4 py-3 flex items-center justify-between border-b border-line bg-white sticky top-0 z-10">
-            <span className="text-sm font-bold text-ink">
-              {filteredEvents.length} event{filteredEvents.length !== 1 ? "s" : ""} found
-            </span>
+            <div className="flex items-center gap-2 flex-wrap">
+              <span className="text-sm font-bold text-ink">
+                {filteredEvents.length} event{filteredEvents.length !== 1 ? "s" : ""} found
+              </span>
+              {selectedRadius && (
+                <span className="inline-flex items-center gap-1 text-[11px] font-bold text-[#ff6b35] bg-orange-50 border border-orange-200/80 px-2 py-0.5 rounded-full">
+                  <span>within {selectedRadius} km</span>
+                  <button
+                    type="button"
+                    onClick={() => setSelectedRadius(null)}
+                    className="hover:text-ink ml-0.5 text-xs font-extrabold cursor-pointer"
+                    title="Remove radius filter"
+                  >
+                    ×
+                  </button>
+                </span>
+              )}
+            </div>
             <div className="flex items-center gap-2">
               <span className="text-xs text-muted">Sort:</span>
               <select
@@ -262,6 +450,7 @@ function DiscoverContent() {
                   onClick={() => {
                     setSearchQuery("");
                     setSelectedCategory("");
+                    setSelectedRadius(null);
                   }}
                   className="mt-3 text-xs font-bold text-accent hover:underline cursor-pointer"
                 >
@@ -269,45 +458,92 @@ function DiscoverContent() {
                 </button>
               </div>
             ) : (
-              filteredEvents.map((event) => (
-                <div
-                  key={event.id}
-                  onClick={() => setSelectedEventId(event.id)}
-                  className={`cursor-pointer rounded-2xl transition-all ${
-                    selectedEventId === event.id ? "ring-2 ring-accent" : ""
-                  }`}
-                >
-                  <EventCard
-                    event={{
-                      ...event,
-                      isSaved: savedIds.includes(event.id),
-                    }}
-                    variant="discover"
-                    onSave={(id: string) => handleToggleSave(id)}
-                  />
-                </div>
-              ))
+              filteredEvents.map((event) => {
+                const dist = userLocation
+                  ? getDistanceKm(
+                      userLocation.lat,
+                      userLocation.lng,
+                      event.latitude || 14.5995,
+                      event.longitude || 120.9842
+                    )
+                  : undefined;
+
+                return (
+                  <div
+                    key={event.id}
+                    onClick={() => setSelectedEventId(event.id)}
+                    className={`cursor-pointer rounded-2xl transition-all ${
+                      selectedEventId === event.id ? "ring-2 ring-accent" : ""
+                    }`}
+                  >
+                    <EventCard
+                      event={{
+                        ...event,
+                        distanceKm: dist,
+                        isSaved: savedIds.includes(event.id),
+                      }}
+                      variant="discover"
+                      onSave={(id: string) => handleToggleSave(id)}
+                    />
+                  </div>
+                );
+              })
             )}
           </div>
         </div>
 
         {/* Right Panel: Map View */}
         <div className={`${showMapMobile ? "block" : "hidden lg:block"} flex-1 relative p-3 bg-[#f8fafc]`}>
-          {/* Top Right "Near me" Button from wireframe */}
-          <button
-            onClick={() => {
-              setSortBy("nearest");
-              alert("Location centered: showing nearest events near you!");
-            }}
-            className="absolute top-6 right-6 z-20 bg-white text-ink px-4 py-2 rounded-md text-xs font-bold shadow-md border border-line hover:bg-gray-50 transition-colors cursor-pointer flex items-center gap-1.5"
-          >
-            <MapPin className="w-3.5 h-3.5 text-accent" /> Near me
-          </button>
+          {/* Top Right Controls on Map: "Near me" and "Radius" dropdown */}
+          <div className="absolute top-6 right-6 z-20 flex items-center gap-2" ref={mapRadiusDropdownRef}>
+            <button
+              type="button"
+              onClick={handleNearMeClick}
+              disabled={isLocating}
+              className={`px-4 py-2 rounded-md text-xs font-bold shadow-md border transition-all cursor-pointer flex items-center gap-1.5 ${
+                userLocation
+                  ? "bg-[#ff6b35] text-white border-[#ff6b35] shadow-lg scale-105"
+                  : "bg-white text-ink border-line hover:bg-gray-50 hover:border-accent"
+              }`}
+            >
+              <MapPin className={`w-3.5 h-3.5 ${userLocation ? "text-white" : "text-accent"}`} />
+              <span>{isLocating ? "Detecting location..." : "Near me"}</span>
+            </button>
+
+            <div className="relative">
+              <button
+                type="button"
+                onClick={() => setShowRadiusDropdown(!showRadiusDropdown)}
+                className={`px-3 py-2 rounded-md text-xs font-bold shadow-md border transition-all cursor-pointer flex items-center gap-1.5 ${
+                  selectedRadius
+                    ? "bg-[#1c1f22] text-white border-[#2b3036]"
+                    : "bg-white text-ink border-line hover:bg-gray-50 hover:border-accent"
+                }`}
+              >
+                <span className={selectedRadius ? "text-[#38bdf8]" : ""}>
+                  {selectedRadius ? `${selectedRadius} km` : "Radius"}
+                </span>
+                <ChevronDown className="w-3 h-3 text-muted" />
+              </button>
+              {showRadiusDropdown && <RadiusDropdownMenu />}
+            </div>
+          </div>
+
+          {/* Floating Location Notice Banner */}
+          {locationNotice && (
+            <div className="absolute top-18 right-6 z-20 bg-[#171717] text-white px-4 py-2.5 rounded-xl text-xs font-semibold shadow-xl max-w-sm animate-in fade-in slide-in-from-top-2 duration-200">
+              {locationNotice}
+            </div>
+          )}
 
           <MapView
             events={filteredEvents}
             selectedEventId={selectedEventId}
             onSelectEvent={(e) => setSelectedEventId(e.id)}
+            userLocation={userLocation}
+            radiusKm={selectedRadius}
+            center={userLocation || undefined}
+            zoom={userLocation ? 13 : undefined}
           />
         </div>
       </div>

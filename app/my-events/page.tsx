@@ -32,6 +32,12 @@ import {
   saveUserReminders,
   SpottAccount,
 } from "@/lib/auth-store";
+import {
+  setEventReminder,
+  removeEventReminder,
+  getUserRemindersForEvent,
+  hasUserReminder,
+} from "@/lib/reminders-store";
 import CancelRsvpModal from "@/components/CancelRsvpModal";
 
 type Tab = "saved" | "registered" | "created" | "upcoming" | "past";
@@ -272,25 +278,33 @@ export default function MyEventsPage() {
     showToast(`✓ Opened Google Calendar for "${event.title}"`);
   };
 
-  const handleSetReminder = (event: EventData, minutesBefore: number, e?: React.MouseEvent) => {
+  const handleSetReminder = async (event: EventData, label: string, minutesBefore: number, e?: React.MouseEvent) => {
     e?.stopPropagation();
     if (!currentUser) return;
-    const added = toggleUserReminder(event.id, currentUser.email);
-    setReminders(getUserReminders(currentUser.email));
+    const isAlreadySet = hasUserReminder(event.id, label, currentUser.email);
+    if (isAlreadySet) {
+      await removeEventReminder(event.id, label, currentUser.email);
+      setReminders(getUserReminders(currentUser.email));
+      setReminderPickerOpen(false);
+      showToast(`Reminder removed for "${event.title}".`, "info");
+      return;
+    }
+
+    const res = await setEventReminder({
+      eventId: event.id,
+      eventTitle: event.title,
+      eventDate: event.date,
+      offsetLabel: label,
+      offsetMinutes: minutesBefore,
+      userEmailOrId: currentUser.email,
+    });
     setReminderPickerOpen(false);
 
-    if (added) {
-      // Fire a Spott in-app notification for the reminder
-      addNotification({
-        type: "reminder",
-        title: `Reminder Set: "${event.title}"`,
-        message: `You'll be reminded ${minutesBefore >= 60 ? `${minutesBefore / 60}h` : `${minutesBefore}min`} before the event on ${format(new Date(event.date), "EEE, MMM d • h:mm a")}.`,
-        targetRole: "user",
-        link: `/events/${event.id}`,
-      });
-      showToast(`Reminder set for "${event.title}"!`);
+    if (res.success) {
+      setReminders(getUserReminders(currentUser.email));
+      showToast(`Reminder set for "${event.title}" (${label})!`);
     } else {
-      showToast(`Reminder removed for "${event.title}".`, "info");
+      showToast(`⚠️ ${res.error || "Failed to set reminder."}`, "info");
     }
   };
 
@@ -483,7 +497,7 @@ export default function MyEventsPage() {
                     {/* Reminder */}
                     <button
                       title={isReminderSet(event.id) ? "Reminder set — click to remove" : "Set reminder"}
-                      onClick={(e) => { e.stopPropagation(); handleSetReminder(event, 60); }}
+                      onClick={(e) => { e.stopPropagation(); handleSetReminder(event, "1 hour before", 60, e); }}
                       className={`p-1.5 rounded-lg border transition-all cursor-pointer ${
                         isReminderSet(event.id)
                           ? "border-[#ff6b35] bg-[#fff0e8] text-[#ff6b35]"
@@ -614,21 +628,34 @@ export default function MyEventsPage() {
                       Remind me before event
                     </p>
                     {[
-                      { label: "15 minutes before", mins: 15 },
-                      { label: "30 minutes before", mins: 30 },
-                      { label: "1 hour before", mins: 60 },
-                      { label: "2 hours before", mins: 120 },
                       { label: "1 day before", mins: 1440 },
-                    ].map(({ label, mins }) => (
-                      <button
-                        key={mins}
-                        onClick={(e) => handleSetReminder(quickActionEvent, mins, e)}
-                        className="w-full flex items-center gap-2.5 px-3 py-2.5 rounded-xl text-sm font-bold text-ink hover:bg-[#fff0e8] hover:text-[#ff6b35] transition-colors cursor-pointer text-left"
-                      >
-                        <Clock className="w-3.5 h-3.5 text-[#ff6b35] shrink-0" />
-                        {label}
-                      </button>
-                    ))}
+                      { label: "3 hours before", mins: 180 },
+                      { label: "1 hour before", mins: 60 },
+                      { label: "30 minutes before", mins: 30 },
+                    ].map(({ label, mins }) => {
+                      const isSet = quickActionEvent && hasUserReminder(quickActionEvent.id, label, currentUser?.email);
+                      return (
+                        <button
+                          key={mins}
+                          onClick={(e) => handleSetReminder(quickActionEvent, label, mins, e)}
+                          className={`w-full flex items-center justify-between gap-2.5 px-3 py-2.5 rounded-xl text-sm font-bold transition-colors cursor-pointer text-left ${
+                            isSet
+                              ? "bg-[#fff0e8] text-[#ff6b35]"
+                              : "text-ink hover:bg-[#fff0e8] hover:text-[#ff6b35]"
+                          }`}
+                        >
+                          <div className="flex items-center gap-2.5">
+                            <Clock className="w-3.5 h-3.5 text-[#ff6b35] shrink-0" />
+                            <span>{label}</span>
+                          </div>
+                          {isSet && (
+                            <span className="text-[10px] font-black uppercase tracking-wider text-[#ff6b35]">
+                              Active (Remove)
+                            </span>
+                          )}
+                        </button>
+                      );
+                    })}
                     <button
                       onClick={() => setReminderPickerOpen(false)}
                       className="w-full px-3 py-2 rounded-xl text-xs font-bold text-muted hover:bg-gray-50 transition-colors cursor-pointer text-center"

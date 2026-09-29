@@ -11,7 +11,7 @@ export type SpottAccount = {
   destination: string;
 };
 
-export const SPOTT_ACCOUNTS: Record<RoleType, SpottAccount> = {
+export const SPOTT_ACCOUNTS: Record<string, SpottAccount> = {
   user: {
     email: "jdc@spott.ph",
     password: "user123",
@@ -25,6 +25,30 @@ export const SPOTT_ACCOUNTS: Record<RoleType, SpottAccount> = {
     name: "Metro Creative Group",
     role: "organizer",
     organization: "Metro Creative Group",
+    destination: "/organizer",
+  },
+  hobbyist: {
+    email: "hobby@spott.ph",
+    password: "hobby123",
+    name: "Hobbyist Haven PH",
+    role: "organizer",
+    organization: "Hobbyist Haven PH",
+    destination: "/organizer",
+  },
+  techtist: {
+    email: "tech@spott.ph",
+    password: "tech123",
+    name: "Tech Manila Hub",
+    role: "organizer",
+    organization: "Tech Manila Hub",
+    destination: "/organizer",
+  },
+  gamer: {
+    email: "gamer@spott.ph",
+    password: "gamer123",
+    name: "Vanguard Gaming League",
+    role: "organizer",
+    organization: "Vanguard Gaming League",
     destination: "/organizer",
   },
   admin: {
@@ -139,12 +163,12 @@ export function getUserRegisteredEvents(email?: string): string[] {
     try {
       const parsed = JSON.parse(raw);
       if (Array.isArray(parsed)) {
-        parsed.forEach((id) => registeredSet.add(String(id)));
+        return parsed.map(String);
       }
     } catch {}
   }
 
-  // 2. Cross-reference spott_guest_lists to recover any RSVPs from guest lists
+  // 2. Cross-reference spott_guest_lists to recover any RSVPs from guest lists on initial load
   try {
     const rawGuests = localStorage.getItem("spott_guest_lists");
     if (rawGuests) {
@@ -153,8 +177,9 @@ export function getUserRegisteredEvents(email?: string): string[] {
         if (Array.isArray(guestList)) {
           const isAttending = guestList.some(
             (g: any) =>
-              (g.email && g.email.trim().toLowerCase() === userEmail) ||
-              (current?.name && g.name && g.name.trim().toLowerCase() === current.name.trim().toLowerCase())
+              g.status !== "Declined" &&
+              ((g.email && g.email.trim().toLowerCase() === userEmail) ||
+              (current?.name && g.name && g.name.trim().toLowerCase() === current.name.trim().toLowerCase()))
           );
           if (isAttending) {
             registeredSet.add(eventId);
@@ -164,10 +189,9 @@ export function getUserRegisteredEvents(email?: string): string[] {
     }
   } catch {}
 
-  // 3. Self-healing recovery for Juan Dela Cruz:
-  // If registeredSet is empty or not yet reconciled, check active events with registrations > 0
+  // 3. One-time initial seed recovery for demo user Juan Dela Cruz (only if never reconciled before)
   const alreadyReconciled = localStorage.getItem(seededKey) === "true";
-  if ((!alreadyReconciled || registeredSet.size === 0) && userEmail === "jdc@spott.ph") {
+  if (!alreadyReconciled && userEmail === "jdc@spott.ph") {
     try {
       const rawEvents = localStorage.getItem("spott_events_directory");
       if (rawEvents) {
@@ -176,33 +200,11 @@ export function getUserRegisteredEvents(email?: string): string[] {
           eventsList.forEach((e: any) => {
             if (e && e.id && (e.registrations || 0) > 0) {
               registeredSet.add(String(e.id));
-
-              // Ensure Juan Dela Cruz is recorded in the guest list for this event
-              try {
-                const rawGuests = localStorage.getItem("spott_guest_lists");
-                const guestMap = rawGuests ? JSON.parse(rawGuests) : {};
-                let list = guestMap[e.id] || [];
-                if (!list.some((g: any) => g.email?.toLowerCase() === "jdc@spott.ph")) {
-                  list.unshift({
-                    id: `att-jdc-${e.id}`,
-                    name: "Juan Dela Cruz",
-                    email: "jdc@spott.ph",
-                    status: "Confirmed",
-                    dateRegistered: new Date().toISOString().split("T")[0],
-                    ticketType: "General Admission",
-                    phone: "+63 917 123 4567",
-                    notes: "Campus Student RSVP",
-                  });
-                  guestMap[e.id] = list;
-                  localStorage.setItem("spott_guest_lists", JSON.stringify(guestMap));
-                }
-              } catch {}
             }
           });
         }
       }
     } catch {}
-
     localStorage.setItem(seededKey, "true");
   }
 
@@ -211,6 +213,7 @@ export function getUserRegisteredEvents(email?: string): string[] {
   // Sync to user's storage key
   try {
     localStorage.setItem(key, JSON.stringify(result));
+    localStorage.setItem(seededKey, "true");
   } catch {}
 
   return result;

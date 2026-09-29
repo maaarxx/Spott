@@ -65,22 +65,34 @@ import {
   AdminUser,
   getAdminUsers,
   saveAdminUsers,
+  deleteAdminUser,
   subscribeToUsers,
   registerUserInAdmin,
+  formatRealTimeJoined,
+  syncUsersFromApi,
   INITIAL_ADMIN_USERS,
   USERS_STORE_KEY,
   SIGNUP_STORE_KEY,
 } from "@/lib/users-store";
+import {
+  getModerationKeywords,
+  addModerationKeyword,
+  removeModerationKeyword,
+  resetModerationKeywords,
+  getModerationSettings,
+  saveModerationSettings,
+  subscribeToModeration,
+  ModerationSettings,
+} from "@/lib/moderation-store";
+import {
+  getReports,
+  resolveReport,
+  subscribeToReports,
+  ReportItem,
+} from "@/lib/reports-store";
+import { getUserProfile, getInitials } from "@/lib/user-profile-store";
 
-
-interface Report {
-  id: string;
-  reporter: string;
-  event: string;
-  reason: string;
-  status: "open" | "resolved";
-  details: string;
-}
+type Report = ReportItem;
 
 interface VerificationReq {
   id: string;
@@ -102,7 +114,11 @@ interface AdminEvent {
   category: string;
   date: string;
   rsvps: number;
+  capacity?: number;
   status: "Active" | "Draft" | "Past" | "Flagged";
+  isLargeGathering?: boolean;
+  isKeywordFlagged?: boolean;
+  matchedKeywords?: string[];
 }
 
 interface MonthlyData {
@@ -134,6 +150,15 @@ function AdminContent() {
   const [hoveredMonth, setHoveredMonth] = useState<MonthlyData | null>(null);
   const [actionNotice, setActionNotice] = useState<string | null>(null);
   const [pendingOrganizers, setPendingOrganizers] = useState<PendingOrganizer[]>([]);
+  const [moderationKeywords, setModerationKeywords] = useState<string[]>([]);
+  const [newKeywordInput, setNewKeywordInput] = useState("");
+  const [moderationSettings, setModerationSettings] = useState<ModerationSettings>({
+    capacityThreshold: 200,
+    sensitivity: "Strict",
+    autoFlagLargeEvents: true,
+  });
+  const [tempThreshold, setTempThreshold] = useState<number>(200);
+  const [tempSensitivity, setTempSensitivity] = useState<"Strict" | "Standard">("Strict");
 
   // Dynamically compute monthly activity from eventsList
   const monthlyActivity: MonthlyData[] = useMemo(() => {
@@ -199,32 +224,120 @@ function AdminContent() {
     const syncVerifications = () => {
       const current = getVerificationState();
       setVerState(current);
-      if (current.documents && current.documents.length > 0) {
-        setVerifications([
-          {
-            id: "ver-metro",
-            organizer: "Metro Creative Group",
-            submitted: formatDate(0),
-            category: "Arts & Culture",
-            status: current.status,
-            documents: current.documents.map((d) => d.name),
-          },
-        ]);
-      } else {
-        setVerifications([]);
+
+      // Scan ALL organizer verification keys across localStorage (not just Metro)
+      const allVerifications: VerificationReq[] = [];
+      const seen = new Set<string>();
+      try {
+        for (let i = 0; i < localStorage.length; i++) {
+          const key = localStorage.key(i);
+          if (!key || !key.startsWith("spott_verification_state")) continue;
+          const raw = localStorage.getItem(key);
+          if (!raw) continue;
+          try {
+            const parsed: VerificationState = JSON.parse(raw);
+            const orgName = parsed.organizerName || "Unknown Organizer";
+            if (seen.has(orgName.toLowerCase())) continue;
+            seen.add(orgName.toLowerCase());
+            if (!parsed.documents || parsed.documents.length === 0) continue;
+            allVerifications.push({
+              id: `ver-${key}`,
+              organizer: orgName,
+              submitted: parsed.expeditedAt || parsed.decidedAt || formatDate(0),
+              category: "Student Organization",
+              status: parsed.status,
+              documents: parsed.documents.map((d) => d.name),
+              decidedAt: parsed.decidedAt,
+              retentionDays: parsed.retentionDays,
+              expiresDate: parsed.expiresDate,
+              decisionReason: parsed.decisionReason,
+            });
+          } catch {}
+        }
+      } catch {}
+
+      // Override Metro's entry with its live verState for consistency
+      const metroIdx = allVerifications.findIndex(
+        (v) => v.organizer.toLowerCase().includes("metro creative")
+      );
+      if (metroIdx >= 0) {
+        allVerifications[metroIdx] = {
+          ...allVerifications[metroIdx],
+          id: "ver-metro",
+          status: current.status,
+          documents: current.documents.map((d) => d.name),
+          decidedAt: current.decidedAt,
+          expiresDate: current.expiresDate,
+        };
+      } else if (current.documents && current.documents.length > 0) {
+        allVerifications.unshift({
+          id: "ver-metro",
+          organizer: "Metro Creative Group",
+          submitted: formatDate(0),
+          category: "Arts & Culture",
+          status: current.status,
+          documents: current.documents.map((d) => d.name),
+          decidedAt: current.decidedAt,
+          expiresDate: current.expiresDate,
+        });
       }
+
+      setVerifications(allVerifications);
     };
 
     const mapToAdminEvents = (list: any[]): AdminEvent[] => {
-      return list.map((e) => ({
-        id: e.id,
-        title: e.title,
-        organizer: e.organizer || "Metro Creative Group",
-        category: e.categories?.[0] || "General",
-        date: e.date,
-        rsvps: e.registrations || 0,
-        status: (e.status === "active" ? "Active" : e.status === "draft" ? "Draft" : "Past") as any,
-      }));
+      const modSettings = getModerationSettings();
+      const modKeywords = getModerationKeywords();
+
+      return list.map((e) => {
+        let rsvpCount = e.registrations || 0;
+        try {
+          const rawGuests = localStorage.getItem("spott_guest_lists");
+          if (rawGuests) {
+            const guestMap = JSON.parse(rawGuests);
+            if (Array.isArray(guestMap[e.id])) {
+              const activeAttendees = guestMap[e.id].filter((a: any) => a.status !== "Declined");
+              rsvpCount = Math.max(rsvpCount, activeAttendees.length);
+            }
+          }
+        } catch {}
+
+        try {
+          let userRegistrations = 0;
+          for (let i = 0; i < localStorage.length; i++) {
+            const key = localStorage.key(i);
+            if (key && (key === "spott_registered_events" || key.startsWith("spott_registered_events_"))) {
+              const raw = localStorage.getItem(key);
+              if (raw) {
+                const arr = JSON.parse(raw);
+                if (Array.isArray(arr) && arr.includes(e.id)) {
+                  userRegistrations++;
+                }
+              }
+            }
+          }
+          rsvpCount = Math.max(rsvpCount, userRegistrations);
+        } catch {}
+
+        const cap = typeof e.capacity === "number" ? e.capacity : (e.capacity ? Number(e.capacity) : 100);
+        const textToScan = `${e.title || ""} ${e.description || ""}`.toLowerCase();
+        const matched = modKeywords.filter((k) => textToScan.includes(k.toLowerCase()));
+        const isLarge = Math.max(cap, rsvpCount) >= modSettings.capacityThreshold;
+
+        return {
+          id: e.id,
+          title: e.title,
+          organizer: e.organizer || "Metro Creative Group",
+          category: e.categories?.[0] || "General",
+          date: e.date,
+          rsvps: rsvpCount,
+          capacity: cap,
+          status: (e.status === "active" ? "Active" : e.status === "draft" ? "Draft" : e.status === "flagged" ? "Flagged" : "Active") as any,
+          isLargeGathering: isLarge,
+          isKeywordFlagged: matched.length > 0,
+          matchedKeywords: matched,
+        };
+      });
     };
 
     const syncAdminEvents = async () => {
@@ -260,6 +373,7 @@ function AdminContent() {
       setUsersList(getAdminUsers());
     };
     syncUsers();
+    syncUsersFromApi().then(() => syncUsers());
     const unsubUsers = subscribeToUsers(syncUsers);
 
     // Real-time Pending Organizers sync
@@ -267,28 +381,82 @@ function AdminContent() {
     syncPendingOrgs();
     const unsubPendingOrgs = subscribeToPendingOrganizers(syncPendingOrgs);
 
+    // Moderation sync
+    const syncModeration = () => {
+      const kw = getModerationKeywords();
+      const st = getModerationSettings();
+      setModerationKeywords(kw);
+      setModerationSettings(st);
+      setTempThreshold(st.capacityThreshold);
+      setTempSensitivity(st.sensitivity);
+    };
+    syncModeration();
+    const unsubModeration = subscribeToModeration(() => {
+      syncModeration();
+      syncAdminEvents();
+    });
+
+    // Real-time Reports sync
+    const syncReports = () => {
+      setReports(getReports());
+    };
+    syncReports();
+    const unsubReports = subscribeToReports(syncReports);
+
     // Heartbeat to guarantee multi-tab real-time sync even across backgrounded tabs
     const syncInterval = setInterval(() => {
       syncUsers();
       syncPendingOrgs();
+      syncAdminEvents();
+      syncReports();
+      syncVerifications();
     }, 1500);
 
     const unsubscribeEvents = subscribeToEvents(syncAdminEvents);
+    window.addEventListener("spott_registered_updated", syncAdminEvents);
+    window.addEventListener("spott_events_updated", syncAdminEvents);
     window.addEventListener("spott_verification_updated", syncVerifications);
+    window.addEventListener("spott_reports_updated", syncReports);
     window.addEventListener(PENDING_ORGANIZERS_EVENT, syncPendingOrgs);
     return () => {
       unsubscribeEvents();
       unsubUsers();
       unsubPendingOrgs();
+      unsubModeration();
+      unsubReports();
       clearInterval(syncInterval);
+      window.removeEventListener("spott_registered_updated", syncAdminEvents);
+      window.removeEventListener("spott_events_updated", syncAdminEvents);
       window.removeEventListener("spott_verification_updated", syncVerifications);
+      window.removeEventListener("spott_reports_updated", syncReports);
       window.removeEventListener(PENDING_ORGANIZERS_EVENT, syncPendingOrgs);
     };
   }, []);
 
   // Search filters
   const [userSearch, setUserSearch] = useState("");
+  const [userSortOrder, setUserSortOrder] = useState<"newest" | "oldest" | "name">("newest");
   const [eventSearch, setEventSearch] = useState("");
+
+  // Real-time sorted & filtered users
+  const displayedUsers = useMemo(() => {
+    const query = userSearch.toLowerCase().trim();
+    const filtered = usersList.filter(
+      (u) =>
+        !query ||
+        u.name.toLowerCase().includes(query) ||
+        u.email.toLowerCase().includes(query)
+    );
+
+    return [...filtered].sort((a, b) => {
+      if (userSortOrder === "name") {
+        return a.name.localeCompare(b.name);
+      }
+      const tA = a.joinedAt ? new Date(a.joinedAt).getTime() : new Date(a.joined).getTime() || 0;
+      const tB = b.joinedAt ? new Date(b.joinedAt).getTime() : new Date(b.joined).getTime() || 0;
+      return userSortOrder === "newest" ? tB - tA : tA - tB;
+    });
+  }, [usersList, userSearch, userSortOrder]);
 
   // Modals
   const [selectedUser, setSelectedUser] = useState<AdminUser | null>(null);
@@ -300,6 +468,39 @@ function AdminContent() {
   const showNotice = (msg: string) => {
     setActionNotice(msg);
     setTimeout(() => setActionNotice(null), 3500);
+  };
+
+  const handleAddKeyword = (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    const kw = newKeywordInput.trim();
+    if (!kw) return;
+    const updated = addModerationKeyword(kw);
+    setModerationKeywords(updated);
+    setNewKeywordInput("");
+    showNotice(`✓ Added "${kw}" to automated listing filters.`);
+  };
+
+  const handleRemoveKeyword = (kw: string) => {
+    const updated = removeModerationKeyword(kw);
+    setModerationKeywords(updated);
+    showNotice(`Removed "${kw}" from listing filters.`);
+  };
+
+  const handleResetKeywords = () => {
+    const updated = resetModerationKeywords();
+    setModerationKeywords(updated);
+    showNotice(`Reset listing filters to default moderation keywords.`);
+  };
+
+  const handleSaveThreshold = (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    const updated = saveModerationSettings({
+      capacityThreshold: tempThreshold,
+      sensitivity: tempSensitivity,
+    });
+    setModerationSettings(updated);
+    setThresholdModalOpen(false);
+    showNotice(`✓ Threshold saved: Events with ${updated.capacityThreshold}+ capacity will trigger Crowd Safety Review.`);
   };
 
   // 1. User Management Handlers
@@ -314,14 +515,20 @@ function AdminContent() {
   };
 
   const handleDeleteUser = (id: string, name: string) => {
-    if (!confirm(`Are you sure you want to remove ${name}'s account?`)) return;
-    setUsersList((prev) => {
-      const next = prev.filter((u) => u.id !== id);
-      saveAdminUsers(next);
-      return next;
-    });
+    if (!confirm(`Are you sure you want to permanently remove ${name}'s account?\n\nThis cannot be undone — the account will not return after a page refresh.`)) return;
+    const userToDelete = usersList.find((u) => u.id === id);
+    if (userToDelete) {
+      deleteAdminUser({ id: userToDelete.id, email: userToDelete.email, name: userToDelete.name });
+    } else {
+      // Fallback: just filter and save if somehow not in current list
+      setUsersList((prev) => {
+        const next = prev.filter((u) => u.id !== id);
+        saveAdminUsers(next);
+        return next;
+      });
+    }
     setSelectedUser(null);
-    showNotice(`Removed ${name}'s account from system.`);
+    showNotice(`✓ Permanently removed ${name}'s account.`);
   };
 
   // Pending Organizer Approval Handlers
@@ -423,11 +630,17 @@ function AdminContent() {
 
   // 3. Report Resolution Handlers
   const handleResolveReportAction = (id: string, actionNote: string) => {
-    setReports((prev) =>
-      prev.map((r) => (r.id === id ? { ...r, status: "resolved" } : r))
-    );
+    resolveReport(id, actionNote);
+    if (actionNote.toLowerCase().includes("removed") && selectedReport?.eventId) {
+      try {
+        deleteStoredEvent(selectedReport.eventId);
+        removeNotificationsForEvent(selectedReport.eventId, selectedReport.event);
+        setEventsList((prev) => prev.filter((e) => e.id !== selectedReport.eventId));
+      } catch {}
+    }
+    setReports(getReports());
     setSelectedReport(null);
-    showNotice(`Report resolved: ${actionNote}`);
+    showNotice(`✓ Report resolved: ${actionNote}`);
   };
 
   // 4. Verification Handlers & 30-Day Archive System
@@ -920,20 +1133,38 @@ function AdminContent() {
         <div className="space-y-6">
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
             <div>
-              <h1 className="text-2xl sm:text-3xl font-black text-[#171717]">User Management</h1>
+              <div className="flex items-center gap-2.5">
+                <h1 className="text-2xl sm:text-3xl font-black text-[#171717]">User Management</h1>
+                <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[10px] font-black tracking-wide uppercase bg-emerald-50 text-emerald-700 border border-emerald-200">
+                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
+                  Live Sync
+                </span>
+              </div>
               <p className="text-sm text-[#666666] mt-0.5">
                 Manage registered university accounts and roles ({usersList.length} active).
               </p>
             </div>
-            <div className="relative w-full sm:w-72">
-              <Search className="w-4 h-4 text-[#888888] absolute left-3.5 top-1/2 -translate-y-1/2" />
-              <input
-                type="text"
-                value={userSearch}
-                onChange={(e) => setUserSearch(e.target.value)}
-                placeholder="Search user by name or email..."
-                className="w-full pl-10 pr-3 py-2 text-xs sm:text-sm border border-[#e6e1d8] rounded-xl bg-white focus:outline-none focus:border-[#ff6b35]"
-              />
+            <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2 w-full sm:w-auto">
+              <div className="relative w-full sm:w-64">
+                <Search className="w-4 h-4 text-[#888888] absolute left-3.5 top-1/2 -translate-y-1/2" />
+                <input
+                  type="text"
+                  value={userSearch}
+                  onChange={(e) => setUserSearch(e.target.value)}
+                  placeholder="Search user by name or email..."
+                  className="w-full pl-10 pr-3 py-2 text-xs sm:text-sm border border-[#e6e1d8] rounded-xl bg-white focus:outline-none focus:border-[#ff6b35]"
+                />
+              </div>
+              <select
+                value={userSortOrder}
+                onChange={(e) => setUserSortOrder(e.target.value as any)}
+                className="px-3 py-2 text-xs font-bold border border-[#e6e1d8] rounded-xl bg-white text-[#171717] focus:outline-none focus:border-[#ff6b35] cursor-pointer"
+                title="Sort registered users"
+              >
+                <option value="newest">🕒 Joined: Newest First</option>
+                <option value="oldest">⏳ Joined: Oldest First</option>
+                <option value="name">🔤 Name (A-Z)</option>
+              </select>
             </div>
           </div>
 
@@ -1040,16 +1271,47 @@ function AdminContent() {
                   <th className="py-3.5 px-6">Email</th>
                   <th className="py-3.5 px-6">Role</th>
                   <th className="py-3.5 px-6">Status</th>
-                  <th className="py-3.5 px-6">Joined</th>
+                  <th className="py-3.5 px-6">Joined (Real-Time)</th>
                   <th className="py-3.5 px-6 text-right">Actions</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-[#e6e1d8]">
-                {usersList
-                  .filter((u) => u.name.toLowerCase().includes(userSearch.toLowerCase()) || u.email.toLowerCase().includes(userSearch.toLowerCase()))
-                  .map((u) => (
+                {displayedUsers.map((u) => {
+                  const rt = formatRealTimeJoined(u);
+                  return (
                     <tr key={u.id} className="hover:bg-[#faf8f3]/60 transition-colors">
-                      <td className="py-4 px-6 font-bold text-[#171717]">{u.name}</td>
+                      <td className="py-4 px-6">
+                        <div className="flex items-center gap-3">
+                          {/* Profile Avatar */}
+                          {(() => {
+                            const p = getUserProfile(u.email);
+                            const ini = getInitials(u.name);
+                            return (
+                              <div className="w-8 h-8 rounded-full overflow-hidden bg-[#eee9e1] border border-[#e6e1d8] flex items-center justify-center text-xs font-black text-[#555] shrink-0">
+                                {p.avatarUrl ? (
+                                  <img src={p.avatarUrl} alt={u.name} className="w-full h-full object-cover" />
+                                ) : (
+                                  <span>{ini}</span>
+                                )}
+                              </div>
+                            );
+                          })()}
+                          <div className="min-w-0">
+                            <p className="font-bold text-[#171717] text-sm truncate">{u.name}</p>
+                            {(() => {
+                              const p = getUserProfile(u.email);
+                              if (p.phone || p.address) {
+                                return (
+                                  <p className="text-[11px] text-[#888888] truncate">
+                                    {p.phone || p.address}
+                                  </p>
+                                );
+                              }
+                              return null;
+                            })()}
+                          </div>
+                        </div>
+                      </td>
                       <td className="py-4 px-6 text-xs text-[#555555] font-mono">{u.email}</td>
                       <td className="py-4 px-6">
                         <span className={`text-xs font-extrabold px-2.5 py-1 rounded-md ${
@@ -1063,7 +1325,29 @@ function AdminContent() {
                           {u.status}
                         </span>
                       </td>
-                      <td className="py-4 px-6 text-xs text-[#666666]">{u.joined}</td>
+                      <td className="py-4 px-6">
+                        <div className="flex flex-col">
+                          <div className="flex items-center gap-1.5">
+                            {rt.isRecent && (
+                              <span className="relative flex h-2 w-2">
+                                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                                <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
+                              </span>
+                            )}
+                            <span className={`text-xs font-bold ${rt.isRecent ? "text-emerald-700" : "text-[#171717]"}`}>
+                              {rt.display}
+                            </span>
+                            {rt.isRecent && (
+                              <span className="text-[9px] font-black uppercase px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-800 tracking-wide">
+                                Recent
+                              </span>
+                            )}
+                          </div>
+                          <span className="text-[11px] text-[#888888] font-medium" title={rt.fullDate}>
+                            {rt.display !== rt.relative ? rt.relative : rt.fullDate}
+                          </span>
+                        </div>
+                      </td>
                       <td className="py-4 px-6 text-right">
                         <button
                           onClick={() => setSelectedUser(u)}
@@ -1073,7 +1357,8 @@ function AdminContent() {
                         </button>
                       </td>
                     </tr>
-                  ))}
+                  );
+                })}
               </tbody>
             </table>
           </div>
@@ -1128,13 +1413,32 @@ function AdminContent() {
                     .filter((e) => e.title.toLowerCase().includes(eventSearch.toLowerCase()))
                     .map((e) => (
                       <tr key={e.id} className="hover:bg-[#faf8f3]/60 transition-colors">
-                        <td className="py-4 px-6 font-bold text-[#171717]">{e.title}</td>
+                        <td className="py-4 px-6 font-bold text-[#171717]">
+                          <div className="flex flex-col gap-1">
+                            <span className="text-sm font-bold text-[#171717]">{e.title}</span>
+                            <div className="flex items-center gap-1.5 flex-wrap">
+                              {e.isKeywordFlagged && (
+                                <span className="inline-flex items-center gap-1 text-[10px] font-black px-2 py-0.5 rounded-full bg-rose-50 text-rose-700 border border-rose-200">
+                                  <span>🚩 Keyword Flagged</span>
+                                </span>
+                              )}
+                              {e.isLargeGathering && (
+                                <span className="inline-flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded-full bg-amber-50 text-amber-700 border border-amber-200">
+                                  <span>⚠️ {moderationSettings.capacityThreshold}+ Crowd Review</span>
+                                </span>
+                              )}
+                            </div>
+                          </div>
+                        </td>
                         <td className="py-4 px-6 text-xs text-[#555555]">{e.organizer}</td>
                         <td className="py-4 px-6 text-xs text-[#666666]">{e.date}</td>
-                        <td className="py-4 px-6 font-bold">{e.rsvps}</td>
+                        <td className="py-4 px-6 font-bold text-sm text-[#171717]">
+                          {e.rsvps}
+                          {e.capacity ? <span className="text-xs text-[#888888] font-normal"> / {e.capacity}</span> : null}
+                        </td>
                         <td className="py-4 px-6">
                           <span className={`text-xs font-bold px-2.5 py-0.5 rounded-full ${
-                            e.status === "Active" ? "bg-emerald-50 text-emerald-700" : e.status === "Draft" ? "bg-amber-50 text-amber-700" : e.status === "Flagged" ? "bg-rose-50 text-rose-700" : "bg-gray-100 text-gray-700"
+                            e.status === "Active" ? "bg-emerald-50 text-emerald-700 border border-emerald-200" : e.status === "Draft" ? "bg-amber-50 text-amber-700 border border-amber-200" : e.status === "Flagged" ? "bg-rose-50 text-rose-700 border border-rose-200" : "bg-gray-100 text-gray-700 border border-gray-200"
                           }`}>
                             {e.status}
                           </span>
@@ -1161,42 +1465,95 @@ function AdminContent() {
       {/* ========================================================================= */}
       {currentTab === "reports" && (
         <div className="space-y-6">
-          <div>
-            <h1 className="text-2xl sm:text-3xl font-black text-[#171717]">Incident & Policy Reports</h1>
-            <p className="text-sm text-[#666666] mt-0.5">Attendee submitted safety and listing integrity reports.</p>
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+            <div>
+              <h1 className="text-2xl sm:text-3xl font-black text-[#171717]">Incident & Policy Reports</h1>
+              <p className="text-sm text-[#666666] mt-0.5">Attendee submitted safety and listing integrity reports.</p>
+            </div>
+            <div className="flex items-center gap-2">
+              <span className="text-xs font-bold px-3 py-1.5 rounded-full bg-rose-50 text-rose-700 border border-rose-200">
+                {pendingReportsCount} Open Review{pendingReportsCount !== 1 ? 's' : ''}
+              </span>
+              <span className="text-xs font-bold px-3 py-1.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200">
+                {reports.filter((r) => r.status === "resolved").length} Resolved
+              </span>
+            </div>
           </div>
 
-          <div className="bg-white border border-[#e6e1d8] rounded-2xl shadow-sm p-6 space-y-4">
-            {reports.map((rep) => (
-              <div key={rep.id} className="flex flex-col sm:flex-row sm:items-center justify-between p-4 rounded-xl bg-[#faf8f3] border border-[#e6e1d8] gap-3">
-                <div>
-                  <div className="flex items-center gap-2">
-                    <Flag className="w-4 h-4 text-rose-600" />
-                    <span className="font-bold text-[#171717] text-sm">{rep.event}</span>
-                    <span className="text-xs px-2 py-0.5 bg-rose-50 text-rose-700 font-bold rounded">
-                      {rep.reason}
-                    </span>
-                  </div>
-                  <p className="text-xs text-[#666666] mt-1">Reported by <strong>{rep.reporter}</strong></p>
-                  {rep.details && <p className="text-xs text-[#888888] mt-0.5 italic">"{rep.details}"</p>}
-                </div>
-                <div>
-                  {rep.status === "open" ? (
-                    <button
-                      onClick={() => setSelectedReport(rep)}
-                      className="px-4 py-2 bg-[#171717] text-white text-xs font-bold rounded-xl hover:bg-[#ff6b35] transition-colors cursor-pointer"
-                    >
-                      Resolve Issue
-                    </button>
-                  ) : (
-                    <span className="text-xs font-bold text-emerald-600 flex items-center gap-1">
-                      <Check className="w-4 h-4" /> Resolved
-                    </span>
-                  )}
-                </div>
+          {reports.length === 0 ? (
+            <div className="bg-white border border-[#e6e1d8] rounded-2xl shadow-sm p-12 text-center space-y-3">
+              <div className="w-12 h-12 rounded-full bg-emerald-50 text-emerald-600 flex items-center justify-center mx-auto">
+                <Check className="w-6 h-6" />
               </div>
-            ))}
-          </div>
+              <h3 className="font-black text-base text-[#171717]">All Good! No Reports Pending</h3>
+              <p className="text-xs text-[#666666] max-w-sm mx-auto leading-relaxed">
+                There are currently no active attendee safety or policy violation reports on Spott.
+              </p>
+            </div>
+          ) : (
+            <div className="bg-white border border-[#e6e1d8] rounded-2xl shadow-sm p-6 space-y-4">
+              {reports.map((rep) => (
+                <div
+                  key={rep.id}
+                  className="flex flex-col sm:flex-row sm:items-center justify-between p-4 rounded-xl bg-[#faf8f3] border border-[#e6e1d8] gap-4 hover:border-[#ff6b35]/40 transition-colors"
+                >
+                  <div className="space-y-1.5 flex-1 min-w-0">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <Flag className={`w-4 h-4 shrink-0 ${rep.status === "open" ? "text-rose-600" : "text-[#888888]"}`} />
+                      <span className="font-bold text-[#171717] text-sm truncate">{rep.event}</span>
+                      <span className="text-xs px-2.5 py-0.5 bg-rose-50 text-rose-700 font-bold rounded-md border border-rose-200/60 shrink-0">
+                        {rep.reason}
+                      </span>
+                      <span
+                        className={`text-[11px] font-black px-2.5 py-0.5 rounded-full border shrink-0 ${
+                          rep.status === "open"
+                            ? "bg-amber-50 text-amber-800 border-amber-200"
+                            : "bg-emerald-50 text-emerald-700 border-emerald-200"
+                        }`}
+                      >
+                        {rep.status === "open" ? "● Needs Review" : "✓ Resolved"}
+                      </span>
+                    </div>
+
+                    <p className="text-xs text-[#666666]">
+                      Reported by <strong className="text-[#171717]">{rep.reporter}</strong>
+                      {rep.reporterEmail ? <span className="font-mono text-[#888888] ml-1">({rep.reporterEmail})</span> : null}
+                      {rep.submitted ? <span className="ml-2 text-[#888888]">• {rep.submitted}</span> : null}
+                    </p>
+
+                    {rep.details && (
+                      <p className="text-xs text-[#444444] bg-white p-2.5 rounded-lg border border-[#e6e1d8] mt-1 leading-relaxed">
+                        "{rep.details}"
+                      </p>
+                    )}
+
+                    {rep.resolutionNote && (
+                      <div className="text-xs text-emerald-800 font-semibold pt-0.5 flex items-center gap-1.5">
+                        <Check className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+                        <span>Action: {rep.resolutionNote}</span>
+                        {rep.decidedAt ? <span className="text-[#888888] font-normal">({rep.decidedAt})</span> : null}
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="shrink-0 flex items-center">
+                    {rep.status === "open" ? (
+                      <button
+                        onClick={() => setSelectedReport(rep)}
+                        className="px-4 py-2 bg-[#171717] text-white text-xs font-bold rounded-xl hover:bg-[#ff6b35] transition-colors cursor-pointer shadow-xs whitespace-nowrap"
+                      >
+                        Resolve Issue
+                      </button>
+                    ) : (
+                      <span className="text-xs font-bold text-emerald-600 flex items-center gap-1">
+                        <Check className="w-4 h-4" /> Resolved
+                      </span>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       )}
 
@@ -1206,33 +1563,110 @@ function AdminContent() {
       {currentTab === "moderation" && (
         <div className="space-y-6">
           <div>
-            <h1 className="text-2xl sm:text-3xl font-black text-[#171717]">Content Moderation Policies</h1>
-            <p className="text-sm text-[#666666] mt-0.5">Automated screening triggers and community guidelines.</p>
+            <h1 className="text-2xl sm:text-3xl font-black text-[#171717]">Content Moderation & Safety Policies</h1>
+            <p className="text-sm text-[#666666] mt-0.5">
+              Automated screening triggers, custom keyword interception, and crowd safety review thresholds across Spott.
+            </p>
           </div>
 
           <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-            <div className="bg-white border border-[#e6e1d8] rounded-2xl p-6 shadow-sm space-y-3">
-              <h3 className="font-black text-base text-[#171717]">Automated Listing Filters</h3>
-              <p className="text-xs text-[#666666]">
-                Keywords automatically intercepted for review before going live in the Discover feed.
-              </p>
-              <div className="flex flex-wrap gap-2 pt-2">
-                <span className="text-xs px-2.5 py-1 bg-gray-100 rounded-lg font-mono">unofficial party</span>
-                <span className="text-xs px-2.5 py-1 bg-gray-100 rounded-lg font-mono">off-campus alcohol</span>
-                <span className="text-xs px-2.5 py-1 bg-gray-100 rounded-lg font-mono">unauthorized vendor</span>
+            {/* Card 1: Automated Listing Filters */}
+            <div className="bg-white border border-[#e6e1d8] rounded-2xl p-6 shadow-sm space-y-4">
+              <div className="flex items-center justify-between">
+                <div>
+                  <h3 className="font-black text-base text-[#171717]">Automated Listing Filters</h3>
+                  <p className="text-xs text-[#666666] mt-0.5">
+                    Keywords automatically intercepted for review before going live in the Discover feed.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={handleResetKeywords}
+                  className="text-[11px] font-bold text-[#ff6b35] hover:underline cursor-pointer"
+                >
+                  Reset Defaults
+                </button>
               </div>
+
+              {/* Keyword Badges with Delete */}
+              <div className="flex flex-wrap gap-2 pt-1">
+                {moderationKeywords.map((kw) => (
+                  <span
+                    key={kw}
+                    className="inline-flex items-center gap-1.5 text-xs px-3 py-1.5 bg-[#faf8f3] text-[#171717] rounded-xl border border-[#e6e1d8] font-mono shadow-2xs group"
+                  >
+                    <span>{kw}</span>
+                    <button
+                      type="button"
+                      onClick={() => handleRemoveKeyword(kw)}
+                      className="text-[#999999] hover:text-rose-600 transition-colors cursor-pointer"
+                      title={`Remove "${kw}"`}
+                    >
+                      <X className="w-3.5 h-3.5" />
+                    </button>
+                  </span>
+                ))}
+              </div>
+
+              {/* Add Keyword Input Bar */}
+              <form onSubmit={handleAddKeyword} className="pt-2 flex items-center gap-2">
+                <input
+                  type="text"
+                  value={newKeywordInput}
+                  onChange={(e) => setNewKeywordInput(e.target.value)}
+                  placeholder="Add keyword or trigger phrase (e.g. hazing, fake tickets)..."
+                  className="flex-1 text-xs font-medium border border-[#e6e1d8] rounded-xl px-3.5 py-2.5 bg-white focus:outline-none focus:border-[#ff6b35]"
+                />
+                <button
+                  type="submit"
+                  disabled={!newKeywordInput.trim()}
+                  className="px-4 py-2.5 bg-[#171717] hover:bg-[#ff6b35] disabled:opacity-40 text-white rounded-xl text-xs font-bold transition-all cursor-pointer shadow-xs shrink-0"
+                >
+                  + Add Filter
+                </button>
+              </form>
             </div>
 
-            <div className="bg-white border border-[#e6e1d8] rounded-2xl p-6 shadow-sm space-y-3">
-              <h3 className="font-black text-base text-[#171717]">Campus Safety Protocols</h3>
-              <p className="text-xs text-[#666666]">
-                All large events exceeding 200 participants require campus security coordination endorsement.
-              </p>
+            {/* Card 2: Crowd Safety & Capacity Threshold */}
+            <div className="bg-white border border-[#e6e1d8] rounded-2xl p-6 shadow-sm space-y-4">
+              <div className="flex items-center justify-between">
+                <div>
+                  <h3 className="font-black text-base text-[#171717]">Event Capacity & Crowd Safety Review</h3>
+                  <p className="text-xs text-[#666666] mt-0.5">
+                    Automatically flags major events that exceed venue capacity or crowd limits for security coordination.
+                  </p>
+                </div>
+              </div>
+
+              <div className="p-4 rounded-xl bg-[#faf8f3] border border-[#e6e1d8] space-y-2">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-bold text-[#666666] uppercase tracking-wide">
+                    Major Gathering Threshold:
+                  </span>
+                  <span className="text-sm font-black text-[#ff6b35]">
+                    {moderationSettings.capacityThreshold}+ Expected Attendees
+                  </span>
+                </div>
+                <div className="flex items-center justify-between text-xs text-[#666666]">
+                  <span>Moderation Screening Mode:</span>
+                  <span className="font-bold text-[#171717]">{moderationSettings.sensitivity} Policy</span>
+                </div>
+                <p className="text-[11px] text-[#888888] pt-1 leading-relaxed">
+                  Events with capacity or RSVPs at or above {moderationSettings.capacityThreshold} will display a "Crowd Review" badge in your Events moderation list.
+                </p>
+              </div>
+
               <button
-                onClick={() => setThresholdModalOpen(true)}
-                className="px-4 py-2 bg-[#ff6b35] text-white text-xs font-bold rounded-xl hover:bg-[#e0531f] transition-colors cursor-pointer"
+                type="button"
+                onClick={() => {
+                  setTempThreshold(moderationSettings.capacityThreshold);
+                  setTempSensitivity(moderationSettings.sensitivity);
+                  setThresholdModalOpen(true);
+                }}
+                className="px-4 py-2.5 bg-[#ff6b35] hover:bg-[#e0531f] text-white text-xs font-bold rounded-xl transition-all cursor-pointer shadow-xs flex items-center gap-2"
               >
-                Configure Thresholds
+                <Sliders className="w-3.5 h-3.5" />
+                <span>Configure Thresholds</span>
               </button>
             </div>
           </div>
@@ -1602,21 +2036,50 @@ function AdminContent() {
             </div>
             <div className="bg-white border border-[#e6e1d8] rounded-2xl p-5 shadow-sm">
               <span className="text-xs font-bold text-[#666666] uppercase block mb-1">Verified Organizations</span>
-              <p className="text-3xl sm:text-4xl font-black text-[#171717]">
-                {verifications.filter(v => v.status === "approved").length}
-              </p>
-              <p className="text-xs text-[#888888] font-medium mt-2">
-                {verifications.filter(v => v.status === "pending").length > 0
-                  ? `${verifications.filter(v => v.status === "pending").length} pending review`
-                  : "No pending verifications"}
-              </p>
+              {(() => {
+                // Count all organizers whose live status is "approved"
+                const approvedCount = verifications.filter((v) => {
+                  const isMetro = v.organizer.toLowerCase().includes("metro creative");
+                  return (isMetro ? verState.status : v.status) === "approved";
+                }).length;
+                const pendingCount = verifications.filter((v) => {
+                  const isMetro = v.organizer.toLowerCase().includes("metro creative");
+                  return (isMetro ? verState.status : v.status) === "pending";
+                }).length;
+                return (
+                  <>
+                    <p className="text-3xl sm:text-4xl font-black text-[#171717]">{approvedCount}</p>
+                    <p className="text-xs text-[#888888] font-medium mt-2">
+                      {pendingCount > 0
+                        ? `${pendingCount} pending review`
+                        : approvedCount === 0
+                        ? "No verified orgs yet"
+                        : `${approvedCount} verified org${approvedCount !== 1 ? "s" : ""}`}
+                    </p>
+                  </>
+                );
+              })()}
             </div>
             <div className="bg-white border border-[#e6e1d8] rounded-2xl p-5 shadow-sm">
               <span className="text-xs font-bold text-[#666666] uppercase block mb-1">Open Reports</span>
-              <p className="text-3xl sm:text-4xl font-black text-emerald-600">{reports.filter(r => r.status === "open").length}</p>
-              <p className="text-xs text-[#666666] font-medium mt-2">
-                {reports.length === 0 ? "No reports filed" : `${reports.filter(r => r.status === "resolved").length} resolved`}
-              </p>
+              {(() => {
+                const openCount = reports.filter((r) => r.status === "open").length;
+                const resolvedCount = reports.filter((r) => r.status === "resolved").length;
+                return (
+                  <>
+                    <p className={`text-3xl sm:text-4xl font-black ${openCount > 0 ? "text-rose-600" : "text-emerald-600"}`}>
+                      {openCount}
+                    </p>
+                    <p className="text-xs text-[#666666] font-medium mt-2">
+                      {reports.length === 0
+                        ? "No reports filed"
+                        : resolvedCount > 0
+                        ? `${resolvedCount} resolved`
+                        : `${openCount} awaiting review`}
+                    </p>
+                  </>
+                );
+              })()}
             </div>
           </div>
 
@@ -1774,9 +2237,32 @@ function AdminContent() {
         <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
           <div className="bg-white rounded-3xl max-w-md w-full p-6 space-y-5 shadow-2xl border border-[#e6e1d8]">
             <div className="flex items-center justify-between pb-3 border-b border-[#e6e1d8]">
-              <div>
-                <h3 className="text-lg font-black text-[#171717]">Manage Account</h3>
-                <p className="text-xs text-[#666666] font-mono">{selectedUser.email}</p>
+              <div className="flex items-center gap-3">
+                {/* Profile Avatar */}
+                {(() => {
+                  const p = getUserProfile(selectedUser.email);
+                  const ini = getInitials(selectedUser.name);
+                  return (
+                    <div className="w-12 h-12 rounded-full overflow-hidden bg-[#eee9e1] border border-[#e6e1d8] flex items-center justify-center text-sm font-black text-[#555] shrink-0">
+                      {p.avatarUrl ? (
+                        <img src={p.avatarUrl} alt={selectedUser.name} className="w-full h-full object-cover" />
+                      ) : (
+                        <span>{ini}</span>
+                      )}
+                    </div>
+                  );
+                })()}
+                <div>
+                  <h3 className="text-lg font-black text-[#171717]">Manage Account</h3>
+                  <p className="text-xs text-[#666666] font-mono">{selectedUser.email}</p>
+                  {(() => {
+                    const p = getUserProfile(selectedUser.email);
+                    const details = [p.phone, p.address].filter(Boolean).join(" · ");
+                    return details ? (
+                      <p className="text-[11px] text-[#888888] mt-0.5">{details}</p>
+                    ) : null;
+                  })()}
+                </div>
               </div>
               <button
                 onClick={() => setSelectedUser(null)}
@@ -1833,6 +2319,28 @@ function AdminContent() {
                   ))}
                 </div>
               </div>
+
+              {/* Real-time Join Info */}
+              {(() => {
+                const rt = formatRealTimeJoined(selectedUser);
+                return (
+                  <div className="p-3 bg-[#faf8f3] border border-[#e6e1d8] rounded-xl flex items-center justify-between text-xs">
+                    <div>
+                      <span className="text-[#888888] font-bold block text-[10px] uppercase tracking-wider">Date Joined (Real-Time)</span>
+                      <span className="text-[#171717] font-extrabold text-sm flex items-center gap-1.5 mt-0.5">
+                        {rt.isRecent && (
+                          <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse inline-block" />
+                        )}
+                        {rt.display}
+                      </span>
+                    </div>
+                    <div className="text-right">
+                      <span className="text-[11px] text-[#666666] font-medium block">Exact Timestamp:</span>
+                      <span className="text-xs font-bold text-[#171717] font-mono">{rt.fullDate}</span>
+                    </div>
+                  </div>
+                );
+              })()}
             </div>
 
             <div className="pt-3 border-t border-[#e6e1d8] flex items-center justify-between gap-2">
@@ -2174,40 +2682,79 @@ function AdminContent() {
 
       {/* 5. CONFIGURE THRESHOLDS MODAL */}
       {thresholdModalOpen && (
-        <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
-          <div className="bg-white rounded-3xl max-w-md w-full p-6 space-y-4 shadow-2xl border border-[#e6e1d8]">
+        <div className="fixed inset-0 bg-black/50 backdrop-blur-xs z-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-3xl max-w-md w-full p-6 space-y-5 shadow-2xl border border-[#e6e1d8]">
             <div className="flex items-center justify-between pb-3 border-b border-[#e6e1d8]">
               <div className="flex items-center gap-2">
                 <Sliders className="w-5 h-5 text-[#ff6b35]" />
-                <h3 className="text-lg font-black text-[#171717]">Campus Safety Thresholds</h3>
+                <h3 className="text-lg font-black text-[#171717]">Event Capacity & Crowd Safety Threshold</h3>
               </div>
-              <button onClick={() => setThresholdModalOpen(false)} className="text-[#888888] font-bold">✕</button>
-            </div>
-            <div className="space-y-3 text-xs font-bold text-[#444444]">
-              <div>
-                <label className="block mb-1">Large Gathering Security Trigger (Attendees)</label>
-                <input type="number" defaultValue={200} className="w-full border border-[#e6e1d8] rounded-xl px-3 py-2" />
-              </div>
-              <div>
-                <label className="block mb-1">Automatic Content Intercept Sensitivity</label>
-                <select className="w-full border border-[#e6e1d8] rounded-xl px-3 py-2 bg-white">
-                  <option>Strict (Campus Policy Grade A)</option>
-                  <option>Balanced (Standard University)</option>
-                </select>
-              </div>
-            </div>
-            <div className="pt-3 flex justify-end gap-2">
-              <button onClick={() => setThresholdModalOpen(false)} className="px-4 py-2 border rounded-xl text-xs font-bold">Cancel</button>
               <button
-                onClick={() => {
-                  setThresholdModalOpen(false);
-                  showNotice("Safety policy threshold settings saved.");
-                }}
-                className="px-5 py-2 bg-[#ff6b35] text-white rounded-xl text-xs font-bold hover:bg-[#e0531f]"
+                type="button"
+                onClick={() => setThresholdModalOpen(false)}
+                className="text-[#888888] hover:text-[#171717] font-bold p-1 cursor-pointer"
               >
-                Save Settings
+                ✕
               </button>
             </div>
+
+            <form onSubmit={handleSaveThreshold} className="space-y-4">
+              <div>
+                <label className="block text-xs font-black text-[#171717] mb-1 uppercase tracking-wide">
+                  Major Gathering Security Trigger (Attendees / Capacity)
+                </label>
+                <div className="relative">
+                  <input
+                    type="number"
+                    min={10}
+                    max={10000}
+                    value={tempThreshold}
+                    onChange={(e) => setTempThreshold(Number(e.target.value))}
+                    required
+                    className="w-full border border-[#e6e1d8] rounded-xl px-3.5 py-2.5 text-sm font-bold text-[#171717] focus:outline-none focus:border-[#ff6b35]"
+                  />
+                  <span className="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-[#888888] font-bold pointer-events-none">
+                    attendees
+                  </span>
+                </div>
+                <p className="text-[11px] text-[#888888] mt-1.5 leading-relaxed">
+                  Events with capacity or total RSVPs at or above this number will be flagged with a <strong>Crowd Review</strong> badge in the moderation directory so security and campus marshals can prepare.
+                </p>
+              </div>
+
+              <div>
+                <label className="block text-xs font-black text-[#171717] mb-1 uppercase tracking-wide">
+                  Content Screening Sensitivity
+                </label>
+                <select
+                  value={tempSensitivity}
+                  onChange={(e) => setTempSensitivity(e.target.value as "Strict" | "Standard")}
+                  className="w-full border border-[#e6e1d8] rounded-xl px-3.5 py-2.5 text-xs font-bold bg-white text-[#171717] focus:outline-none focus:border-[#ff6b35] cursor-pointer"
+                >
+                  <option value="Strict">Strict (Auto-Hold & Intercept Large Gatherings)</option>
+                  <option value="Standard">Standard (Advisory Warnings on High Capacity)</option>
+                </select>
+                <p className="text-[11px] text-[#888888] mt-1.5 leading-relaxed">
+                  Strict mode requires manual approval for flagged large events; Standard mode lists them while alerting staff.
+                </p>
+              </div>
+
+              <div className="pt-3 border-t border-[#e6e1d8] flex justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={() => setThresholdModalOpen(false)}
+                  className="px-4 py-2 border border-[#e6e1d8] hover:bg-gray-50 rounded-xl text-xs font-bold text-[#666666] cursor-pointer"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  className="px-5 py-2 bg-[#ff6b35] hover:bg-[#e0531f] text-white rounded-xl text-xs font-black shadow-md transition-all cursor-pointer"
+                >
+                  Save Settings
+                </button>
+              </div>
+            </form>
           </div>
         </div>
       )}

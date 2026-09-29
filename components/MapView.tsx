@@ -21,6 +21,8 @@ export type MapViewProps = {
   center?: { lat: number; lng: number };
   zoom?: number;
   pinMode?: boolean;
+  userLocation?: { lat: number; lng: number } | null;
+  radiusKm?: number | null;
 };
 
 export default function MapView({
@@ -30,6 +32,8 @@ export default function MapView({
   center,
   zoom = 13,
   pinMode,
+  userLocation,
+  radiusKm,
 }: MapViewProps) {
   return (
     <div className="w-full h-full min-h-[400px] rounded-xl overflow-hidden shadow-sm relative">
@@ -40,6 +44,8 @@ export default function MapView({
         center={center}
         zoom={zoom}
         pinMode={pinMode}
+        userLocation={userLocation}
+        radiusKm={radiusKm}
       />
     </div>
   );

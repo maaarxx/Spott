@@ -78,7 +78,10 @@ export default function LocationPickerMap({
     mapInstanceRef.current = map;
 
     return () => {
-      map.remove();
+      try {
+        map.stop();
+        map.remove();
+      } catch {}
       mapInstanceRef.current = null;
     };
   }, []);

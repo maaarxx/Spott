@@ -2,6 +2,7 @@
 
 import type { EventData } from "@/components/EventCard";
 import { removeNotificationsForEvent } from "@/lib/notifications-store";
+import { getVerificationState } from "@/lib/verification-store";
 
 const STORAGE_KEY_EVENTS = "spott_events_directory";
 const STORAGE_KEY_UPDATE_PULSE = "spott_events_last_update";
@@ -67,30 +68,53 @@ export function getStoredEvents(): EventData[] {
     const raw = localStorage.getItem(STORAGE_KEY_EVENTS);
     if (!raw) return [];
     const list: EventData[] = JSON.parse(raw);
-    return list.map((e) => {
-      let lat = e.latitude;
-      let lng = e.longitude;
-      if (!lat || !lng) {
-        if (e.location?.toLowerCase().includes("benilde") || e.location?.toLowerCase().includes("dac")) {
+    return list.map((e: any) => {
+      let lat = typeof e.latitude === "string" ? parseFloat(e.latitude) : e.latitude;
+      let lng = typeof e.longitude === "string" ? parseFloat(e.longitude) : e.longitude;
+      if (!lat || !lng || isNaN(lat) || isNaN(lng)) {
+        const loc = (e.location || e.city || "").toLowerCase();
+        if (loc.includes("benilde") || loc.includes("dac") || loc.includes("sda") || loc.includes("csb")) {
           lat = 14.5638;
           lng = 120.9965;
-        } else if (e.location?.toLowerCase().includes("ust")) {
-          lat = 14.6091;
-          lng = 120.9898;
-        } else if (e.location?.toLowerCase().includes("diliman") || e.location?.toLowerCase().includes("up")) {
-          lat = 14.6537;
-          lng = 121.0685;
-        } else {
+        } else if (loc.includes("dlsu") || loc.includes("taft") || loc.includes("la salle")) {
           lat = 14.5648;
           lng = 120.9932;
+        } else if (loc.includes("ust") || loc.includes("espana") || loc.includes("españa")) {
+          lat = 14.6091;
+          lng = 120.9898;
+        } else if (loc.includes("diliman") || loc.includes("up") || loc.includes("upd")) {
+          lat = 14.6537;
+          lng = 121.0685;
+        } else if (loc.includes("ateneo") || loc.includes("admu") || loc.includes("katipunan")) {
+          lat = 14.6396;
+          lng = 121.0777;
+        } else if (loc.includes("bgc") || loc.includes("taguig") || loc.includes("bonifacio")) {
+          lat = 14.5517;
+          lng = 121.0504;
+        } else if (loc.includes("makati") || loc.includes("ayala")) {
+          lat = 14.5547;
+          lng = 121.0244;
+        } else if (loc.includes("intramuros")) {
+          lat = 14.5898;
+          lng = 120.9754;
+        } else {
+          lat = 14.5995;
+          lng = 120.9842;
         }
       }
+      const org = (e.organizer || "Metro Creative Group").trim();
+      const isMetro = org.toLowerCase().includes("metro creative") || org.toLowerCase() === "mcg";
+      const isVerified = isMetro || getVerificationState(org).status === "approved";
+
       return {
         ...e,
         latitude: lat,
         longitude: lng,
+        verified: isVerified,
+        categories: Array.isArray(e.categories) ? e.categories : [e.category || "Community"].filter(Boolean),
         image: e.image || e.coverImage,
         coverImage: e.coverImage || e.image,
+        capacity: typeof e.capacity === "number" ? e.capacity : (e.capacity ? Number(e.capacity) : 100),
       };
     });
   } catch {
@@ -116,6 +140,57 @@ export function saveStoredEvent(event: EventData) {
       broadcastEventsUpdated();
     } catch (innerErr) {
       console.error("Failed to save event to localStorage:", innerErr);
+    }
+  }
+}
+
+export function saveStoredEvents(events: EventData[], broadcast: boolean = false) {
+  if (typeof window === "undefined" || !events.length) return;
+  try {
+    const existing = getStoredEvents();
+    const map = new Map<string, EventData>();
+    existing.forEach((e) => map.set(e.id, e));
+    let hasChanges = false;
+    for (const e of events) {
+      const prev = map.get(e.id);
+      if (!prev) {
+        hasChanges = true;
+        map.set(e.id, e);
+      } else {
+        // Only mark changed if registrations or capacity or status changed
+        if (
+          prev.registrations !== e.registrations ||
+          prev.confirmedAt !== e.confirmedAt ||
+          prev.status !== e.status
+        ) {
+          hasChanges = true;
+        }
+        map.set(e.id, { ...prev, ...e });
+      }
+    }
+
+    if (!hasChanges) {
+      return;
+    }
+
+    const updated = Array.from(map.values());
+    localStorage.setItem(STORAGE_KEY_EVENTS, JSON.stringify(updated));
+    if (broadcast) {
+      broadcastEventsUpdated();
+    }
+  } catch (e) {
+    try {
+      const existing = getStoredEvents();
+      const map = new Map<string, EventData>();
+      existing.forEach((it) => map.set(it.id, { ...it, coverImage: null, image: null }));
+      events.forEach((it) => map.set(it.id, { ...map.get(it.id), ...it, coverImage: null, image: null }));
+      const safe = Array.from(map.values());
+      localStorage.setItem(STORAGE_KEY_EVENTS, JSON.stringify(safe));
+      if (broadcast) {
+        broadcastEventsUpdated();
+      }
+    } catch (innerErr) {
+      console.error("Failed to batch save events to localStorage:", innerErr);
     }
   }
 }

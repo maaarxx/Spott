@@ -20,7 +20,7 @@ import {
   subscribeToOrganizerProfile,
   OrganizerProfile,
 } from "@/lib/organizer-store";
-import { subscribeToEvents } from "@/lib/events-store";
+import { subscribeToEvents, saveStoredEvents } from "@/lib/events-store";
 
 export default function OrganizersDirectoryPage() {
   const [organizers, setOrganizers] = useState<
@@ -29,14 +29,25 @@ export default function OrganizersDirectoryPage() {
   const [searchQuery, setSearchQuery] = useState("");
   const [filterType, setFilterType] = useState<"all" | "verified">("all");
 
-  const syncOrganizers = () => {
+  const syncOrganizers = async () => {
     setOrganizers(getAllOrganizersList());
+
+    try {
+      const res = await fetch("/api/events");
+      if (res.ok) {
+        const apiData = await res.json();
+        if (Array.isArray(apiData) && apiData.length > 0) {
+          saveStoredEvents(apiData);
+          setOrganizers(getAllOrganizersList(apiData));
+        }
+      }
+    } catch {}
   };
 
   useEffect(() => {
     syncOrganizers();
-    const unsubProfile = subscribeToOrganizerProfile(syncOrganizers);
-    const unsubEvents = subscribeToEvents(syncOrganizers);
+    const unsubProfile = subscribeToOrganizerProfile(() => setOrganizers(getAllOrganizersList()));
+    const unsubEvents = subscribeToEvents(() => setOrganizers(getAllOrganizersList()));
     return () => {
       unsubProfile();
       unsubEvents();
@@ -172,18 +183,20 @@ export default function OrganizersDirectoryPage() {
                   <div className="space-y-4">
                     {/* Top Row: Avatar + Verified Pill */}
                     <div className="flex items-start justify-between gap-3">
-                      <div className="w-14 h-14 rounded-2xl bg-gradient-to-br from-[#171717] via-[#262626] to-[#3a3a3a] text-white flex items-center justify-center font-extrabold text-lg tracking-wider shrink-0 overflow-hidden shadow-xs relative">
-                        {org.avatarUrl ? (
-                          <img
-                            src={org.avatarUrl}
-                            alt={org.name}
-                            className="w-full h-full object-cover"
-                          />
-                        ) : (
-                          <span>{initials}</span>
-                        )}
+                      <div className="relative shrink-0">
+                        <div className="w-14 h-14 rounded-2xl bg-gradient-to-br from-[#171717] via-[#262626] to-[#3a3a3a] text-white flex items-center justify-center font-extrabold text-lg tracking-wider overflow-hidden shadow-xs">
+                          {org.avatarUrl ? (
+                            <img
+                              src={org.avatarUrl}
+                              alt={org.name}
+                              className="w-full h-full object-cover"
+                            />
+                          ) : (
+                            <span>{initials}</span>
+                          )}
+                        </div>
                         {org.isVerified && (
-                          <div className="absolute -bottom-1 -right-1 bg-white p-0.5 rounded-full shadow-xs">
+                          <div className="absolute -bottom-1 -right-1 bg-white p-0.5 rounded-full shadow-md z-10 flex items-center justify-center">
                             <CheckCircle2 className="w-4 h-4 text-[#14804a]" />
                           </div>
                         )}

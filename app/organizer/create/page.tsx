@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useRef } from "react";
+import { useState, useRef, useMemo, useEffect } from "react";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import * as z from "zod";
@@ -27,6 +27,8 @@ import { saveStoredEvent } from "@/lib/events-store";
 import LocationPicker from "@/components/LocationPicker";
 import { getCurrentUser } from "@/lib/auth-store";
 import { getVerificationState } from "@/lib/verification-store";
+import { getAllCategories, saveCustomCategory, DEFAULT_APP_CATEGORIES } from "@/lib/categories";
+import { checkEventForModeration } from "@/lib/moderation-store";
 
 const eventSchema = z.object({
   title: z.string().min(1, "Event title is required"),
@@ -61,6 +63,18 @@ export default function CreateEventPage() {
   const [pinnedLat, setPinnedLat] = useState<number>(14.5638);
   const [pinnedLng, setPinnedLng] = useState<number>(120.9965);
 
+  // Categories list & custom category creation
+  const [categoriesList, setCategoriesList] = useState<string[]>(DEFAULT_APP_CATEGORIES);
+  const [isCustomCategory, setIsCustomCategory] = useState(false);
+  const [customCategoryInput, setCustomCategoryInput] = useState("");
+
+  useEffect(() => {
+    const sync = () => setCategoriesList(getAllCategories());
+    sync();
+    window.addEventListener("spott_categories_updated", sync);
+    return () => window.removeEventListener("spott_categories_updated", sync);
+  }, []);
+
   const {
     register,
     handleSubmit,
@@ -87,6 +101,34 @@ export default function CreateEventPage() {
 
   const isFreeWatched = watch("isFree");
   const formValues = watch();
+
+  // Validate that all required fields are filled before enabling the publish button.
+  // Optional fields: Cover image, Capacity & Approval checkboxes.
+  const isFormComplete = useMemo(() => {
+    const hasTitle = Boolean(formValues.title && formValues.title.trim().length > 0);
+    const hasDesc = Boolean(formValues.description && formValues.description.trim().length > 0);
+    const hasDate = Boolean(formValues.date && formValues.date.trim().length > 0);
+    const hasTime = Boolean(formValues.time && formValues.time.trim().length > 0);
+    const hasLocation = Boolean(formValues.location && formValues.location.trim().length > 0);
+    const hasCategory = isCustomCategory
+      ? Boolean(customCategoryInput && customCategoryInput.trim().length > 0)
+      : Boolean(formValues.category && formValues.category.trim().length > 0);
+    const hasPrice = formValues.isFree || (formValues.price !== undefined && Number(formValues.price) >= 0);
+    const hasValidCapacity = !formValues.hasCapacityLimit || (Number(formValues.capacity) > 0);
+    const hasCoordinates = Boolean(pinnedLat && pinnedLng);
+
+    return (
+      hasTitle &&
+      hasDesc &&
+      hasDate &&
+      hasTime &&
+      hasLocation &&
+      hasCategory &&
+      hasPrice &&
+      hasValidCapacity &&
+      hasCoordinates
+    );
+  }, [formValues, pinnedLat, pinnedLng, isCustomCategory, customCategoryInput]);
 
   const handleFreeToggle = (checked: boolean) => {
     setValue("isFree", checked);
@@ -190,20 +232,31 @@ export default function CreateEventPage() {
     const parsedCapacity = data.hasCapacityLimit && data.capacity ? Number(data.capacity) : null;
     const requireApproval = Boolean(data.requireApproval);
 
+    const finalCategory = isCustomCategory
+      ? customCategoryInput.trim()
+      : data.category;
+
+    if (isCustomCategory && finalCategory) {
+      saveCustomCategory(finalCategory);
+    }
+
+    const modCheck = checkEventForModeration(data.title, data.description, parsedCapacity || 0, 0);
+    const eventStatus = modCheck.isKeywordFlagged ? "flagged" : "active";
+
     const newEventObj = {
       id: `event-${Date.now()}`,
       title: data.title,
       description: data.description,
       date: `${data.date} ${data.time}:00`,
       price: data.isFree ? 0 : data.price,
-      status: "active",
+      status: eventStatus,
       organizer: orgName,
       verified: isApproved,
       location: data.location,
       city: "Manila",
       latitude: pinnedLat,
       longitude: pinnedLng,
-      categories: [data.category],
+      categories: [finalCategory],
       registrations: 0,
       capacity: parsedCapacity,
       requireApproval: requireApproval,
@@ -216,6 +269,27 @@ export default function CreateEventPage() {
     saveStoredEvent(newEventObj as any);
     setPublishedEventId(newEventObj.id);
     setSuccess(true);
+
+    if (modCheck.isKeywordFlagged) {
+      addNotification({
+        type: "announcement",
+        title: `⚠️ Listing Intercepted for Review: "${data.title}"`,
+        message: `Event by ${orgName} matched automated listing filter (${modCheck.matchedKeywords.join(", ")}). Admin review pending.`,
+        targetRole: "admin",
+        link: "/admin?tab=events",
+      });
+    }
+
+    if (modCheck.isLargeGathering) {
+      addNotification({
+        type: "announcement",
+        title: `Crowd Review Required: "${data.title}"`,
+        message: `Event by ${orgName} has high capacity (${parsedCapacity} attendees). Verify venue security and crowd safety.`,
+        targetRole: "admin",
+        link: "/admin?tab=events",
+      });
+    }
+
     addNotification({
       type: "announcement",
       title: `New Event: "${data.title}"`,
@@ -236,7 +310,7 @@ export default function CreateEventPage() {
           id: newEventObj.id,
           title: data.title,
           description: data.description,
-          category: data.category,
+          category: finalCategory,
           date: data.date,
           time: data.time,
           location: data.location,
@@ -245,7 +319,7 @@ export default function CreateEventPage() {
           price: data.isFree ? 0 : data.price,
           capacity: parsedCapacity,
           requireApproval: requireApproval,
-          organizer: "Metro Creative Group",
+          organizer: orgName,
           coverImage: coverImage || null,
         }),
       })
@@ -267,6 +341,8 @@ export default function CreateEventPage() {
       capacity: 50,
       requireApproval: false,
     });
+    setIsCustomCategory(false);
+    setCustomCategoryInput("");
     removeCoverImage();
     setPinnedLat(14.5638);
     setPinnedLng(120.9965);
@@ -563,25 +639,67 @@ export default function CreateEventPage() {
           {/* Category & Price Grid */}
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 sm:gap-6">
             <div>
-              <label className="block text-xs sm:text-sm font-bold text-[#171717] mb-1.5">
-                Category
-              </label>
-              <select
-                {...register("category")}
-                className="w-full border border-[#e6e1d8] rounded-xl px-4 py-3 text-sm font-bold bg-white focus:outline-none focus:border-[#ff6b35]"
-              >
-                <option value="Music & Concerts">Music & Concerts</option>
-                <option value="Night Markets">Night Markets</option>
-                <option value="School Events">School Events</option>
-                <option value="Food & Drinks">Food & Drinks</option>
-                <option value="Art & Culture">Art & Culture</option>
-                <option value="Workshops">Workshops</option>
-                <option value="Sports & Fitness">Sports & Fitness</option>
-                <option value="Tech">Tech</option>
-                <option value="Comedy">Comedy</option>
-                <option value="Outdoor">Outdoor</option>
-                <option value="Networking">Networking</option>
-              </select>
+              <div className="flex items-center justify-between mb-1.5">
+                <label className="block text-xs sm:text-sm font-bold text-[#171717]">
+                  Category
+                </label>
+                <button
+                  type="button"
+                  onClick={() => {
+                    const next = !isCustomCategory;
+                    setIsCustomCategory(next);
+                    if (next) {
+                      setValue("category", customCategoryInput || "Custom");
+                    } else {
+                      setValue("category", categoriesList[0] || "Music & Concerts");
+                    }
+                  }}
+                  className="text-xs font-bold text-[#ff6b35] hover:underline cursor-pointer"
+                >
+                  {isCustomCategory ? "← Select from list" : "+ Create Custom Category"}
+                </button>
+              </div>
+
+              {isCustomCategory ? (
+                <div className="space-y-1.5">
+                  <input
+                    type="text"
+                    value={customCategoryInput}
+                    onChange={(e) => {
+                      setCustomCategoryInput(e.target.value);
+                      setValue("category", e.target.value);
+                    }}
+                    placeholder="e.g. Cosplay & Anime, Card Collectors..."
+                    className="w-full border border-[#ff6b35] rounded-xl px-4 py-3 text-sm font-bold bg-white focus:outline-none focus:ring-2 focus:ring-[#ff6b35]/20"
+                    autoFocus
+                  />
+                  <p className="text-[11px] text-[#888888]">
+                    Your custom category will be automatically added to the discovery filter!
+                  </p>
+                </div>
+              ) : (
+                <select
+                  {...register("category")}
+                  onChange={(e) => {
+                    if (e.target.value === "__custom__") {
+                      setIsCustomCategory(true);
+                      setValue("category", customCategoryInput || "Custom");
+                    } else {
+                      setValue("category", e.target.value);
+                    }
+                  }}
+                  className="w-full border border-[#e6e1d8] rounded-xl px-4 py-3 text-sm font-bold bg-white focus:outline-none focus:border-[#ff6b35] cursor-pointer"
+                >
+                  {categoriesList.map((cat) => (
+                    <option key={cat} value={cat}>
+                      {cat}
+                    </option>
+                  ))}
+                  <option value="__custom__" className="font-bold text-[#ff6b35]">
+                    + Add Custom Category...
+                  </option>
+                </select>
+              )}
             </div>
 
             {/* Price + Free Event Checkbox */}
@@ -691,8 +809,17 @@ export default function CreateEventPage() {
             </div>
           </div>
 
+          {/* Missing fields notice */}
+          {!isFormComplete && (
+            <div className="pt-4 flex items-center justify-end">
+              <span className="text-[11px] font-semibold text-amber-700 bg-amber-50 border border-amber-200/80 px-3 py-1.5 rounded-lg inline-flex items-center gap-1.5 shadow-2xs">
+                <span>Fill in all required fields (title, date, time, venue, description) to publish</span>
+              </span>
+            </div>
+          )}
+
           {/* Action Buttons */}
-          <div className="pt-6 border-t border-[#e6e1d8] flex flex-col-reverse sm:flex-row items-center justify-end gap-3">
+          <div className="pt-4 border-t border-[#e6e1d8] flex flex-col-reverse sm:flex-row items-center justify-end gap-3">
             <button
               type="button"
               onClick={onSaveDraft}
@@ -708,13 +835,21 @@ export default function CreateEventPage() {
               <Eye className="w-4 h-4" />
               <span>Preview</span>
             </button>
-            <button
-              type="submit"
-              disabled={isSubmitting}
-              className="w-full sm:w-auto px-7 py-3 rounded-xl bg-[#171717] hover:bg-[#ff6b35] text-white text-xs sm:text-sm font-black shadow-md hover:shadow-lg transition-all cursor-pointer disabled:opacity-50"
-            >
-              {isSubmitting ? "Publishing..." : "Publish Event"}
-            </button>
+            <div className="w-full sm:w-auto">
+              <button
+                type="submit"
+                disabled={!isFormComplete || isSubmitting}
+                className={`w-full sm:w-auto px-7 py-3 rounded-xl text-xs sm:text-sm font-black transition-all flex items-center justify-center gap-2 ${
+                  !isFormComplete || isSubmitting
+                    ? "bg-[#a3a3a3] text-white/80 cursor-not-allowed opacity-60 shadow-none"
+                    : "bg-[#171717] hover:bg-[#ff6b35] text-white shadow-md hover:shadow-lg cursor-pointer"
+                }`}
+              >
+                <span>
+                  {isSubmitting ? "Publishing..." : "Publish Event"}
+                </span>
+              </button>
+            </div>
           </div>
         </form>
       </div>

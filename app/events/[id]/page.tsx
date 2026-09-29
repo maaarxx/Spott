@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, use } from "react";
+import { useState, useEffect, use, useMemo, useRef } from "react";
 import { format } from "date-fns";
 import { useRouter } from "next/navigation";
 import {
@@ -17,13 +17,26 @@ import {
   Lock,
   X,
   Users,
+  Bell,
+  BellRing,
+  CalendarPlus,
+  AlertTriangle,
 } from "lucide-react";
 import Link from "next/link";
 import MapView from "@/components/MapView";
 import CancelRsvpModal from "@/components/CancelRsvpModal";
 import { DEFAULT_EVENTS } from "@/lib/default-events";
-import { getStoredEvents, saveStoredEvent, subscribeToEvents } from "@/lib/events-store";
+import { getStoredEvents, saveStoredEvent, saveStoredEvents, subscribeToEvents } from "@/lib/events-store";
+import { recordEventView } from "@/lib/views-store";
 import { addNotification } from "@/lib/notifications-store";
+import { addReport } from "@/lib/reports-store";
+import {
+  setEventReminder,
+  removeEventReminder,
+  getUserRemindersForEvent,
+  EventReminder,
+  subscribeToReminders,
+} from "@/lib/reminders-store";
 import {
   getCurrentUser,
   getUserSavedEvents,
@@ -33,6 +46,29 @@ import {
   SPOTT_ACCOUNTS,
   SpottAccount,
 } from "@/lib/auth-store";
+
+function buildGoogleCalendarUrl(evt: { title: string; description?: string; date: string; endDate?: string; location?: string; city?: string }): string {
+  try {
+    const startIso = new Date(evt.date.replace(" ", "T")).toISOString().replace(/-|:|\.\d\d\d/g, "");
+    let endIso = startIso;
+    if (evt.endDate) {
+      endIso = new Date(evt.endDate.replace(" ", "T")).toISOString().replace(/-|:|\.\d\d\d/g, "");
+    } else {
+      const endD = new Date(new Date(evt.date.replace(" ", "T")).getTime() + 2 * 60 * 60 * 1000);
+      endIso = endD.toISOString().replace(/-|:|\.\d\d\d/g, "");
+    }
+    const params = new URLSearchParams({
+      action: "TEMPLATE",
+      text: evt.title,
+      dates: `${startIso}/${endIso}`,
+      details: evt.description || `Event on Spott: ${evt.title}`,
+      location: evt.location ? `${evt.location}${evt.city ? `, ${evt.city}` : ""}` : "",
+    });
+    return `https://calendar.google.com/calendar/render?${params.toString()}`;
+  } catch {
+    return "https://calendar.google.com";
+  }
+}
 
 type EventDetail = {
   id: string;
@@ -56,6 +92,8 @@ type EventDetail = {
   image?: string | null;
   capacity?: number | null;
   requireApproval?: boolean;
+  cancel_reason?: string;
+  cancelled_at?: string;
 };
 
 export default function EventDetailsPage({
@@ -82,6 +120,59 @@ export default function EventDetailsPage({
   const [toastMessage, setToastMessage] = useState<string | null>(null);
   const [showCancelModal, setShowCancelModal] = useState(false);
   const [isCancellingRsvp, setIsCancellingRsvp] = useState(false);
+  const [allAvailableEvents, setAllAvailableEvents] = useState<EventDetail[]>([]);
+  const hasTrackedView = useRef(false);
+
+  // Event reminders state
+  const [userReminders, setUserReminders] = useState<EventReminder[]>([]);
+  const [reminderDropdownOpen, setReminderDropdownOpen] = useState(false);
+  const [isSettingReminder, setIsSettingReminder] = useState(false);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const update = () => {
+      const u = getCurrentUser();
+      if (u) {
+        setUserReminders(getUserRemindersForEvent(id, u.email));
+      } else {
+        setUserReminders(getUserRemindersForEvent(id, "anonymous"));
+      }
+    };
+    update();
+    const unsub = subscribeToReminders(update);
+    return () => unsub();
+  }, [id, currentUser]);
+
+  const handleSetReminderOption = async (label: string, mins: number) => {
+    if (!event) return;
+    setIsSettingReminder(true);
+    const user = currentUser?.email || "anonymous";
+    const res = await setEventReminder({
+      eventId: event.id,
+      eventTitle: event.title,
+      eventDate: event.date,
+      offsetLabel: label,
+      offsetMinutes: mins,
+      userEmailOrId: user,
+    });
+    setIsSettingReminder(false);
+    setReminderDropdownOpen(false);
+
+    if (res.success) {
+      setUserReminders(getUserRemindersForEvent(event.id, user));
+      showToast(`✓ Reminder set for ${label}!`);
+    } else {
+      showToast(`⚠️ ${res.error || "Failed to set reminder."}`);
+    }
+  };
+
+  const handleRemoveReminder = async (label?: string) => {
+    if (!event) return;
+    const user = currentUser?.email || "anonymous";
+    await removeEventReminder(event.id, label, user);
+    setUserReminders(getUserRemindersForEvent(event.id, user));
+    showToast(label ? `✓ Removed reminder for ${label}.` : "✓ Reminder removed.");
+  };
 
   const showToast = (msg: string) => {
     setToastMessage(msg);
@@ -91,23 +182,34 @@ export default function EventDetailsPage({
   };
 
   useEffect(() => {
-    const getAccurateRsvps = (baseRegistrations: number, isUserRsvpd: boolean): number => {
+    const getAccurateRsvps = (baseRegistrations: number, isUserConfirmed: boolean): number => {
       let guestListCount = 0;
+      let hasGuestList = false;
       try {
         const rawGuests = localStorage.getItem("spott_guest_lists");
         if (rawGuests) {
           const guestMap = JSON.parse(rawGuests);
           if (Array.isArray(guestMap[id])) {
-            guestListCount = guestMap[id].length;
+            hasGuestList = true;
+            guestListCount = guestMap[id].filter(
+              (a: any) => a.status === "Confirmed"
+            ).length;
           }
         }
       } catch {}
 
-      return Math.max(baseRegistrations, guestListCount, isUserRsvpd ? 1 : 0);
+      if (hasGuestList) {
+        return guestListCount;
+      }
+
+      if (isUserConfirmed) {
+        return Math.max(baseRegistrations, 1);
+      }
+      return baseRegistrations;
     };
 
     // 1. Check saved & registered status scoped to logged-in user
-    const checkUserStatus = (): boolean => {
+    const checkUserStatus = (): { isRsvpd: boolean; isConfirmed: boolean } => {
       try {
         const user = getCurrentUser();
         setCurrentUser(user);
@@ -115,8 +217,9 @@ export default function EventDetailsPage({
         if (!user) {
           setIsSaved(false);
           setRsvpd(false);
+          setAttendeeStatus(null);
           setSavedCount(0);
-          return false;
+          return { isRsvpd: false, isConfirmed: false };
         }
 
         const savedIds = getUserSavedEvents(user.email);
@@ -151,35 +254,48 @@ export default function EventDetailsPage({
 
         setRsvpd(hasReg);
         setAttendeeStatus(hasReg ? foundStatus : null);
-        return hasReg;
+        return { isRsvpd: hasReg, isConfirmed: hasReg && foundStatus === "Confirmed" };
       } catch {
         setIsSaved(false);
         setRsvpd(false);
         setAttendeeStatus(null);
         setSavedCount(0);
-        return false;
+        return { isRsvpd: false, isConfirmed: false };
       }
     };
 
-    const isUserRegistered = checkUserStatus();
+    const userStatus = checkUserStatus();
 
     // 2. Check local storage first (organizer created events)
     const stored = getStoredEvents();
     const foundLocal = stored.find((e) => e.id === id);
+
+    // Track view once per page load (deduplicated on backend, guarded with useRef + sessionStorage)
+    if (!hasTrackedView.current) {
+      hasTrackedView.current = true;
+      recordEventView(id, { organizer: foundLocal?.organizer || initialEvent?.organizer });
+    }
     if (foundLocal) {
       setEvent(foundLocal as any);
-      const accurateCount = getAccurateRsvps(foundLocal.registrations || 0, isUserRegistered);
+      const accurateCount = getAccurateRsvps(foundLocal.registrations || 0, userStatus.isConfirmed);
       setRsvpCount(accurateCount);
       setConfirmationsCount((foundLocal as any).confirmations || 0);
 
-      // If the directory had a lower number than the real confirmed registrations, sync it up
-      if ((foundLocal.registrations || 0) < accurateCount) {
-        foundLocal.registrations = accurateCount;
-        try {
-          const updated = stored.map((e) => (e.id === id ? { ...e, registrations: accurateCount } : e));
-          localStorage.setItem("spott_events_directory", JSON.stringify(updated));
-        } catch {}
-      }
+      // If guest list exists for this event, sync the confirmed registrations count
+      try {
+        const rawGuests = localStorage.getItem("spott_guest_lists");
+        if (rawGuests) {
+          const guestMap = JSON.parse(rawGuests);
+          if (Array.isArray(guestMap[id])) {
+            const confirmedCount = guestMap[id].filter((a: any) => a.status === "Confirmed").length;
+            if (foundLocal.registrations !== confirmedCount) {
+              foundLocal.registrations = confirmedCount;
+              const updated = stored.map((e) => (e.id === id ? { ...e, registrations: confirmedCount } : e));
+              localStorage.setItem("spott_events_directory", JSON.stringify(updated));
+            }
+          }
+        }
+      } catch {}
     } else {
       // 3. Otherwise fetch from API / fallback
       const fetchEvent = async () => {
@@ -189,7 +305,7 @@ export default function EventDetailsPage({
           const data = await res.json();
           if (data && data.title) {
             setEvent(data);
-            const accurateCount = getAccurateRsvps(data.registrations || 0, isUserRegistered);
+            const accurateCount = getAccurateRsvps(data.registrations || 0, userStatus.isConfirmed);
             setRsvpCount(accurateCount);
             setConfirmationsCount(data.confirmations || (data.confirmedAt ? 3 : 0));
           }
@@ -197,7 +313,7 @@ export default function EventDetailsPage({
           const fallback = DEFAULT_EVENTS.find((e) => e.id === id);
           if (fallback) {
             setEvent(fallback as any);
-            const accurateCount = getAccurateRsvps(fallback.registrations || 0, isUserRegistered);
+            const accurateCount = getAccurateRsvps(fallback.registrations || 0, userStatus.isConfirmed);
             setRsvpCount(accurateCount);
           }
         }
@@ -206,12 +322,44 @@ export default function EventDetailsPage({
       fetchEvent();
     }
 
+    const loadAllAvailable = async () => {
+      const local = getStoredEvents();
+      setAllAvailableEvents(local as any);
+
+      try {
+        const res = await fetch("/api/events");
+        if (res.ok) {
+          const apiData = await res.json();
+          if (Array.isArray(apiData) && apiData.length > 0) {
+            saveStoredEvents(apiData, false);
+            const freshLocal = getStoredEvents();
+            const pool = [...freshLocal, ...apiData];
+            const seen = new Set<string>();
+            const deduped: EventDetail[] = [];
+            for (const item of pool) {
+              if (!seen.has(item.id)) {
+                seen.add(item.id);
+                deduped.push(item as any);
+              }
+            }
+            setAllAvailableEvents(deduped);
+          }
+        }
+      } catch {}
+    };
+
+    loadAllAvailable();
+
     const handleSyncUpdate = () => {
-      const isReg = checkUserStatus();
+      const currentStatus = checkUserStatus();
       const currentStored = getStoredEvents();
       const match = currentStored.find((e) => e.id === id);
-      const accurateCount = getAccurateRsvps(match?.registrations || 0, isReg);
+      const accurateCount = getAccurateRsvps(match?.registrations ?? 0, currentStatus.isConfirmed);
       setRsvpCount(accurateCount);
+      if (match) {
+        setEvent((prev) => (prev ? { ...prev, ...match, registrations: accurateCount } : match as any));
+      }
+      setAllAvailableEvents(currentStored as any);
     };
 
     const unsubscribeEvents = subscribeToEvents(handleSyncUpdate);
@@ -279,9 +427,11 @@ export default function EventDetailsPage({
       const eventTarget = (foundIndex !== -1 ? storedEvents[foundIndex] : event) as EventDetail | null;
 
       const requireApproval = Boolean(eventTarget?.requireApproval);
-      const isCapacityLimited = Boolean(eventTarget?.capacity && eventTarget.capacity > 0);
+      const rawCap = eventTarget?.capacity;
+      const effectiveCap = typeof rawCap === "number" ? rawCap : (rawCap ? Number(rawCap) : 100);
+      const isCapacityLimited = effectiveCap > 0;
       const currentConfirmed = eventTarget?.registrations || 0;
-      const isFull = isCapacityLimited && currentConfirmed >= (eventTarget?.capacity || 0);
+      const isFull = isCapacityLimited && currentConfirmed >= effectiveCap;
 
       const newStatus: "Confirmed" | "Pending" = (requireApproval || isFull) ? "Pending" : "Confirmed";
 
@@ -381,46 +531,43 @@ export default function EventDetailsPage({
       const regIds = currentRegs.filter((itemId) => itemId !== id);
       saveUserRegisteredEvents(regIds, user.email);
 
-      // Check if user was previously confirmed
+      // 2. Decrement registrations count in directory ONLY if attendee was Confirmed
+      const wasConfirmed = attendeeStatus === "Confirmed";
+      const storedEvents = getStoredEvents();
+      const foundIndex = storedEvents.findIndex((e) => e.id === id);
+      const curCount = foundIndex !== -1 ? (storedEvents[foundIndex].registrations || 0) : (event?.registrations || 0);
+      const newCount = wasConfirmed ? Math.max(0, curCount - 1) : curCount;
+
+      if (wasConfirmed) {
+        if (foundIndex !== -1) {
+          storedEvents[foundIndex].registrations = newCount;
+          localStorage.setItem("spott_events_directory", JSON.stringify(storedEvents));
+        } else if (event) {
+          const eventToSave = { ...event, registrations: newCount };
+          localStorage.setItem("spott_events_directory", JSON.stringify([eventToSave, ...storedEvents]));
+        }
+      }
+
+      // 3. Remove attendee from organizer guest lists
       const rawGuests = localStorage.getItem("spott_guest_lists");
       let guestMap: Record<string, any[]> = {};
       try {
         guestMap = rawGuests ? JSON.parse(rawGuests) : {};
       } catch {}
 
+      const userEmail = user.email.trim().toLowerCase();
+      const userName = (user.name || "").trim().toLowerCase();
       let currentGuestList = guestMap[id] || [];
-      const userAtt = currentGuestList.find(
-        (a) => a.email?.toLowerCase() === user.email.toLowerCase() || a.id === user.email
-      );
-      const wasConfirmed = userAtt?.status === "Confirmed";
-
-      // 2. Decrement registrations count in directory ONLY if was Confirmed
-      const storedEvents = getStoredEvents();
-      const foundIndex = storedEvents.findIndex((e) => e.id === id);
-      let newCount = event?.registrations || 0;
-
-      if (wasConfirmed) {
-        if (foundIndex !== -1) {
-          const currentCount = storedEvents[foundIndex].registrations || 0;
-          newCount = Math.max(0, currentCount - 1);
-          storedEvents[foundIndex].registrations = newCount;
-          localStorage.setItem("spott_events_directory", JSON.stringify(storedEvents));
-        } else if (event) {
-          const currentCount = event.registrations || 0;
-          newCount = Math.max(0, currentCount - 1);
-          const eventToSave = { ...event, registrations: newCount };
-          localStorage.setItem("spott_events_directory", JSON.stringify([eventToSave, ...storedEvents]));
-        }
-      }
-
-      // 3. Remove or mark declined in organizer guest lists
       currentGuestList = currentGuestList.filter(
-        (a) => a.email?.toLowerCase() !== user.email.toLowerCase() && a.id !== user.email
+        (a) =>
+          a.email?.toLowerCase() !== userEmail &&
+          a.id !== userEmail &&
+          (!userName || a.name?.toLowerCase() !== userName)
       );
       guestMap[id] = currentGuestList;
       localStorage.setItem("spott_guest_lists", JSON.stringify(guestMap));
 
-      // 4. Update UI states
+      // 4. Update UI states immediately
       setRsvpd(false);
       setAttendeeStatus(null);
       setRsvpCount(newCount);
@@ -464,6 +611,20 @@ export default function EventDetailsPage({
       showToast("Please provide at least 5 characters.");
       return;
     }
+
+    const user = getCurrentUser();
+    const reporterName = user?.name || "John Doe";
+    const reporterEmail = user?.email || "jd@spott.ph";
+
+    addReport({
+      reporter: reporterName,
+      reporterEmail: reporterEmail,
+      eventId: id,
+      event: event?.title || "Community Event",
+      reason: "Listing Policy / Content Concern",
+      details: reportReason.trim(),
+    });
+
     setReportSubmitted(true);
     setShowReport(false);
     showToast("Report submitted for administrator review.");
@@ -520,8 +681,31 @@ export default function EventDetailsPage({
   const priceDisplay = isFree ? "Free admission" : `₱${Number(event.price).toLocaleString()}`;
   const categoryLabel = event.categories?.[0] || "Community";
 
-  // Related events for "Events Like This"
-  const relatedEvents = DEFAULT_EVENTS.filter((e) => e.id !== event.id).slice(0, 3);
+  // Related events for "Events Like This" (matched by shared categories, with fallbacks)
+  const relatedEvents = (() => {
+    if (!event) return [];
+    const currentCats = (event.categories || []).map((c) => c.toLowerCase().trim());
+    const currentId = event.id;
+
+    // Filter out the current event
+    const candidates = allAvailableEvents.filter((e) => e.id !== currentId);
+
+    // 1. Matches that share at least one category
+    const categoryMatches = candidates.filter((item) => {
+      const itemCats = (item.categories || []).map((c) => c.toLowerCase().trim());
+      if (itemCats.length === 0 || currentCats.length === 0) return false;
+      return currentCats.some((cat) =>
+        itemCats.some((ic) => ic === cat || ic.includes(cat) || cat.includes(ic))
+      );
+    });
+
+    // 2. Fallbacks if category matches are fewer than 3
+    const fallbacks = candidates.filter(
+      (item) => !categoryMatches.some((m) => m.id === item.id)
+    );
+
+    return [...categoryMatches, ...fallbacks].slice(0, 3);
+  })();
 
   const mapsUrl = `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(
     (event.address || event.location || "") + " " + (event.city || "")
@@ -540,10 +724,10 @@ export default function EventDetailsPage({
       <div className="border-b border-line bg-white">
         <div className="max-w-7xl mx-auto px-4 md:px-8 py-3 text-xs text-muted flex items-center gap-1.5 truncate">
           <Link
-            href="/discover"
+            href="/"
             className="hover:text-ink transition-colors flex items-center gap-1 no-underline font-medium text-muted"
           >
-            <ChevronLeft className="w-3.5 h-3.5" /> Back to Discover
+            <ChevronLeft className="w-3.5 h-3.5" /> Back to Home
           </Link>
           <span className="text-gray-300">/</span>
           <span className="text-ink font-bold truncate">{event.title}</span>
@@ -589,15 +773,41 @@ export default function EventDetailsPage({
                   <CheckCircle2 className="w-3 h-3 text-[#14804a]" /> Verified
                 </span>
               )}
-              <span className="bg-[#fff0e8] text-accent border border-accent/20 text-[10px] font-black uppercase tracking-wider px-2.5 py-1 rounded-md">
-                ACTIVE
-              </span>
+              {event.status?.toLowerCase() === "cancelled" ? (
+                <span className="bg-rose-50 text-rose-700 border border-rose-200 text-[10px] font-black uppercase tracking-wider px-2.5 py-1 rounded-md">
+                  CANCELLED
+                </span>
+              ) : (
+                <span className="bg-[#fff0e8] text-accent border border-accent/20 text-[10px] font-black uppercase tracking-wider px-2.5 py-1 rounded-md">
+                  {event.status?.toUpperCase() || "ACTIVE"}
+                </span>
+              )}
             </div>
 
             {/* Title */}
             <h1 className="text-3xl md:text-4xl font-extrabold tracking-tight text-ink m-0">
               {event.title}
             </h1>
+
+            {/* Cancellation Notice Banner */}
+            {event.status?.toLowerCase() === "cancelled" && (
+              <div className="p-4 rounded-2xl bg-rose-50 border border-rose-200 text-rose-900 text-sm space-y-1 animate-in fade-in">
+                <div className="flex items-center gap-2 font-black text-rose-900">
+                  <AlertTriangle className="w-5 h-5 text-rose-600 shrink-0" />
+                  <span>This event has been cancelled by the organizer.</span>
+                </div>
+                {event.cancel_reason && (
+                  <p className="text-xs text-rose-700 font-medium pl-7">
+                    Organizer note: &quot;{event.cancel_reason}&quot;
+                  </p>
+                )}
+                {event.cancelled_at && (
+                  <p className="text-[11px] text-rose-600/80 pl-7">
+                    Cancelled on {format(new Date(event.cancelled_at), "MMM d, yyyy · h:mm a")}
+                  </p>
+                )}
+              </div>
+            )}
 
             {/* Details Table Grid matching wireframe */}
             <div className="border border-line rounded-xl overflow-hidden divide-y divide-line text-sm">
@@ -712,46 +922,82 @@ export default function EventDetailsPage({
             {/* Events Like This Section */}
             <div className="pt-6 border-t border-line">
               <h3 className="text-xl font-bold text-ink mb-4">Events Like This</h3>
-              <div className="space-y-3">
-                {relatedEvents.map((item) => (
-                  <div
-                    key={item.id}
-                    className="flex items-center justify-between p-3.5 bg-white border border-line rounded-xl hover:shadow-xs transition-shadow"
-                  >
-                    <div className="flex items-center gap-3.5 min-w-0">
-                      <div className="w-14 h-14 rounded-lg bg-gray-100 border border-line flex flex-col items-center justify-center text-center p-1 shrink-0">
-                        <span className="text-[9px] font-black uppercase text-accent">
-                          {item.categories[0]?.slice(0, 3)}
-                        </span>
-                        <span className="text-[11px] font-bold text-ink leading-tight">
-                          {format(new Date(item.date.replace(" ", "T")), "MMM d")}
-                        </span>
-                      </div>
-                      <div className="min-w-0">
-                        <span className="text-[10px] font-black uppercase tracking-wider text-muted block mb-0.5">
-                          {item.categories[0] || "Community"}
-                        </span>
+              {relatedEvents.length === 0 ? (
+                <div className="text-sm text-muted bg-gray-50 border border-line rounded-xl p-5 text-center">
+                  No similar events found right now. Check back soon!
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  {relatedEvents.map((item) => {
+                    let formattedItemDate = "Upcoming";
+                    try {
+                      if (item.date) {
+                        const d = new Date(item.date.replace(" ", "T"));
+                        if (!isNaN(d.getTime())) {
+                          formattedItemDate = format(d, "MMM d");
+                        }
+                      }
+                    } catch {}
+
+                    const itemCat = item.categories?.[0] || "Community";
+                    const itemCover = item.coverImage || item.image;
+
+                    return (
+                      <div
+                        key={item.id}
+                        className="flex items-center justify-between p-3.5 bg-white border border-line rounded-xl hover:shadow-sm hover:border-gray-300 transition-all group"
+                      >
+                        <div className="flex items-center gap-3.5 min-w-0">
+                          {itemCover ? (
+                            <div className="w-14 h-14 rounded-lg overflow-hidden border border-line bg-gray-100 shrink-0 relative">
+                              <img
+                                src={itemCover}
+                                alt={item.title}
+                                className="w-full h-full object-cover group-hover:scale-105 transition-transform"
+                              />
+                            </div>
+                          ) : (
+                            <div className="w-14 h-14 rounded-lg bg-orange-50 border border-orange-200/50 flex flex-col items-center justify-center text-center p-1 shrink-0">
+                              <span className="text-[9px] font-black uppercase text-[#ff6b35]">
+                                {itemCat.slice(0, 3)}
+                              </span>
+                              <span className="text-[11px] font-bold text-ink leading-tight">
+                                {formattedItemDate}
+                              </span>
+                            </div>
+                          )}
+                          <div className="min-w-0">
+                            <div className="flex items-center gap-2 mb-0.5">
+                              <span className="text-[10px] font-black uppercase tracking-wider text-[#ff6b35] bg-orange-50 px-2 py-0.5 rounded-full border border-orange-100">
+                                {itemCat}
+                              </span>
+                              <span className="text-xs text-muted">
+                                {formattedItemDate}
+                              </span>
+                            </div>
+                            <Link
+                              href={`/events/${item.id}`}
+                              className="font-bold text-sm text-ink hover:text-[#ff6b35] transition-colors no-underline block truncate"
+                            >
+                              {item.title}
+                            </Link>
+                            <p className="text-xs text-muted m-0 truncate">
+                              {item.location || item.city || "Philippines"} · {Number(item.price) === 0 ? "Free" : `₱${Number(item.price).toLocaleString()}`}
+                            </p>
+                          </div>
+                        </div>
+
                         <Link
                           href={`/events/${item.id}`}
-                          className="font-bold text-sm text-ink hover:text-accent transition-colors no-underline block truncate"
+                          className="border border-line hover:border-[#ff6b35] text-xs font-bold px-3 py-1.5 rounded-lg text-ink hover:text-[#ff6b35] hover:bg-orange-50/50 no-underline shrink-0 ml-3 transition-colors"
                         >
-                          {item.title}
+                          View
                         </Link>
-                        <p className="text-xs text-muted m-0 truncate">
-                          {item.location} · {Number(item.price) === 0 ? "Free" : `₱${item.price}`}
-                        </p>
                       </div>
-                    </div>
-
-                    <Link
-                      href={`/events/${item.id}`}
-                      className="border border-line hover:border-accent text-xs font-bold px-3 py-1.5 rounded-lg text-ink hover:text-accent no-underline shrink-0"
-                    >
-                      View
-                    </Link>
-                  </div>
-                ))}
-              </div>
+                    );
+                  })}
+                </div>
+              )}
             </div>
           </div>
 
@@ -767,59 +1013,22 @@ export default function EventDetailsPage({
                 </h3>
               </div>
 
-              {/* Event Capacity / Slots Progress Bar */}
-              {event?.capacity && event.capacity > 0 && (() => {
-                const slotsTaken = rsvpCount || 0;
-                const capacity = event.capacity;
-                const slotsLeft = Math.max(0, capacity - slotsTaken);
-                const percent = Math.min(100, Math.round((slotsTaken / capacity) * 100));
-                const isFull = slotsLeft === 0;
-
-                return (
-                  <div className="bg-[#faf8f3] border border-[#e6e1d8] rounded-xl p-3.5 space-y-2">
-                    <div className="flex items-center justify-between text-xs">
-                      <span className="font-bold text-[#171717] flex items-center gap-1.5">
-                        <Users className="w-3.5 h-3.5 text-[#ff6b35]" />
-                        <span>Event Capacity</span>
-                      </span>
-                      <span className={`font-black text-xs ${isFull ? "text-rose-600" : slotsLeft <= 5 ? "text-amber-600" : "text-emerald-700"}`}>
-                        {isFull ? "Event Full (Waitlist)" : `${slotsLeft} spot${slotsLeft !== 1 ? "s" : ""} left`}
-                      </span>
-                    </div>
-
-                    <div className="w-full bg-[#e6e1d8] h-2 rounded-full overflow-hidden">
-                      <div
-                        className={`h-full rounded-full transition-all duration-500 ${
-                          isFull
-                            ? "bg-rose-500"
-                            : slotsLeft <= 5
-                            ? "bg-amber-500"
-                            : "bg-[#ff6b35]"
-                        }`}
-                        style={{ width: `${percent}%` }}
-                      />
-                    </div>
-
-                    <div className="flex justify-between items-center text-[11px] text-[#777]">
-                      <span>{slotsTaken} registered</span>
-                      <span>{capacity} total slots</span>
-                    </div>
-                  </div>
-                );
-              })()}
-
-              {/* Require Approval Notice */}
-              {event?.requireApproval && (
-                <div className="p-2.5 rounded-xl bg-amber-50 border border-amber-200 text-amber-900 text-xs flex items-center gap-2">
-                  <Clock className="w-4 h-4 text-amber-600 shrink-0" />
-                  <span>
-                    <strong>Screening Active:</strong> RSVPs require organizer confirmation before admission.
-                  </span>
-                </div>
-              )}
-
               {/* RSVP Button / Registered Status Card */}
-              {!currentUser ? (
+              {event.status?.toLowerCase() === "cancelled" ? (
+                <div className="space-y-2">
+                  <button
+                    type="button"
+                    disabled
+                    className="w-full py-3.5 px-4 rounded-xl font-bold text-sm bg-gray-100 text-gray-400 border border-gray-200 cursor-not-allowed flex items-center justify-center gap-2"
+                  >
+                    <X className="w-4 h-4" />
+                    <span>Event Cancelled</span>
+                  </button>
+                  <p className="text-center text-xs text-rose-600 font-semibold m-0">
+                    RSVPs are closed because the organizer cancelled this event.
+                  </p>
+                </div>
+              ) : !currentUser ? (
                 <button
                   type="button"
                   onClick={handleRSVP}
@@ -850,27 +1059,58 @@ export default function EventDetailsPage({
                     <span>Cancel RSVP</span>
                   </button>
                 </div>
-              ) : (
-                <button
-                  type="button"
-                  onClick={handleRSVP}
-                  className={`w-full py-3.5 px-4 rounded-xl font-bold text-sm transition-all cursor-pointer flex items-center justify-center gap-2 text-white ${
-                    event?.capacity && (event.registrations || 0) >= event.capacity
-                      ? "bg-amber-600 hover:bg-amber-700 shadow-sm"
-                      : event?.requireApproval
-                      ? "bg-[#ff6b35] hover:bg-[#e0531f] shadow-sm"
-                      : "bg-dark hover:bg-ink"
-                  }`}
-                >
-                  {event?.capacity && (event.registrations || 0) >= event.capacity ? (
-                    <span>Join Waitlist (RSVP Pending)</span>
-                  ) : event?.requireApproval ? (
-                    <span>Request RSVP (Awaits Approval)</span>
-                  ) : (
-                    <span>RSVP / Register</span>
-                  )}
-                </button>
-              )}
+              ) : (() => {
+                const rawCap = event?.capacity;
+                const effectiveCap = typeof rawCap === "number" ? rawCap : (rawCap ? Number(rawCap) : 100);
+                const isFull = effectiveCap > 0 && (event?.registrations || 0) >= effectiveCap;
+
+                return (
+                  <button
+                    type="button"
+                    onClick={handleRSVP}
+                    className={`w-full py-3.5 px-4 rounded-xl font-bold text-sm transition-all cursor-pointer flex items-center justify-center gap-2 text-white ${
+                      isFull
+                        ? "bg-amber-600 hover:bg-amber-700 shadow-sm"
+                        : event?.requireApproval
+                        ? "bg-[#ff6b35] hover:bg-[#e0531f] shadow-sm"
+                        : "bg-dark hover:bg-ink"
+                    }`}
+                  >
+                    {isFull ? (
+                      <span>Join Waitlist (RSVP Pending)</span>
+                    ) : event?.requireApproval ? (
+                      <span>Request RSVP</span>
+                    ) : (
+                      <span>RSVP / Register</span>
+                    )}
+                  </button>
+                );
+              })()}
+
+              {/* Subtle 'n spots left' indicator under RSVP button, above share button on lower right */}
+              {(() => {
+                const rawCap = event?.capacity;
+                const capacity = typeof rawCap === "number" ? rawCap : (rawCap ? Number(rawCap) : 100);
+                if (capacity <= 0) return null;
+                const slotsTaken = rsvpCount || 0;
+                const slotsLeft = Math.max(0, capacity - slotsTaken);
+                const isFull = slotsLeft === 0;
+
+                return (
+                  <div className="flex justify-end -mt-3.5 pt-0.5">
+                    <span className={`text-[11px] font-bold inline-flex items-center gap-1 ${
+                      isFull
+                        ? "text-rose-600"
+                        : slotsLeft <= 5
+                        ? "text-amber-600"
+                        : "text-emerald-700"
+                    }`}>
+                      <Users className="w-3 h-3 text-[#ff6b35]" />
+                      <span>{isFull ? "0 spots left (Waitlist)" : `${slotsLeft} spot${slotsLeft !== 1 ? "s" : ""} left`}</span>
+                    </span>
+                  </div>
+                );
+              })()}
 
               {/* Save & Share Buttons */}
               <div className={currentUser ? "grid grid-cols-2 gap-3" : "flex"}>
@@ -906,6 +1146,116 @@ export default function EventDetailsPage({
 
               <div className="text-[11px] text-muted text-center">
                 Last updated: {event.confirmedAt ? format(new Date(event.confirmedAt), "MMM d, yyyy · h:mm a") : "Recently updated"}
+              </div>
+
+              <hr className="border-line m-0" />
+
+              {/* Quick Actions: Google Calendar & Event Reminders */}
+              <div className="space-y-2.5">
+                <span className="text-[11px] font-bold text-muted uppercase tracking-wider block">
+                  Quick Actions
+                </span>
+
+                {/* Add to Google Calendar */}
+                <a
+                  href={buildGoogleCalendarUrl(event)}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="w-full flex items-center gap-2.5 px-3.5 py-2.5 rounded-xl border border-line hover:border-[#ff6b35] hover:bg-[#fff8f5] text-xs font-bold text-ink hover:text-[#ff6b35] transition-all no-underline group"
+                >
+                  <CalendarPlus className="w-4 h-4 text-[#ff6b35] shrink-0" />
+                  <span className="flex-1">Add to Google Calendar</span>
+                  <ExternalLink className="w-3.5 h-3.5 text-muted group-hover:text-[#ff6b35] shrink-0 transition-colors" />
+                </a>
+
+                {/* Set Event Reminder */}
+                <div className="relative">
+                  <button
+                    type="button"
+                    onClick={() => setReminderDropdownOpen((prev) => !prev)}
+                    className={`w-full flex items-center gap-2.5 px-3.5 py-2.5 rounded-xl border text-xs font-bold transition-all cursor-pointer text-left ${
+                      userReminders.length > 0
+                        ? "border-[#ff6b35] bg-[#fff8f5] text-[#ff6b35]"
+                        : "border-line hover:border-[#ff6b35] hover:bg-[#fff8f5] text-ink hover:text-[#ff6b35]"
+                    }`}
+                  >
+                    {userReminders.length > 0 ? (
+                      <BellRing className="w-4 h-4 text-[#ff6b35] shrink-0" />
+                    ) : (
+                      <Bell className="w-4 h-4 text-[#ff6b35] shrink-0" />
+                    )}
+                    <span className="flex-1 truncate">
+                      {userReminders.length > 0
+                        ? `Reminder Set (${userReminders[0].offsetLabel})`
+                        : "Set Event Reminder"}
+                    </span>
+                    <span className="text-[10px] text-muted font-normal shrink-0">
+                      {userReminders.length > 0 ? "Change" : "Select"}
+                    </span>
+                  </button>
+
+                  {reminderDropdownOpen && (
+                    <div className="absolute left-0 right-0 bottom-full mb-1 sm:bottom-auto sm:top-full sm:mt-1 bg-white border border-[#e6e1d8] rounded-2xl shadow-xl z-30 p-3 space-y-1.5 animate-in fade-in zoom-in-95">
+                      <div className="flex items-center justify-between px-2 pb-1 border-b border-gray-100">
+                        <p className="text-[11px] font-black uppercase tracking-wider text-[#666]">
+                          Remind me before event
+                        </p>
+                        <button
+                          type="button"
+                          onClick={() => setReminderDropdownOpen(false)}
+                          className="text-gray-400 hover:text-gray-600 p-0.5 cursor-pointer"
+                        >
+                          <X className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+
+                      {[
+                        { label: "1 day before", mins: 1440 },
+                        { label: "3 hours before", mins: 180 },
+                        { label: "1 hour before", mins: 60 },
+                        { label: "30 minutes before", mins: 30 },
+                      ].map(({ label, mins }) => {
+                        const isActive = userReminders.some((r) => r.offsetLabel === label);
+                        return (
+                          <button
+                            key={mins}
+                            type="button"
+                            disabled={isSettingReminder}
+                            onClick={() => handleSetReminderOption(label, mins)}
+                            className={`w-full flex items-center justify-between px-3 py-2 rounded-xl text-xs font-bold transition-colors cursor-pointer text-left ${
+                              isActive
+                                ? "bg-[#fff0e8] text-[#ff6b35]"
+                                : "text-ink hover:bg-gray-50"
+                            }`}
+                          >
+                            <div className="flex items-center gap-2">
+                              <Clock className="w-3.5 h-3.5 text-[#ff6b35] shrink-0" />
+                              <span>{label}</span>
+                            </div>
+                            {isActive && (
+                              <span className="text-[10px] text-[#ff6b35] font-black uppercase">Active</span>
+                            )}
+                          </button>
+                        );
+                      })}
+
+                      {userReminders.length > 0 && (
+                        <div className="pt-1 border-t border-gray-100">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              handleRemoveReminder();
+                              setReminderDropdownOpen(false);
+                            }}
+                            className="w-full px-3 py-1.5 rounded-lg text-xs font-bold text-rose-600 hover:bg-rose-50 transition-colors cursor-pointer text-center"
+                          >
+                            Remove Reminder
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
               </div>
 
               <hr className="border-line m-0" />
@@ -1023,16 +1373,29 @@ export default function EventDetailsPage({
                   );
                 }
 
-                return (
-                  <div className="p-3 bg-emerald-50 border border-emerald-200 rounded-xl space-y-1">
-                    <div className="flex items-center gap-1.5 text-emerald-800">
-                      <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
-                      <b className="text-[11px] font-black uppercase tracking-wider">
-                        VERIFIED & ACTIVE
-                      </b>
+                if (event.verified) {
+                  return (
+                    <div className="p-3 bg-emerald-50 border border-emerald-200 rounded-xl space-y-1">
+                      <div className="flex items-center gap-1.5 text-emerald-800">
+                        <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+                        <b className="text-[11px] font-black uppercase tracking-wider">
+                          VERIFIED & ACTIVE
+                        </b>
+                      </div>
+                      <p className="text-[11px] text-emerald-700 leading-relaxed m-0">
+                        This event is active and verified by {event.organizer || "Metro Creative Group"}.
+                      </p>
                     </div>
-                    <p className="text-[11px] text-emerald-700 leading-relaxed m-0">
-                      This event is active and verified by {event.organizer || "Metro Creative Group"}.
+                  );
+                }
+
+                return (
+                  <div className="p-3 bg-gray-50 border border-line rounded-xl space-y-1">
+                    <b className="text-[11px] font-black uppercase text-gray-700 tracking-wider block">
+                      COMMUNITY EVENT · ACTIVE
+                    </b>
+                    <p className="text-[11px] text-muted leading-relaxed m-0">
+                      Hosted by {event.organizer || "Community Organizer"}.
                     </p>
                   </div>
                 );

@@ -36,12 +36,18 @@ function getSignedUpUsers(): SpottAccount[] {
 
 function saveSignedUpUser(acc: SpottAccount) {
   if (typeof window === "undefined") return;
+  const nowIso = new Date().toISOString();
   const existing = getSignedUpUsers();
   const existingIdx = existing.findIndex((a) => a.email.toLowerCase() === acc.email.toLowerCase());
+  const accWithTimestamp = {
+    ...acc,
+    createdAt: nowIso,
+    joinedAt: nowIso,
+  };
   if (existingIdx !== -1) {
-    existing[existingIdx] = acc;
+    existing[existingIdx] = accWithTimestamp;
   } else {
-    existing.push(acc);
+    existing.push(accWithTimestamp);
   }
   localStorage.setItem(SIGNUP_STORE_KEY, JSON.stringify(existing));
 
@@ -51,6 +57,7 @@ function saveSignedUpUser(acc: SpottAccount) {
     email: acc.email,
     role: acc.role,
     status: "Active",
+    joinedAt: nowIso,
   });
 }
 

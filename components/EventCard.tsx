@@ -32,6 +32,7 @@ export type EventData = {
   featuredReason?: string;
   capacity?: number | null;
   requireApproval?: boolean;
+  distanceKm?: number;
 };
 
 type EventCardProps = {
@@ -245,9 +246,17 @@ export default function EventCard({
             <ArrowUpRight className="w-3.5 h-3.5 text-muted opacity-0 group-hover:opacity-100 group-hover:text-accent transition-all shrink-0 ml-1" />
           </h3>
           <p className="text-xs text-muted mb-1">{dateFormatted}</p>
-          <p className="text-xs text-muted flex items-center gap-1 m-0 truncate">
-            <MapPin className="w-3.5 h-3.5 shrink-0" /> {event.location || event.city}
-          </p>
+          <div className="flex items-center justify-between gap-1 text-xs text-muted">
+            <span className="flex items-center gap-1 truncate">
+              <MapPin className="w-3.5 h-3.5 shrink-0 text-[#ff6b35]" />
+              <span className="truncate">{event.location || event.city}</span>
+            </span>
+            {event.distanceKm !== undefined && (
+              <span className="shrink-0 font-bold text-[#ff6b35] bg-orange-50 border border-orange-200/60 px-1.5 py-0.5 rounded text-[10px]">
+                {event.distanceKm < 1 ? "< 1 km away" : `${event.distanceKm.toFixed(1)} km away`}
+              </span>
+            )}
+          </div>
         </div>
       </div>
     );

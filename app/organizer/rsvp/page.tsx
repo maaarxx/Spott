@@ -20,6 +20,22 @@ import {
 } from "lucide-react";
 import { getStoredEvents, saveStoredEvent, subscribeToEvents } from "@/lib/events-store";
 import { addNotification } from "@/lib/notifications-store";
+import { getCurrentUser } from "@/lib/auth-store";
+
+function isOrgEvent(eventOrg: string | undefined | null, currentOrg: string): boolean {
+  const normCurrent = (currentOrg || "").trim().toLowerCase();
+  const normEvent = (eventOrg || "").trim().toLowerCase();
+  if (!normCurrent) return true;
+  if (!normEvent) {
+    return normCurrent.includes("metro creative") || normCurrent === "mcg";
+  }
+  if (normCurrent === normEvent) return true;
+  if (normCurrent.includes("metro creative") && (normEvent.includes("metro creative") || normEvent === "mcg")) return true;
+  if (normCurrent.includes("vanguard") && normEvent.includes("vanguard")) return true;
+  if (normCurrent.includes("hobbyist") && normEvent.includes("hobbyist")) return true;
+  if (normCurrent.includes("tech manila") && normEvent.includes("tech manila")) return true;
+  return normCurrent.includes(normEvent) || normEvent.includes(normCurrent);
+}
 
 interface Attendee {
   id: string;
@@ -45,8 +61,11 @@ function RsvpManagementContent() {
 
   useEffect(() => {
     const loadEvents = () => {
+      const user = getCurrentUser();
+      const currentOrg = user?.organization || user?.name || "Metro Creative Group";
       const stored = getStoredEvents();
-      const list = stored.map((e) => ({
+      const filtered = stored.filter((e) => isOrgEvent(e.organizer, currentOrg));
+      const list = filtered.map((e) => ({
         id: e.id,
         title: e.title,
         capacity: e.capacity,
@@ -57,12 +76,16 @@ function RsvpManagementContent() {
         setSelectedEventKey(urlEventId);
       } else if (list.length > 0 && (!selectedEventKey || !list.some((e) => e.id === selectedEventKey))) {
         setSelectedEventKey(list[0].id);
+      } else if (list.length === 0) {
+        setSelectedEventKey("");
       }
     };
     loadEvents();
     const unsubscribeEvents = subscribeToEvents(loadEvents);
+    window.addEventListener("spott_auth_changed", loadEvents);
     return () => {
       unsubscribeEvents();
+      window.removeEventListener("spott_auth_changed", loadEvents);
     };
   }, [urlEventId, selectedEventKey]);
 
@@ -210,17 +233,17 @@ function RsvpManagementContent() {
     if (affectedAttendee && selectedEvent) {
       if (newStatus === "Confirmed") {
         addNotification({
-          type: "announcement",
-          title: `RSVP Approved: "${selectedEvent.title}"`,
-          message: `Great news! Your reservation for "${selectedEvent.title}" has been approved by the organizer. See you there!`,
+          type: "update",
+          title: `RSVP Confirmed: "${selectedEvent.title}"`,
+          message: `Your RSVP for ${selectedEvent.title} was confirmed.`,
           targetRole: "user",
           link: `/events/${selectedEventKey}`,
         });
       } else if (newStatus === "Declined") {
         addNotification({
-          type: "cancellation",
+          type: "update",
           title: `RSVP Update: "${selectedEvent.title}"`,
-          message: `Your reservation for "${selectedEvent.title}" has been declined or released.`,
+          message: `Your RSVP for ${selectedEvent.title} was declined by the organizer.`,
           targetRole: "user",
           link: `/events/${selectedEventKey}`,
         });

@@ -19,7 +19,7 @@ import {
   Edit3,
 } from "lucide-react";
 import EventCard, { type EventData } from "@/components/EventCard";
-import { getStoredEvents, subscribeToEvents } from "@/lib/events-store";
+import { getStoredEvents, subscribeToEvents, saveStoredEvents } from "@/lib/events-store";
 import { DEFAULT_EVENTS } from "@/lib/default-events";
 import { getVerificationState } from "@/lib/verification-store";
 import {
@@ -90,7 +90,7 @@ export default function OrganizerProfilePage({
 
   // Sync Events
   useEffect(() => {
-    const loadEvents = () => {
+    const loadEvents = async () => {
       const stored = getStoredEvents();
       const combined = [...stored, ...DEFAULT_EVENTS];
       // Deduplicate by ID
@@ -103,6 +103,27 @@ export default function OrganizerProfilePage({
         }
       }
       setAllEvents(deduped);
+
+      try {
+        const res = await fetch("/api/events");
+        if (res.ok) {
+          const apiData = await res.json();
+          if (Array.isArray(apiData) && apiData.length > 0) {
+            saveStoredEvents(apiData);
+            const freshStored = getStoredEvents();
+            const freshCombined = [...freshStored, ...DEFAULT_EVENTS, ...apiData];
+            const s = new Set<string>();
+            const d: EventData[] = [];
+            for (const ev of freshCombined) {
+              if (!s.has(ev.id)) {
+                s.add(ev.id);
+                d.push(ev);
+              }
+            }
+            setAllEvents(d);
+          }
+        }
+      } catch {}
     };
 
     loadEvents();
@@ -145,11 +166,8 @@ export default function OrganizerProfilePage({
     if (ver && ver.status === "approved") return true;
 
     // 2. Metro Creative Group default verified status
-    if (isMetro) return true;
-
-    // 3. Or if any event published by this organizer is marked verified
-    return organizerEvents.some((e) => e.verified);
-  }, [organizerName, organizerEvents]);
+    return isMetro;
+  }, [organizerName]);
 
   // Accurate attendee calculations
   const stats = useMemo(() => {
@@ -331,19 +349,21 @@ export default function OrganizerProfilePage({
           <div className="relative z-10 flex flex-col md:flex-row md:items-center justify-between gap-6">
             <div className="flex items-start md:items-center gap-4 md:gap-6">
               {/* Avatar Box */}
-              <div className="w-18 h-18 md:w-22 md:h-22 rounded-2xl bg-gradient-to-br from-[#171717] via-[#262626] to-[#3a3a3a] text-white flex items-center justify-center font-extrabold text-2xl md:text-3xl tracking-wider shadow-md shrink-0 border border-white/10 relative overflow-hidden">
-                {organizerProfile.avatarUrl ? (
-                  <img
-                    src={organizerProfile.avatarUrl}
-                    alt={organizerName}
-                    className="w-full h-full object-cover"
-                  />
-                ) : (
-                  <span>{initials}</span>
-                )}
+              <div className="relative shrink-0">
+                <div className="w-18 h-18 md:w-22 md:h-22 rounded-2xl bg-gradient-to-br from-[#171717] via-[#262626] to-[#3a3a3a] text-white flex items-center justify-center font-extrabold text-2xl md:text-3xl tracking-wider shadow-md border border-white/10 overflow-hidden">
+                  {organizerProfile.avatarUrl ? (
+                    <img
+                      src={organizerProfile.avatarUrl}
+                      alt={organizerName}
+                      className="w-full h-full object-cover"
+                    />
+                  ) : (
+                    <span>{initials}</span>
+                  )}
+                </div>
                 {isVerified && (
                   <div
-                    className="absolute -bottom-1 -right-1 bg-white p-0.5 rounded-full shadow-sm z-10"
+                    className="absolute -bottom-1 -right-1 bg-white p-0.5 rounded-full shadow-md z-10 flex items-center justify-center"
                     title="Verified Organizer"
                   >
                     <CheckCircle2 className="w-5 h-5 text-[#14804a]" />
@@ -368,6 +388,12 @@ export default function OrganizerProfilePage({
                     <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-gray-100 text-muted border border-gray-200 text-xs font-medium">
                       <Building2 className="w-3.5 h-3.5 text-muted shrink-0" />
                       <span>Community Organizer</span>
+                    </span>
+                  )}
+
+                  {organizerProfile.category && (
+                    <span className="inline-flex items-center gap-1 px-3 py-1 rounded-full bg-[#fff0e8] text-[#ff6b35] border border-[#ff6b35]/20 text-xs font-bold shadow-2xs">
+                      <span>{organizerProfile.category}</span>
                     </span>
                   )}
                 </div>

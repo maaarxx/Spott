@@ -43,6 +43,8 @@ import {
   ArrowLeft,
   Mail,
   Globe,
+  AlertTriangle,
+  XCircle,
 } from "lucide-react";
 import { useEffect } from "react";
 import {
@@ -59,14 +61,50 @@ import {
 } from "@/lib/verification-store";
 import PdfViewerModal from "@/components/PdfViewerModal";
 import { addNotification, removeNotificationsForEvent } from "@/lib/notifications-store";
-import { getStoredEvents, saveStoredEvent, deleteStoredEvent, subscribeToEvents } from "@/lib/events-store";
+import { getStoredEvents, saveStoredEvent, saveStoredEvents, deleteStoredEvent, subscribeToEvents } from "@/lib/events-store";
 import { getCurrentUser } from "@/lib/auth-store";
+import {
+  getEventViews,
+  getEventUniqueViews,
+  getViewsMap,
+  getUniqueViewsMap,
+  subscribeToViews,
+} from "@/lib/views-store";
 import {
   getOrganizerProfile,
   saveOrganizerProfile,
   subscribeToOrganizerProfile,
   OrganizerProfile,
 } from "@/lib/organizer-store";
+import { getAllCategories, matchesCategory } from "@/lib/categories";
+import { recomputeRemindersForEvent } from "@/lib/reminders-store";
+
+export const DEFAULT_FOCUS_PRESETS = [
+  "Creative Arts & Design",
+  "Esports & Gaming",
+  "Hobbies & Collectibles",
+  "Technology & Innovation",
+  "Music, Sound & Nightlife",
+  "Campus & Student Org",
+  "Sports & Active Recreation",
+  "Food & Culinary Pop-ups",
+  "Community & Cultural",
+];
+
+function isOrgEvent(eventOrg: string | undefined | null, currentOrg: string): boolean {
+  const normCurrent = (currentOrg || "").trim().toLowerCase();
+  const normEvent = (eventOrg || "").trim().toLowerCase();
+  if (!normCurrent) return true;
+  if (!normEvent) {
+    return normCurrent.includes("metro creative") || normCurrent === "mcg";
+  }
+  if (normCurrent === normEvent) return true;
+  if (normCurrent.includes("metro creative") && (normEvent.includes("metro creative") || normEvent === "mcg")) return true;
+  if (normCurrent.includes("vanguard") && normEvent.includes("vanguard")) return true;
+  if (normCurrent.includes("hobbyist") && normEvent.includes("hobbyist")) return true;
+  if (normCurrent.includes("tech manila") && normEvent.includes("tech manila")) return true;
+  return normCurrent.includes(normEvent) || normEvent.includes(normCurrent);
+}
 
 const currentYear = new Date().getFullYear();
 
@@ -78,10 +116,13 @@ export interface OrganizerEvent {
   rsvps: number;
   capacity: number;
   views: number;
-  status: "Active" | "Draft" | "Past";
+  uniqueViews?: number;
+  status: "Active" | "Draft" | "Past" | "Cancelled";
   location: string;
   category: string;
   price: number;
+  cancelledAt?: string | null;
+  cancelReason?: string | null;
 }
 
 const initialEvents: OrganizerEvent[] = [];
@@ -116,6 +157,7 @@ function OrganizerContent() {
   const [searchQuery, setSearchQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState<string>("All");
   const [categoryFilter, setCategoryFilter] = useState<string>("All");
+  const [categoriesList, setCategoriesList] = useState<string[]>([]);
   const [showVerificationModal, setShowVerificationModal] = useState(false);
   const [hoveredDay, setHoveredDay] = useState<{ day: string; count: number } | null>(null);
   const [alertNotice, setAlertNotice] = useState<string | null>(null);
@@ -130,17 +172,34 @@ function OrganizerContent() {
   const [profileData, setProfileData] = useState<OrganizerProfile>(() => {
     return getOrganizerProfile();
   });
+  const [isCustomFocus, setIsCustomFocus] = useState(false);
+  const [customFocusText, setCustomFocusText] = useState("");
   const [profileSaved, setProfileSaved] = useState(false);
   const [showProfilePreview, setShowProfilePreview] = useState(false);
+  const [currentOrgName, setCurrentOrgName] = useState<string>("Metro Creative Group");
 
   useEffect(() => {
-    const user = getCurrentUser();
-    const orgName = user?.organization || user?.name || "Metro Creative Group";
-    setProfileData(getOrganizerProfile(orgName));
-    const unsub = subscribeToOrganizerProfile(() => {
-      setProfileData(getOrganizerProfile(orgName));
-    });
-    return () => unsub();
+    const syncProfile = () => {
+      const user = getCurrentUser();
+      const orgName = user?.organization || user?.name || "Metro Creative Group";
+      setCurrentOrgName(orgName);
+      const prof = getOrganizerProfile(orgName);
+      setProfileData(prof);
+      if (prof.category && !DEFAULT_FOCUS_PRESETS.includes(prof.category)) {
+        setIsCustomFocus(true);
+        setCustomFocusText(prof.category);
+      } else {
+        setIsCustomFocus(false);
+        setCustomFocusText(prof.category || "");
+      }
+    };
+    syncProfile();
+    const unsub = subscribeToOrganizerProfile(syncProfile);
+    window.addEventListener("spott_auth_changed", syncProfile);
+    return () => {
+      unsub();
+      window.removeEventListener("spott_auth_changed", syncProfile);
+    };
   }, []);
 
   const handleAvatarFile = (file: File) => {
@@ -212,9 +271,12 @@ function OrganizerContent() {
         date: dateStr,
         time: timeStr,
         rsvps: e.registrations || 0,
-        capacity: 100,
-        views: 0,
-        status: (e.status === "active" ? "Active" : e.status === "draft" ? "Draft" : "Active") as any,
+        capacity: typeof e.capacity === "number" ? e.capacity : (e.capacity ? Number(e.capacity) : 100),
+        views: getEventViews(e.id, e.registrations || 0),
+        uniqueViews: getEventUniqueViews(e.id, e.registrations || 0),
+        status: (e.status === "cancelled" ? "Cancelled" : e.status === "active" ? "Active" : e.status === "draft" ? "Draft" : e.status === "past" ? "Past" : "Active") as any,
+        cancelledAt: (e as any).cancelled_at || (e as any).cancelledAt || null,
+        cancelReason: (e as any).cancel_reason || (e as any).cancelReason || null,
         location: e.location || "Campus Venue",
         category: e.categories?.[0] || "School Events",
         price: e.price || 0,
@@ -227,34 +289,54 @@ function OrganizerContent() {
     const myOrg = (user?.organization || user?.name || "Metro Creative Group").trim().toLowerCase();
 
     const filterForOrg = (list: any[]) => {
-      return list.filter((e) => {
-        const evOrg = (e.organizer || "Metro Creative Group").trim().toLowerCase();
-        if (myOrg.includes("metro creative")) {
-          return evOrg.includes("metro creative") || !e.organizer;
-        }
-        return evOrg === myOrg;
-      });
+      return list.filter((e) => isOrgEvent(e.organizer, myOrg));
     };
 
     const stored = getStoredEvents();
-    setEvents(mapToOrganizerEvents(filterForOrg(stored)));
+    const orgEvents = filterForOrg(stored);
+    setEvents(mapToOrganizerEvents(orgEvents));
+
+    // Sync deduplicated view stats from server
+    const eventIds = orgEvents.map((e) => e.id);
+    if (eventIds.length > 0) {
+      try {
+        fetch(`/api/views?listing_ids=${encodeURIComponent(eventIds.join(","))}`)
+          .then((r) => r.json())
+          .then((data) => {
+            if (data?.viewsMap) {
+              const curMap = getViewsMap();
+              Object.assign(curMap, data.viewsMap);
+              try {
+                localStorage.setItem("spott_event_views", JSON.stringify(curMap));
+              } catch {}
+              if (data?.uniqueViewsMap) {
+                const curUnique = getUniqueViewsMap();
+                Object.assign(curUnique, data.uniqueViewsMap);
+                try {
+                  localStorage.setItem("spott_event_unique_views", JSON.stringify(curUnique));
+                } catch {}
+              }
+              setEvents((prev) =>
+                prev.map((e) => ({
+                  ...e,
+                  views: data.viewsMap[e.id] ?? e.views,
+                  uniqueViews: data.uniqueViewsMap?.[e.id] ?? e.uniqueViews,
+                }))
+              );
+            }
+          })
+          .catch(() => {});
+      } catch {}
+    }
 
     try {
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), 1200);
-      const res = await fetch("/api/events", { signal: controller.signal });
-      clearTimeout(timer);
+      const res = await fetch("/api/events");
       if (res.ok) {
         const apiData = await res.json();
-        if (Array.isArray(apiData)) {
+        if (Array.isArray(apiData) && apiData.length > 0) {
+          saveStoredEvents(apiData, false);
           const freshStored = getStoredEvents();
-          const existingIds = new Set(freshStored.map((e) => e.id));
-          const newFromApi = apiData.filter((e: any) => !existingIds.has(e.id));
-          if (newFromApi.length > 0) {
-            newFromApi.forEach((item: any) => saveStoredEvent(item));
-          }
-          const merged = [...freshStored, ...newFromApi];
-          setEvents(mapToOrganizerEvents(filterForOrg(merged)));
+          setEvents(mapToOrganizerEvents(filterForOrg(freshStored)));
         }
       }
     } catch {}
@@ -263,22 +345,44 @@ function OrganizerContent() {
   useEffect(() => {
     syncEvents();
     const unsubscribeEvents = subscribeToEvents(syncEvents);
+    const unsubscribeViews = subscribeToViews(syncEvents);
     window.addEventListener("spott_registered_updated", syncEvents);
+    window.addEventListener("spott_views_updated", syncEvents);
+    window.addEventListener("spott_auth_changed", syncEvents);
+
+    const syncCats = () => setCategoriesList(getAllCategories());
+    syncCats();
+    window.addEventListener("spott_categories_updated", syncCats);
+
     return () => {
       unsubscribeEvents();
+      unsubscribeViews();
       window.removeEventListener("spott_registered_updated", syncEvents);
+      window.removeEventListener("spott_views_updated", syncEvents);
+      window.removeEventListener("spott_auth_changed", syncEvents);
+      window.removeEventListener("spott_categories_updated", syncCats);
     };
   }, []);
 
   useEffect(() => {
     // Sync with client localStorage upon mount to prevent SSR hydration mismatch
-    setVerState(getVerificationState());
+    const user = getCurrentUser();
+    const orgName = user?.organization || user?.name || "Metro Creative Group";
+    setCurrentOrgName(orgName);
+    setVerState(getVerificationState(orgName));
 
     const handleUpdate = () => {
-      setVerState(getVerificationState());
+      const u = getCurrentUser();
+      const current = u?.organization || u?.name || "Metro Creative Group";
+      setCurrentOrgName(current);
+      setVerState(getVerificationState(current));
     };
     window.addEventListener("spott_verification_updated", handleUpdate);
-    return () => window.removeEventListener("spott_verification_updated", handleUpdate);
+    window.addEventListener("spott_auth_changed", handleUpdate);
+    return () => {
+      window.removeEventListener("spott_verification_updated", handleUpdate);
+      window.removeEventListener("spott_auth_changed", handleUpdate);
+    };
   }, []);
 
   const showAlert = (msg: string) => {
@@ -320,18 +424,25 @@ function OrganizerContent() {
       e.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
       e.location.toLowerCase().includes(searchQuery.toLowerCase());
     const matchesStatus = statusFilter === "All" || e.status === statusFilter;
-    const matchesCategory = categoryFilter === "All" || e.category === categoryFilter;
-    return matchesSearch && matchesStatus && matchesCategory;
+    const catMatch = categoryFilter === "All" || matchesCategory(e.category, categoryFilter);
+    return matchesSearch && matchesStatus && catMatch;
   });
 
   const totalEvents = events.length;
   const totalRSVPs = events.reduce((acc, curr) => acc + curr.rsvps, 0);
   const totalViews = events.reduce((acc, curr) => acc + curr.views, 0);
+  const totalUniqueViews = events.reduce((acc, curr) => acc + (curr.uniqueViews || Math.max(1, Math.round(curr.views * 0.72))), 0);
   const regRate = Math.round((totalRSVPs / Math.max(totalViews, 1)) * 100);
 
   const activeCount = events.filter((e) => e.status === "Active").length;
   const draftCount = events.filter((e) => e.status === "Draft").length;
   const pastCount = events.filter((e) => e.status === "Past").length;
+  const cancelledCount = events.filter((e) => e.status === "Cancelled").length;
+
+  const [cancellingEvent, setCancellingEvent] = useState<OrganizerEvent | null>(null);
+  const [cancelReasonInput, setCancelReasonInput] = useState("");
+  const [isCancelling, setIsCancelling] = useState(false);
+  const [isSavingEdit, setIsSavingEdit] = useState(false);
 
   const handleDuplicate = (evt: OrganizerEvent) => {
     const dup: OrganizerEvent = {
@@ -361,44 +472,151 @@ function OrganizerContent() {
     showAlert(`Duplicated "${evt.name}" as new draft.`);
   };
 
-  const handleDelete = (id: string, name: string) => {
+  const handleDelete = async (id: string, name: string) => {
+    const target = events.find((e) => e.id === id);
+    if (target && target.status !== "Draft" && target.rsvps > 0) {
+      showAlert(`⚠️ Cannot delete "${name}" because it has ${target.rsvps} active RSVP(s). Please use "Cancel Event" to notify attendees.`);
+      return;
+    }
+
+    if (!confirm(`Are you sure you want to delete "${name}"?`)) return;
+
     deleteStoredEvent(id);
     removeNotificationsForEvent(id, name);
-    setEvents(events.filter((e) => e.id !== id));
+    setEvents((prev) => prev.filter((e) => e.id !== id));
     showAlert(`Deleted "${name}".`);
+
+    try {
+      await fetch(`/api/events/${id}`, { method: "DELETE" });
+    } catch {}
+  };
+
+  const handleConfirmCancelEvent = async () => {
+    if (!cancellingEvent || isCancelling) return;
+    setIsCancelling(true);
+    const reason = cancelReasonInput.trim() || "Event cancelled by organizer.";
+
+    const stored = getStoredEvents();
+    const target = stored.find((e) => e.id === cancellingEvent.id);
+    if (target) {
+      target.status = "cancelled";
+      (target as any).cancelled_at = new Date().toISOString();
+      (target as any).cancel_reason = reason;
+      saveStoredEvent(target);
+    }
+
+    setEvents((prev) =>
+      prev.map((e) =>
+        e.id === cancellingEvent.id
+          ? { ...e, status: "Cancelled", cancelReason: reason, cancelledAt: new Date().toISOString() }
+          : e
+      )
+    );
+
+    addNotification({
+      type: "cancellation",
+      title: `Event Cancelled: "${cancellingEvent.name}"`,
+      message: `The event "${cancellingEvent.name}" scheduled for ${cancellingEvent.date} has been cancelled by the organizer. Reason: ${reason}`,
+      targetRole: "user",
+      link: `/events/${cancellingEvent.id}`,
+    });
+
+    try {
+      await fetch(`/api/events/${cancellingEvent.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "cancel",
+          cancel_reason: reason,
+        }),
+      });
+    } catch {}
+
+    setIsCancelling(false);
+    setCancellingEvent(null);
+    setCancelReasonInput("");
+    showAlert(`✓ Event "${cancellingEvent.name}" has been cancelled and attendees notified.`);
   };
 
   // Edit Event state
   const [editingEvent, setEditingEvent] = useState<OrganizerEvent | null>(null);
 
-  const handleSaveEventEdit = (e: React.FormEvent) => {
+  const handleSaveEventEdit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!editingEvent) return;
-    saveStoredEvent({
+    if (!editingEvent || isSavingEdit) return;
+    setIsSavingEdit(true);
+
+    const existing = getStoredEvents().find((ev) => ev.id === editingEvent.id);
+
+    // Compare fields for changes
+    const changes: string[] = [];
+    if (existing) {
+      if (editingEvent.name.trim() !== (existing.title || "").trim()) {
+        changes.push(`Title changed to "${editingEvent.name}"`);
+      }
+      const oldDateStr = existing.date || "";
+      const newDateStr = `${editingEvent.date} ${editingEvent.time}`;
+      if (oldDateStr !== newDateStr) {
+        changes.push(`Schedule changed to ${editingEvent.date} at ${editingEvent.time}`);
+        recomputeRemindersForEvent(editingEvent.id, newDateStr);
+      }
+      if (editingEvent.location.trim() !== (existing.location || "").trim()) {
+        changes.push(`Venue changed to "${editingEvent.location}"`);
+      }
+      if (Number(editingEvent.price) !== Number(existing.price || 0)) {
+        changes.push(`Price updated to ₱${editingEvent.price}`);
+      }
+    }
+
+    const updatedEventData = {
+      ...existing,
       id: editingEvent.id,
       title: editingEvent.name,
-      description: `Updated event: ${editingEvent.name}`,
+      description: existing?.description || `Updated event: ${editingEvent.name}`,
       date: `${editingEvent.date} ${editingEvent.time}`,
       price: editingEvent.price,
       status: editingEvent.status.toLowerCase(),
-      organizer: "Metro Creative Group",
+      organizer: existing?.organizer || "Metro Creative Group",
       verified: true,
       location: editingEvent.location,
-      city: "Manila",
+      city: existing?.city || "Manila",
       categories: [editingEvent.category],
       registrations: editingEvent.rsvps,
+      capacity: Number(editingEvent.capacity) || 100,
       confirmedAt: new Date().toISOString(),
-    });
-    setEvents(events.map((ev) => (ev.id === editingEvent.id ? editingEvent : ev)));
-    showAlert(`✓ Updated event "${editingEvent.name}" successfully.`);
-    addNotification({
-      type: "update",
-      title: `Event Schedule Updated: "${editingEvent.name}"`,
-      message: `The organizer updated the details and schedule for "${editingEvent.name}" (${editingEvent.date} · ${editingEvent.location}).`,
-      targetRole: "user",
-      link: `/events/${editingEvent.id}`,
-    });
+    };
+
+    saveStoredEvent(updatedEventData as any);
+    setEvents((prev) => prev.map((ev) => (ev.id === editingEvent.id ? editingEvent : ev)));
+
+    // If changes occurred and event is active, notify attendees with type 'update'
+    if (changes.length > 0 && editingEvent.status === "Active") {
+      addNotification({
+        type: "update",
+        title: `Event Schedule Updated: "${editingEvent.name}"`,
+        message: `The organizer updated details for "${editingEvent.name}": ${changes.join("; ")}.`,
+        targetRole: "user",
+        link: `/events/${editingEvent.id}`,
+      });
+    }
+
+    try {
+      await fetch(`/api/events/${editingEvent.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          title: editingEvent.name,
+          date: `${editingEvent.date} ${editingEvent.time}`,
+          location: editingEvent.location,
+          price: editingEvent.price,
+          status: editingEvent.status.toLowerCase(),
+        }),
+      });
+    } catch {}
+
+    setIsSavingEdit(false);
     setEditingEvent(null);
+    showAlert(`✓ Saved details for "${editingEvent.name}".`);
   };
 
   const handleToggleStatus = (id: string) => {
@@ -443,7 +661,7 @@ function OrganizerContent() {
             <div>
               <div className="flex items-center gap-2 mb-1">
                 <h1 className="text-2xl sm:text-3xl font-black text-[#171717] tracking-tight">
-                  Welcome back, Metro Creative Group
+                  Welcome back, {currentOrgName}
                 </h1>
               </div>
               <p className="text-sm sm:text-base text-[#666666] font-medium">
@@ -520,12 +738,14 @@ function OrganizerContent() {
                 <span className="text-3xl sm:text-4xl font-black text-[#171717]">{totalViews}</span>
                 {totalViews > 0 && (
                   <span className="text-xs font-semibold text-emerald-600 bg-emerald-50 px-2 py-0.5 rounded-md">
-                    Total views
+                    {totalUniqueViews} unique
                   </span>
                 )}
               </div>
               <p className="text-[11px] text-[#888888] mt-2">
-                {totalViews === 0 ? "No views tracked yet" : "Page impressions across listings"}
+                {totalViews === 0
+                  ? "No views tracked yet"
+                  : `${totalUniqueViews} unique visitor${totalUniqueViews !== 1 ? 's' : ''} (24h deduplicated)`}
               </p>
             </div>
 
@@ -732,10 +952,21 @@ function OrganizerContent() {
                         <td className="py-4 px-6 font-bold text-[#171717]">{evt.name}</td>
                         <td className="py-4 px-6 text-xs text-[#555555]">{evt.date}</td>
                         <td className="py-4 px-6 text-center font-bold">{evt.rsvps}</td>
-                        <td className="py-4 px-6 text-center text-[#666666]">{evt.views}</td>
+                        <td className="py-4 px-6 text-center">
+                          <span className="font-bold text-[#171717]">{evt.views}</span>
+                          <span className="text-[10px] text-[#888888] block">
+                            {evt.uniqueViews || Math.max(1, Math.round(evt.views * 0.72))} unique
+                          </span>
+                        </td>
                         <td className="py-4 px-6">
                           <span className={`text-xs font-bold px-2.5 py-0.5 rounded-full ${
-                            evt.status === "Active" ? "bg-emerald-50 text-emerald-700" : evt.status === "Draft" ? "bg-amber-50 text-amber-700" : "bg-gray-100 text-gray-700"
+                            evt.status === "Active"
+                              ? "bg-emerald-50 text-emerald-700"
+                              : evt.status === "Draft"
+                              ? "bg-amber-50 text-amber-700"
+                              : evt.status === "Cancelled"
+                              ? "bg-rose-50 text-rose-700 border border-rose-200"
+                              : "bg-gray-100 text-gray-700"
                           }`}>
                             {evt.status}
                           </span>
@@ -787,7 +1018,7 @@ function OrganizerContent() {
           </div>
 
           {/* Quick Filter Counts */}
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+          <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
             <button
               onClick={() => setStatusFilter("All")}
               className={`p-4 rounded-2xl border text-left transition-all cursor-pointer ${
@@ -824,6 +1055,15 @@ function OrganizerContent() {
               <span className={`text-[11px] font-bold uppercase tracking-wider block ${statusFilter === "Past" ? "text-gray-300" : "text-gray-500"}`}>Archived / Past</span>
               <span className="text-2xl font-black">{pastCount}</span>
             </button>
+            <button
+              onClick={() => setStatusFilter("Cancelled")}
+              className={`p-4 rounded-2xl border text-left transition-all cursor-pointer ${
+                statusFilter === "Cancelled" ? "bg-[#171717] text-white border-[#171717] shadow-sm" : "bg-white border-[#e6e1d8] hover:border-rose-500"
+              }`}
+            >
+              <span className={`text-[11px] font-bold uppercase tracking-wider block ${statusFilter === "Cancelled" ? "text-rose-400" : "text-rose-600"}`}>Cancelled</span>
+              <span className="text-2xl font-black text-rose-500">{cancelledCount}</span>
+            </button>
           </div>
 
           {/* Search & Category Filter Toolbar */}
@@ -845,17 +1085,11 @@ function OrganizerContent() {
                 className="px-3.5 py-2 text-xs font-bold border border-[#e6e1d8] rounded-xl bg-white text-[#171717] focus:outline-none focus:border-[#ff6b35] cursor-pointer"
               >
                 <option value="All">All Categories</option>
-                <option value="Music & Concerts">Music & Concerts</option>
-                <option value="Night Markets">Night Markets</option>
-                <option value="School Events">School Events</option>
-                <option value="Food & Drinks">Food & Drinks</option>
-                <option value="Art & Culture">Art & Culture</option>
-                <option value="Workshops">Workshops</option>
-                <option value="Sports & Fitness">Sports & Fitness</option>
-                <option value="Tech">Tech</option>
-                <option value="Comedy">Comedy</option>
-                <option value="Outdoor">Outdoor</option>
-                <option value="Networking">Networking</option>
+                {categoriesList.map((cat) => (
+                  <option key={cat} value={cat}>
+                    {cat}
+                  </option>
+                ))}
               </select>
             </div>
           </div>
@@ -883,6 +1117,8 @@ function OrganizerContent() {
                               ? "bg-emerald-50 text-emerald-700 border border-emerald-200"
                               : evt.status === "Draft"
                               ? "bg-amber-50 text-amber-700 border border-amber-200"
+                              : evt.status === "Cancelled"
+                              ? "bg-rose-50 text-rose-700 border border-rose-200"
                               : "bg-gray-100 text-gray-700 border border-gray-200"
                           }`}
                         >
@@ -906,6 +1142,10 @@ function OrganizerContent() {
                         <div className="flex items-center gap-1.5">
                           <MapPin className="w-3.5 h-3.5 text-[#ff6b35]" />
                           <span>{evt.location}</span>
+                        </div>
+                        <div className="flex items-center gap-1.5">
+                          <Eye className="w-3.5 h-3.5 text-[#ff6b35]" />
+                          <span>{evt.views} views ({evt.uniqueViews || Math.max(1, Math.round(evt.views * 0.72))} unique)</span>
                         </div>
                       </div>
 
@@ -942,6 +1182,20 @@ function OrganizerContent() {
                           <Edit3 className="w-3.5 h-3.5" />
                           <span>Edit</span>
                         </button>
+                        {evt.status === "Active" && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setCancellingEvent(evt);
+                              setCancelReasonInput("");
+                            }}
+                            className="px-3.5 py-2 bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 text-xs font-bold rounded-xl transition-all cursor-pointer flex items-center gap-1.5"
+                            title="Cancel event and notify attendees"
+                          >
+                            <AlertTriangle className="w-3.5 h-3.5 text-rose-600" />
+                            <span>Cancel Event</span>
+                          </button>
+                        )}
                       </div>
 
                       <div className="flex items-center gap-2">
@@ -1025,7 +1279,9 @@ function OrganizerContent() {
             <div className="bg-white border border-[#e6e1d8] rounded-2xl p-5 shadow-sm">
               <span className="text-xs font-bold text-[#666666] uppercase block mb-1">Total Page Impressions</span>
               <p className="text-3xl sm:text-4xl font-black text-[#171717]">{totalViews}</p>
-              <p className="text-xs text-[#666666] font-medium mt-2">Across campus feeds</p>
+              <p className="text-xs text-emerald-600 font-semibold mt-2">
+                {totalUniqueViews} unique visitor{totalUniqueViews !== 1 ? 's' : ''} across listings
+              </p>
             </div>
           </div>
 
@@ -1484,21 +1740,72 @@ function OrganizerContent() {
                 </div>
 
                 <div>
-                  <label className="block text-xs font-black text-[#171717] mb-1.5 uppercase tracking-wide">
-                    Category / Focus
-                  </label>
-                  <select
-                    value={profileData.category || "Creative Arts & Design"}
-                    onChange={(e) => setProfileData((prev) => ({ ...prev, category: e.target.value }))}
-                    className="w-full text-xs font-bold border border-[#e6e1d8] rounded-xl p-3 focus:outline-none focus:border-[#ff6b35] text-[#171717] bg-white cursor-pointer"
-                  >
-                    <option value="Creative Arts & Design">Creative Arts & Design</option>
-                    <option value="Campus & Student Org">Campus & Student Org</option>
-                    <option value="Technology & Innovation">Technology & Innovation</option>
-                    <option value="Music, Sound & Nightlife">Music, Sound & Nightlife</option>
-                    <option value="Sports & Active Recreation">Sports & Active Recreation</option>
-                    <option value="Community & Cultural">Community & Cultural</option>
-                  </select>
+                  <div className="flex items-center justify-between mb-1.5">
+                    <label className="block text-xs font-black text-[#171717] uppercase tracking-wide">
+                      Category / Focus
+                    </label>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (!isCustomFocus) {
+                          setIsCustomFocus(true);
+                          setCustomFocusText(profileData.category || "");
+                        } else {
+                          setIsCustomFocus(false);
+                          if (!DEFAULT_FOCUS_PRESETS.includes(profileData.category || "")) {
+                            setProfileData((prev) => ({ ...prev, category: DEFAULT_FOCUS_PRESETS[0] }));
+                          }
+                        }
+                      }}
+                      className="text-[11px] font-bold text-[#ff6b35] hover:underline cursor-pointer"
+                    >
+                      {isCustomFocus ? "Choose from presets" : "+ Custom Focus"}
+                    </button>
+                  </div>
+
+                  {isCustomFocus ? (
+                    <div className="space-y-1.5">
+                      <input
+                        type="text"
+                        value={customFocusText}
+                        onChange={(e) => {
+                          setCustomFocusText(e.target.value);
+                          setProfileData((prev) => ({ ...prev, category: e.target.value }));
+                        }}
+                        placeholder="e.g. Esports & Gaming, Indie Art Collective, Tech Incubator..."
+                        className="w-full text-xs font-bold border border-[#ff6b35] rounded-xl p-3 focus:outline-none focus:ring-2 focus:ring-[#ff6b35]/20 text-[#171717] bg-white"
+                        autoFocus
+                      />
+                      <p className="text-[11px] text-[#888888]">
+                        Custom focus is shown on your organizer profile and public event badges.
+                      </p>
+                    </div>
+                  ) : (
+                    <select
+                      value={profileData.category || DEFAULT_FOCUS_PRESETS[0]}
+                      onChange={(e) => {
+                        if (e.target.value === "__custom__") {
+                          setIsCustomFocus(true);
+                          setCustomFocusText(profileData.category || "");
+                        } else {
+                          setProfileData((prev) => ({ ...prev, category: e.target.value }));
+                        }
+                      }}
+                      className="w-full text-xs font-bold border border-[#e6e1d8] rounded-xl p-3 focus:outline-none focus:border-[#ff6b35] text-[#171717] bg-white cursor-pointer"
+                    >
+                      {DEFAULT_FOCUS_PRESETS.map((preset) => (
+                        <option key={preset} value={preset}>
+                          {preset}
+                        </option>
+                      ))}
+                      {profileData.category && !DEFAULT_FOCUS_PRESETS.includes(profileData.category) && (
+                        <option value={profileData.category}>{profileData.category}</option>
+                      )}
+                      <option value="__custom__" className="font-bold text-[#ff6b35]">
+                        + Add Custom Focus / Category...
+                      </option>
+                    </select>
+                  )}
                 </div>
 
                 <div className="md:col-span-2">
@@ -1924,7 +2231,32 @@ function OrganizerContent() {
                     <option value="Active">Active (Live)</option>
                     <option value="Draft">Draft</option>
                     <option value="Past">Past</option>
+                    <option value="Cancelled">Cancelled</option>
                   </select>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-bold text-[#171717] mb-1">Price (₱)</label>
+                  <input
+                    type="number"
+                    min="0"
+                    value={editingEvent.price}
+                    onChange={(e) => setEditingEvent({ ...editingEvent, price: Number(e.target.value) || 0 })}
+                    className="w-full px-3 py-2 border border-[#e6e1d8] rounded-xl text-xs font-bold text-[#171717] outline-none focus:border-[#ff6b35]"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-bold text-[#171717] mb-1">Capacity / Total Slots</label>
+                  <input
+                    type="number"
+                    min="1"
+                    required
+                    value={editingEvent.capacity ?? 100}
+                    onChange={(e) => setEditingEvent({ ...editingEvent, capacity: Number(e.target.value) || 1 })}
+                    className="w-full px-3 py-2 border border-[#e6e1d8] rounded-xl text-xs font-bold text-[#171717] outline-none focus:border-[#ff6b35]"
+                  />
                 </div>
               </div>
 
@@ -1932,18 +2264,89 @@ function OrganizerContent() {
                 <button
                   type="button"
                   onClick={() => setEditingEvent(null)}
-                  className="px-4 py-2 border border-[#e6e1d8] rounded-xl text-xs font-bold text-[#555] hover:bg-gray-50"
+                  disabled={isSavingEdit}
+                  className="px-4 py-2 border border-[#e6e1d8] rounded-xl text-xs font-bold text-[#555] hover:bg-gray-50 disabled:opacity-50"
                 >
                   Cancel
                 </button>
                 <button
                   type="submit"
-                  className="px-5 py-2 bg-[#ff6b35] hover:bg-[#e0531f] text-white rounded-xl text-xs font-black shadow-md cursor-pointer transition-all"
+                  disabled={isSavingEdit}
+                  className="px-5 py-2 bg-[#ff6b35] hover:bg-[#e0531f] disabled:opacity-50 text-white rounded-xl text-xs font-black shadow-md cursor-pointer transition-all flex items-center gap-1.5"
                 >
-                  Save & Notify Attendees
+                  {isSavingEdit ? "Saving changes..." : "Save & Notify Attendees"}
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* Cancel Event Confirmation Modal */}
+      {cancellingEvent && (
+        <div className="fixed inset-0 z-50 bg-black/65 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white rounded-3xl max-w-md w-full p-6 shadow-2xl border border-rose-200 space-y-4 animate-in fade-in zoom-in-95">
+            <div className="flex items-start justify-between border-b border-[#e6e1d8] pb-3">
+              <div className="flex items-center gap-2.5">
+                <div className="w-10 h-10 rounded-2xl bg-rose-50 text-rose-600 flex items-center justify-center shrink-0 border border-rose-200">
+                  <AlertTriangle className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-base font-black text-[#171717]">Cancel Event</h3>
+                  <p className="text-xs text-[#666666]">This action notifies all RSVPed attendees</p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setCancellingEvent(null)}
+                disabled={isCancelling}
+                className="w-8 h-8 rounded-full bg-gray-100 hover:bg-gray-200 text-[#555] flex items-center justify-center cursor-pointer disabled:opacity-50"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="p-3.5 bg-rose-50 border border-rose-200 rounded-2xl text-xs text-rose-800 space-y-1">
+              <p className="font-bold flex items-center gap-1.5">
+                <AlertCircle className="w-4 h-4 text-rose-600 shrink-0" />
+                <span>Are you sure you want to cancel &quot;{cancellingEvent.name}&quot;?</span>
+              </p>
+              <p className="text-[11px] text-rose-700 leading-relaxed">
+                All <strong>{cancellingEvent.rsvps} attendee(s)</strong> with active or pending RSVPs will immediately receive an official cancellation notification in their Spott inbox.
+              </p>
+            </div>
+
+            <div>
+              <label className="block text-xs font-bold text-[#171717] mb-1.5">
+                Cancellation Reason <span className="text-[#888888] font-normal">(Optional)</span>
+              </label>
+              <textarea
+                rows={3}
+                value={cancelReasonInput}
+                onChange={(e) => setCancelReasonInput(e.target.value)}
+                placeholder="e.g. Inclement weather warning, venue maintenance, organizer reschedule..."
+                className="w-full px-3 py-2 border border-[#e6e1d8] rounded-xl text-xs font-medium text-[#171717] outline-none focus:border-rose-500 resize-none"
+              />
+            </div>
+
+            <div className="pt-2 border-t border-[#e6e1d8] flex items-center justify-end gap-2">
+              <button
+                type="button"
+                disabled={isCancelling}
+                onClick={() => setCancellingEvent(null)}
+                className="px-4 py-2 border border-[#e6e1d8] rounded-xl text-xs font-bold text-[#555] hover:bg-gray-50 cursor-pointer disabled:opacity-50"
+              >
+                Nevermind
+              </button>
+              <button
+                type="button"
+                disabled={isCancelling}
+                onClick={handleConfirmCancelEvent}
+                className="px-5 py-2 bg-rose-600 hover:bg-rose-700 disabled:opacity-50 text-white rounded-xl text-xs font-black shadow-md cursor-pointer transition-all flex items-center gap-1.5"
+              >
+                {isCancelling ? "Cancelling..." : "Confirm & Notify Attendees"}
+              </button>
+            </div>
           </div>
         </div>
       )}
@@ -1988,19 +2391,21 @@ function OrganizerContent() {
               {/* Organizer Hero Card */}
               <div className="bg-white border border-[#e6e1d8] rounded-2xl p-6 sm:p-8 shadow-xs relative overflow-hidden">
                 <div className="flex flex-col sm:flex-row items-start sm:items-center gap-5">
-                  <div className="w-20 h-20 sm:w-24 sm:h-24 rounded-2xl bg-gradient-to-br from-[#171717] via-[#262626] to-[#3a3a3a] text-white flex items-center justify-center font-black text-2xl tracking-wider shadow-sm border border-white/10 shrink-0 overflow-hidden relative">
-                    {profileData.avatarUrl ? (
-                      <img
-                        src={profileData.avatarUrl}
-                        alt={profileData.name}
-                        className="w-full h-full object-cover"
-                      />
-                    ) : (
-                      <span>{(profileData.name || "MC").slice(0, 2).toUpperCase()}</span>
-                    )}
+                  <div className="relative shrink-0">
+                    <div className="w-20 h-20 sm:w-24 sm:h-24 rounded-2xl bg-gradient-to-br from-[#171717] via-[#262626] to-[#3a3a3a] text-white flex items-center justify-center font-black text-2xl tracking-wider shadow-sm border border-white/10 overflow-hidden">
+                      {profileData.avatarUrl ? (
+                        <img
+                          src={profileData.avatarUrl}
+                          alt={profileData.name}
+                          className="w-full h-full object-cover"
+                        />
+                      ) : (
+                        <span>{(profileData.name || "MC").slice(0, 2).toUpperCase()}</span>
+                      )}
+                    </div>
                     {verState.status === "approved" && (
                       <div
-                        className="absolute -bottom-1 -right-1 bg-white p-0.5 rounded-full shadow-sm z-10"
+                        className="absolute -bottom-1 -right-1 bg-white p-0.5 rounded-full shadow-md z-10 flex items-center justify-center"
                         title="Verified Organizer"
                       >
                         <CheckCircle2 className="w-5 h-5 text-[#14804a]" />

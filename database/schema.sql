@@ -65,6 +65,8 @@ CREATE TABLE public.events (
   capacity INTEGER DEFAULT NULL,
   require_approval BOOLEAN DEFAULT FALSE,
   is_still_happening_confirmed_at TIMESTAMP,
+  cancelled_at TIMESTAMP WITH TIME ZONE DEFAULT NULL,
+  cancel_reason TEXT DEFAULT NULL,
   created_at TIMESTAMP DEFAULT now(),
   updated_at TIMESTAMP DEFAULT now()
 );
@@ -122,6 +124,34 @@ CREATE TABLE public.notifications (
   related_event_id UUID REFERENCES public.events(event_id) ON DELETE SET NULL,
   created_at TIMESTAMP DEFAULT now()
 );
+
+-- 12. listing_views (deduplicated impressions)
+CREATE TABLE public.listing_views (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  listing_id VARCHAR(255) NOT NULL,
+  visitor_id VARCHAR(255) NOT NULL,
+  viewed_at TIMESTAMP WITH TIME ZONE DEFAULT now()
+);
+
+CREATE INDEX idx_listing_views_lookup ON public.listing_views (listing_id, visitor_id, viewed_at DESC);
+CREATE INDEX idx_listing_views_listing ON public.listing_views (listing_id);
+
+-- 13. event_reminders
+CREATE TABLE public.event_reminders (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  user_id VARCHAR(255) NOT NULL,
+  event_id VARCHAR(255) NOT NULL,
+  remind_at TIMESTAMP WITH TIME ZONE NOT NULL,
+  offset_label VARCHAR(50) NOT NULL,
+  sent BOOLEAN DEFAULT false,
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT now(),
+  CONSTRAINT unq_user_event_reminder UNIQUE (user_id, event_id, offset_label)
+);
+
+CREATE INDEX idx_event_reminders_pending ON public.event_reminders (sent, remind_at);
+CREATE INDEX idx_event_reminders_user_event ON public.event_reminders (user_id, event_id);
+
+
 
 -- ============================================================
 -- SEED DATA

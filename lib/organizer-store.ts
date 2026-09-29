@@ -34,6 +34,36 @@ export const DEFAULT_ORGANIZER_PROFILES: Record<string, OrganizerProfile> = {
     website: "https://metrocreative.ph",
     category: "Creative Arts & Design",
   },
+  "hobbyist haven ph": {
+    name: "Hobbyist Haven PH",
+    avatarUrl: "",
+    caption:
+      "Philippines' premier community hub for Pokemon TCG, One Piece Card Game, anime figures, gacha collectors, and pop-culture swap meets.",
+    address: "The District Dasmariñas / SM Mall of Asia, Cavite & Manila",
+    email: "hello@hobbyisthaven.ph",
+    website: "https://hobbyisthaven.ph",
+    category: "Hobbies & Collectibles",
+  },
+  "tech manila hub": {
+    name: "Tech Manila Hub",
+    avatarUrl: "",
+    caption:
+      "Premier Philippine community for Apple iOS & Android developers, smartphone power users, gadget modders, and emerging mobile tech innovators.",
+    address: "BGC Innovation Hub, Taguig / Baguio Tech Corridor",
+    email: "community@techmanilahub.ph",
+    website: "https://techmanilahub.ph",
+    category: "Technology & Innovation",
+  },
+  "vanguard gaming league": {
+    name: "Vanguard Gaming League",
+    avatarUrl: "",
+    caption:
+      "National grassroots and collegiate esports tournament circuit hosting premier LAN battles for Mobile Legends: Bang Bang, Honor of Kings, and Valorant.",
+    address: "Taft Cyber Arena, Manila / Dasmariñas Esports Arena",
+    email: "clutch@vanguardgaming.ph",
+    website: "https://vanguardgaming.ph",
+    category: "Esports & Gaming",
+  },
 };
 
 export function getOrganizerProfile(organizerName?: string): OrganizerProfile {
@@ -130,7 +160,7 @@ export function subscribeToOrganizerProfile(callback: () => void): () => void {
  * Returns a list of all distinct organizers found in the system
  * (from registered profiles, events, and default groups)
  */
-export function getAllOrganizersList(): Array<OrganizerProfile & { eventCount: number; isVerified: boolean }> {
+export function getAllOrganizersList(extraEvents?: any[]): Array<OrganizerProfile & { eventCount: number; isVerified: boolean }> {
   const orgMap = new Map<string, OrganizerProfile>();
 
   // 1. Seed with known default profiles
@@ -140,7 +170,15 @@ export function getAllOrganizersList(): Array<OrganizerProfile & { eventCount: n
 
   // 2. Discover organizers from all events
   const storedEvents = typeof window !== "undefined" ? getStoredEvents() : [];
-  const allEvents = [...storedEvents, ...DEFAULT_EVENTS];
+  const eventPool = [...storedEvents, ...DEFAULT_EVENTS, ...(extraEvents || [])];
+  const seenEventIds = new Set<string>();
+  const allEvents: any[] = [];
+  for (const ev of eventPool) {
+    if (!seenEventIds.has(ev.id)) {
+      seenEventIds.add(ev.id);
+      allEvents.push(ev);
+    }
+  }
 
   allEvents.forEach((ev) => {
     const orgName = (ev.organizer || "Metro Creative Group").trim();
@@ -197,8 +235,7 @@ export function getAllOrganizersList(): Array<OrganizerProfile & { eventCount: n
     const ver = getVerificationState(prof.name);
     const isVerified =
       (ver && ver.status === "approved") ||
-      isMetro ||
-      eventsForOrg.some((e) => e.verified);
+      isMetro;
 
     result.push({
       ...prof,

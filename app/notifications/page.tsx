@@ -10,11 +10,13 @@ import {
   deleteNotification,
   clearAllNotifications,
   cleanupGhostNotifications,
+  syncNotificationsForEvents,
   NotificationItem,
   NotificationType,
 } from "@/lib/notifications-store";
 import { getStoredEvents } from "@/lib/events-store";
 import { getCurrentUser } from "@/lib/auth-store";
+import { processDueReminders } from "@/lib/reminders-store";
 
 export default function NotificationsPage() {
   const router = useRouter();
@@ -32,6 +34,7 @@ export default function NotificationsPage() {
         const apiData = await res.json();
         if (Array.isArray(apiData)) {
           apiData.forEach((e: any) => validIds.add(e.id));
+          syncNotificationsForEvents(apiData);
         }
       }
     } catch {}
@@ -40,6 +43,7 @@ export default function NotificationsPage() {
   };
 
   const loadNotifs = () => {
+    processDueReminders();
     const user = getCurrentUser();
     const role = user?.role || "user";
     const data = getNotifications(role, user?.email);
@@ -50,15 +54,26 @@ export default function NotificationsPage() {
     loadNotifs();
     silentCleanupOrphans();
 
+    // Check due reminders every 30 seconds
+    const interval = setInterval(() => {
+      const fired = processDueReminders();
+      if (fired > 0) {
+        loadNotifs();
+      }
+    }, 30000);
+
     const handleUpdate = () => {
       loadNotifs();
     };
 
     window.addEventListener("spott_notifications_updated", handleUpdate);
+    window.addEventListener("spott_reminders_updated", handleUpdate);
     window.addEventListener("spott_auth_changed", handleUpdate);
 
     return () => {
+      clearInterval(interval);
       window.removeEventListener("spott_notifications_updated", handleUpdate);
+      window.removeEventListener("spott_reminders_updated", handleUpdate);
       window.removeEventListener("spott_auth_changed", handleUpdate);
     };
   }, []);

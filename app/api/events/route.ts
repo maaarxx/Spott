@@ -30,6 +30,7 @@ export async function POST(request: Request) {
       categories: [category || "School Events"],
       registrations: 0,
       confirmedAt: new Date().toISOString(),
+      capacity: body.capacity ? Number(body.capacity) : 100,
       coverImage: body.coverImage || null,
       image: body.coverImage || null,
     };
@@ -51,7 +52,13 @@ export async function POST(request: Request) {
 
       const { data: locationData, error: locError } = await supabase
         .from('locations')
-        .insert([{ address: location }])
+        .insert([{
+          address: location,
+          venue_name: location,
+          city: body.city || 'Manila',
+          latitude: body.latitude || 14.5638,
+          longitude: body.longitude || 120.9965,
+        }])
         .select('location_id')
         .single();
 
@@ -170,31 +177,57 @@ export async function GET(request: Request) {
     }
 
     // Flatten the response for easier frontend usage
-    let formattedData = (data || []).map((event: any) => ({
-      id: event.event_id,
-      title: event.title,
-      description: event.description,
-      date: event.start_datetime,
-      endDate: event.end_datetime,
-      price: parseFloat(event.price) || 0,
-      status: event.status,
-      organizer: event.organizers?.organization_name || 'Unknown',
-      verified: event.organizers?.verification_status === 'verified',
-      location: event.locations?.venue_name
-        ? `${event.locations.venue_name}, ${event.locations.city || ''}`
-        : event.locations?.address || 'TBA',
-      city: event.locations?.city || '',
-      latitude: event.locations?.latitude ? parseFloat(event.locations.latitude) : null,
-      longitude: event.locations?.longitude ? parseFloat(event.locations.longitude) : null,
-      categories: (event.event_category || []).map((ec: any) => ec.categories?.category_name).filter(Boolean),
-      registrations: regCounts[event.event_id] || 0,
-      confirmedAt: event.is_still_happening_confirmed_at,
-    }));
+    let formattedData = (data || []).map((event: any) => {
+      let desc = event.description || '';
+      let coverImage: string | null = null;
+      let capacity = event.capacity ? Number(event.capacity) : 100;
+
+      const metaMatch = desc.match(/<!--spott:(.*?)-->/);
+      if (metaMatch) {
+        try {
+          const meta = JSON.parse(metaMatch[1]);
+          if (meta.coverImage) coverImage = meta.coverImage;
+          if (meta.capacity) capacity = Number(meta.capacity);
+          desc = desc.replace(metaMatch[0], '').trim();
+        } catch {}
+      }
+
+      return {
+        id: event.event_id,
+        title: event.title,
+        description: desc,
+        date: event.start_datetime,
+        endDate: event.end_datetime,
+        price: parseFloat(event.price) || 0,
+        status: event.status,
+        organizer: event.organizers?.organization_name || 'Unknown',
+        verified: event.organizers?.verification_status === 'verified',
+        location: event.locations?.venue_name && event.locations?.address && !event.locations.venue_name.includes(event.locations.address)
+          ? `${event.locations.venue_name}, ${event.locations.address}`
+          : event.locations?.venue_name
+          ? `${event.locations.venue_name}, ${event.locations.city || ''}`
+          : event.locations?.address || 'TBA',
+        address: event.locations?.address || '',
+        venue: event.locations?.venue_name || '',
+        city: event.locations?.city || '',
+        latitude: event.locations?.latitude ? parseFloat(event.locations.latitude) : 14.5638,
+        longitude: event.locations?.longitude ? parseFloat(event.locations.longitude) : 120.9965,
+        categories: (event.event_category || []).map((ec: any) => ec.categories?.category_name).filter(Boolean),
+        registrations: regCounts[event.event_id] || 0,
+        confirmedAt: event.is_still_happening_confirmed_at,
+        capacity,
+        coverImage,
+        image: coverImage,
+      };
+    });
 
     // Merge with in-memory server events
-    const serverEvents = (globalThis.__spott_server_events || []).filter(
-      (se) => !formattedData.some((fd: any) => fd.id === se.id)
-    );
+    const serverEvents = (globalThis.__spott_server_events || [])
+      .filter((se) => !formattedData.some((fd: any) => fd.id === se.id))
+      .map((se) => ({
+        ...se,
+        capacity: typeof se.capacity === "number" ? se.capacity : 100,
+      }));
     let combined = [...serverEvents, ...formattedData];
 
     // Filter by category name on server side (Supabase can't filter nested easily)

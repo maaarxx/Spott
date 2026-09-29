@@ -196,3 +196,38 @@ export function removeNotificationsForEvent(eventId: string, eventTitle?: string
     window.dispatchEvent(new Event("spott_notifications_updated"));
   } catch {}
 }
+
+export function syncNotificationsForEvents(events: any[]) {
+  if (typeof window === "undefined" || !events?.length) return;
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY_NOTIFS);
+    const existing: NotificationItem[] = raw ? JSON.parse(raw) : [];
+    const existingLinks = new Set(existing.map((n) => n.link).filter(Boolean));
+    const newNotifs: NotificationItem[] = [];
+
+    for (const ev of events) {
+      if (!ev || !ev.id) continue;
+      const link = `/events/${ev.id}`;
+      if (!existingLinks.has(link)) {
+        existingLinks.add(link);
+        const orgName = ev.organizer || "Campus Organizer";
+        newNotifs.push({
+          id: `notif-${ev.id}`,
+          type: "announcement",
+          title: `New Event: "${ev.title}"`,
+          message: `${orgName} published a new event: "${ev.title}" (${ev.city || ev.location || "Philippines"}). Check it out and RSVP!`,
+          targetRole: "all",
+          isRead: false,
+          createdAt: ev.date || new Date().toISOString(),
+          link,
+        });
+      }
+    }
+
+    if (newNotifs.length > 0) {
+      const updated = [...newNotifs, ...existing];
+      localStorage.setItem(STORAGE_KEY_NOTIFS, JSON.stringify(updated));
+      window.dispatchEvent(new Event("spott_notifications_updated"));
+    }
+  } catch {}
+}
