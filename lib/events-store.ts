@@ -1,6 +1,7 @@
 "use client";
 
 import type { EventData } from "@/components/EventCard";
+import { useSyncExternalStore } from "react";
 import { removeNotificationsForEvent } from "@/lib/notifications-store";
 import { getVerificationState } from "@/lib/verification-store";
 import { maintainEventArchive } from "@/lib/event-archive.mjs";
@@ -8,6 +9,9 @@ import { maintainEventArchive } from "@/lib/event-archive.mjs";
 const STORAGE_KEY_EVENTS = "spott_events_directory";
 const STORAGE_KEY_UPDATE_PULSE = "spott_events_last_update";
 const BROADCAST_CHANNEL_NAME = "spott_events_sync";
+const EMPTY_EVENTS: EventData[] = [];
+let cachedEventsRaw: string | null | undefined;
+let cachedEventsSnapshot: EventData[] = EMPTY_EVENTS;
 function persistMaintainedEvents(events: EventData[], changed: boolean) {
   if (changed && typeof window !== "undefined") {
     try {
@@ -130,6 +134,19 @@ export function getStoredEvents(): EventData[] {
   } catch {
     return [];
   }
+}
+
+function getStoredEventsSnapshot(): EventData[] {
+  if (typeof window === "undefined") return EMPTY_EVENTS;
+  const raw = localStorage.getItem(STORAGE_KEY_EVENTS);
+  if (raw === cachedEventsRaw) return cachedEventsSnapshot;
+  cachedEventsSnapshot = getStoredEvents();
+  cachedEventsRaw = localStorage.getItem(STORAGE_KEY_EVENTS);
+  return cachedEventsSnapshot;
+}
+
+export function useStoredEvents(): EventData[] {
+  return useSyncExternalStore(subscribeToEvents, getStoredEventsSnapshot, () => EMPTY_EVENTS);
 }
 
 export function saveStoredEvent(event: EventData) {

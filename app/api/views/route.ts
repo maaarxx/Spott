@@ -230,12 +230,12 @@ export async function GET(request: Request) {
 
       const { data: dbViews, error } = await query;
       if (!error && Array.isArray(dbViews)) {
-        dbViews.forEach((row: any) => {
+        dbViews.forEach((row: { listing_id: string; visitor_id?: string | null }) => {
           viewsMap[row.listing_id] = (viewsMap[row.listing_id] || 0) + 1;
           if (!uniqueVisitorsMap[row.listing_id]) {
             uniqueVisitorsMap[row.listing_id] = new Set();
           }
-          uniqueVisitorsMap[row.listing_id].add(row.visitor_id);
+          if (row.visitor_id) uniqueVisitorsMap[row.listing_id].add(row.visitor_id);
         });
       }
     } catch {}

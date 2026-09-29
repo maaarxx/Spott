@@ -9,6 +9,7 @@ import { getCurrentUser, logout, SpottAccount } from "@/lib/auth-store";
 import { getUnreadCount } from "@/lib/notifications-store";
 import { getUserProfile, subscribeToProfile, getInitials } from "@/lib/user-profile-store";
 import type { User as SupaUser } from "@supabase/supabase-js";
+import { useHydrated } from "@/lib/use-hydrated";
 
 const navLinks = [
   { href: "/", label: "Home" },
@@ -22,11 +23,17 @@ export default function Navbar() {
   const router = useRouter();
   const [mobileOpen, setMobileOpen] = useState(false);
   const [user, setUser] = useState<SupaUser | null>(null);
-  const [localUser, setLocalUser] = useState<SpottAccount | null>(null);
-  const [unreadNotifs, setUnreadNotifs] = useState(0);
-  const [mounted, setMounted] = useState(false);
+  const [localUser, setLocalUser] = useState<SpottAccount | null>(() => getCurrentUser());
+  const [unreadNotifs, setUnreadNotifs] = useState(() => {
+    const current = getCurrentUser();
+    return getUnreadCount(current?.role || "user", current?.email);
+  });
+  const mounted = useHydrated();
   const [dropdownOpen, setDropdownOpen] = useState(false);
-  const [avatarUrl, setAvatarUrl] = useState<string>("");
+  const [avatarUrl, setAvatarUrl] = useState<string>(() => {
+    const current = getCurrentUser();
+    return current?.email ? getUserProfile(current.email).avatarUrl || "" : "";
+  });
   const dropdownRef = useRef<HTMLDivElement>(null);
   const supabase = createClient();
 
@@ -43,9 +50,6 @@ export default function Navbar() {
   };
 
   useEffect(() => {
-    setMounted(true);
-    syncState();
-
     const getUser = async () => {
       try {
         const { data: { user } } = await supabase.auth.getUser();

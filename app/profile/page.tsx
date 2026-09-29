@@ -18,6 +18,7 @@ import {
   Shield,
 } from "lucide-react";
 import { getCurrentUser, SpottAccount } from "@/lib/auth-store";
+import { useHydrated } from "@/lib/use-hydrated";
 import {
   getUserProfile,
   saveUserProfile,
@@ -29,16 +30,19 @@ export default function ProfilePage() {
   const router = useRouter();
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const [user, setUser] = useState<SpottAccount | null>(null);
-  const [profile, setProfile] = useState<UserProfile | null>(null);
-  const [mounted, setMounted] = useState(false);
+  const mounted = useHydrated();
+  const [user, setUser] = useState<SpottAccount | null>(() => getCurrentUser());
+  const [profile, setProfile] = useState<UserProfile | null>(() => {
+    const current = getCurrentUser();
+    return current ? getUserProfile(current.email) : null;
+  });
 
   // Form fields
-  const [displayName, setDisplayName] = useState("");
-  const [phone, setPhone] = useState("");
-  const [address, setAddress] = useState("");
-  const [bio, setBio] = useState("");
-  const [avatarPreview, setAvatarPreview] = useState<string>("");
+  const [displayName, setDisplayName] = useState(profile?.displayName || user?.name || "");
+  const [phone, setPhone] = useState(profile?.phone || "");
+  const [address, setAddress] = useState(profile?.address || "");
+  const [bio, setBio] = useState(profile?.bio || "");
+  const [avatarPreview, setAvatarPreview] = useState<string>(profile?.avatarUrl || "");
 
   // UI state
   const [saving, setSaving] = useState(false);
@@ -46,21 +50,10 @@ export default function ProfilePage() {
   const [avatarError, setAvatarError] = useState("");
 
   useEffect(() => {
-    setMounted(true);
-    const cur = getCurrentUser();
-    if (!cur) {
+    if (!user) {
       router.replace("/login");
-      return;
     }
-    setUser(cur);
-    const p = getUserProfile(cur.email);
-    setProfile(p);
-    setDisplayName(p.displayName || cur.name || "");
-    setPhone(p.phone || "");
-    setAddress(p.address || "");
-    setBio(p.bio || "");
-    setAvatarPreview(p.avatarUrl || "");
-  }, []);
+  }, [router, user]);
 
   if (!mounted) return null;
 

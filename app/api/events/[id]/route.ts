@@ -1,10 +1,28 @@
 import { NextResponse } from 'next/server';
 import { createAdminClient, getAuthenticatedRole } from '@/lib/supabase-server';
 import { DEFAULT_EVENTS } from '@/lib/default-events';
+import type { EventData } from '@/components/EventCard';
+import { errorMessage } from '@/lib/error-message';
+
+type Relation<T> = T | T[] | null | undefined;
+type EventDetailRow = {
+  event_id: string;
+  title: string;
+  description: string | null;
+  start_datetime: string;
+  end_datetime: string | null;
+  price: number | string | null;
+  status: string;
+  is_still_happening_confirmed_at: string | null;
+  capacity?: number | null;
+  organizers?: Relation<{ organization_name?: string | null; verification_status?: string | null }>;
+  locations?: Relation<{ venue_name?: string | null; address?: string | null; city?: string | null; latitude?: number | string | null; longitude?: number | string | null }>;
+  event_category?: Array<{ categories?: Relation<{ category_name?: string | null }> }>;
+};
 
 // Server-side in-memory event cache
 declare global {
-  var __spott_server_events: any[] | undefined;
+  var __spott_server_events: EventData[] | undefined;
 }
 if (!globalThis.__spott_server_events) {
   globalThis.__spott_server_events = [];
@@ -59,7 +77,7 @@ export async function GET(
       const serverEvent = globalThis.__spott_server_events?.find((e) => e.id === id);
       if (serverEvent?.status === 'active') return NextResponse.json(serverEvent);
 
-      const fallbackEvent = (DEFAULT_EVENTS || []).find((e: any) => e.id === id);
+      const fallbackEvent = DEFAULT_EVENTS.find((event) => event.id === id);
       if (fallbackEvent) {
         return NextResponse.json(fallbackEvent);
       }
@@ -72,31 +90,35 @@ export async function GET(
       .select('*', { count: 'exact', head: true })
       .eq('event_id', id);
 
-    const organizer: any = Array.isArray(data.organizers) ? data.organizers[0] : data.organizers;
-    const location: any = Array.isArray(data.locations) ? data.locations[0] : data.locations;
+    const eventData = data as unknown as EventDetailRow;
+    const organizer = Array.isArray(eventData.organizers) ? eventData.organizers[0] : eventData.organizers;
+    const location = Array.isArray(eventData.locations) ? eventData.locations[0] : eventData.locations;
 
-    let desc = data.description || '';
+    let desc = eventData.description || '';
     let coverImage: string | null = null;
-    let capacity = (data as any).capacity ? Number((data as any).capacity) : 100;
+    let capacity = eventData.capacity ? Number(eventData.capacity) : 100;
 
     const metaMatch = desc.match(/<!--spott:(.*?)-->/);
     if (metaMatch) {
       try {
-        const meta = JSON.parse(metaMatch[1]);
-        if (meta.coverImage) coverImage = meta.coverImage;
-        if (meta.capacity) capacity = Number(meta.capacity);
+        const parsedMeta: unknown = JSON.parse(metaMatch[1]);
+        const meta = parsedMeta && typeof parsedMeta === 'object'
+          ? parsedMeta as { coverImage?: unknown; capacity?: unknown }
+          : {};
+        if (typeof meta.coverImage === 'string') coverImage = meta.coverImage;
+        if (typeof meta.capacity === 'number' || typeof meta.capacity === 'string') capacity = Number(meta.capacity);
         desc = desc.replace(metaMatch[0], '').trim();
       } catch {}
     }
 
     const formattedData = {
-      id: data.event_id,
-      title: data.title,
+      id: eventData.event_id,
+      title: eventData.title,
       description: desc,
-      date: data.start_datetime,
-      endDate: data.end_datetime,
-      price: parseFloat(data.price as any) || 0,
-      status: data.status,
+      date: eventData.start_datetime,
+      endDate: eventData.end_datetime,
+      price: Number(eventData.price) || 0,
+      status: eventData.status,
       cancelled_at: null,
       cancel_reason: null,
       organizer: organizer?.organization_name || 'Unknown',
@@ -106,11 +128,14 @@ export async function GET(
         : location?.address || 'TBA',
       address: location?.address || '',
       city: location?.city || '',
-      latitude: location?.latitude ? parseFloat(location.latitude) : null,
-      longitude: location?.longitude ? parseFloat(location.longitude) : null,
-      categories: (data.event_category as any[] || []).map((ec: any) => ec.categories?.category_name).filter(Boolean),
+      latitude: location?.latitude ? Number(location.latitude) : null,
+      longitude: location?.longitude ? Number(location.longitude) : null,
+      categories: (eventData.event_category || []).map((entry) => {
+        const category = Array.isArray(entry.categories) ? entry.categories[0] : entry.categories;
+        return category?.category_name;
+      }).filter((category): category is string => Boolean(category)),
       registrations: count || 0,
-      confirmedAt: data.is_still_happening_confirmed_at,
+      confirmedAt: eventData.is_still_happening_confirmed_at,
       capacity,
       coverImage,
       image: coverImage,
@@ -118,7 +143,7 @@ export async function GET(
 
     return NextResponse.json(formattedData);
   } catch {
-    const fallbackEvent = (DEFAULT_EVENTS || []).find((e: any) => e.id === id);
+      const fallbackEvent = DEFAULT_EVENTS.find((event) => event.id === id);
     if (fallbackEvent) {
       return NextResponse.json(fallbackEvent);
     }
@@ -161,7 +186,8 @@ export async function PATCH(
     }
 
     // 1. Load existing event to compare fields
-    let existingEvent: any = globalThis.__spott_server_events?.find((e) => e.id === id);
+    let existingEvent: (Partial<EventData> & Pick<EventData, "id">) | undefined =
+      globalThis.__spott_server_events?.find((event) => event.id === id);
     if (!existingEvent) {
       try {
         const { data } = await supabase
@@ -178,13 +204,21 @@ export async function PATCH(
           .maybeSingle();
 
         if (data) {
-          const loc: any = Array.isArray(data.locations) ? data.locations[0] : data.locations;
+          const row = data as unknown as {
+            event_id: string;
+            title: string;
+            start_datetime: string;
+            price: number | string;
+            status: string;
+            locations?: Relation<{ venue_name?: string | null; address?: string | null }>;
+          };
+          const loc = Array.isArray(row.locations) ? row.locations[0] : row.locations;
           existingEvent = {
-            id: data.event_id,
-            title: data.title,
-            date: data.start_datetime,
-            price: data.price,
-            status: data.status,
+            id: row.event_id,
+            title: row.title,
+            date: row.start_datetime,
+            price: Number(row.price),
+            status: row.status,
             location: loc?.venue_name || loc?.address || '',
           };
         }
@@ -239,8 +273,8 @@ export async function PATCH(
           .eq('event_id', id);
 
         if (attendees && attendees.length > 0) {
-          const notifs = (attendees as any[]).map((att: any) => ({
-            user_id: att.user_id,
+          const notifs = (attendees as unknown as { user_id: string }[]).map((attendee) => ({
+            user_id: attendee.user_id,
             type: 'cancellation',
             title: `Event Cancelled: "${currentTitle}"`,
             message: notifMessage,
@@ -272,7 +306,7 @@ export async function PATCH(
     const newTitle = body.title !== undefined ? body.title : existingEvent?.title;
     const newDate = body.date !== undefined ? body.date : existingEvent?.date;
     const newLocation = body.location !== undefined ? body.location : existingEvent?.location;
-    const newPrice = body.price !== undefined ? parseFloat(body.price) : existingEvent?.price;
+    const newPrice = body.price !== undefined ? Number(body.price) : Number(existingEvent?.price || 0);
 
     if (existingEvent) {
       if (body.title && body.title.trim() !== existingEvent.title?.trim()) {
@@ -284,7 +318,7 @@ export async function PATCH(
       if (body.location && body.location.trim() !== existingEvent.location?.trim()) {
         changes.push(`Venue: ${existingEvent.location} -> ${body.location}`);
       }
-      if (body.price !== undefined && parseFloat(body.price) !== parseFloat(existingEvent.price || 0)) {
+      if (body.price !== undefined && Number(body.price) !== Number(existingEvent.price || 0)) {
         changes.push(`Price: ₱${existingEvent.price || 0} -> ₱${body.price}`);
       }
     }
@@ -338,8 +372,8 @@ export async function PATCH(
           .eq('event_id', id);
 
         if (attendees && attendees.length > 0) {
-          const notifs = (attendees as any[]).map((att: any) => ({
-            user_id: att.user_id,
+          const notifs = (attendees as unknown as { user_id: string }[]).map((attendee) => ({
+            user_id: attendee.user_id,
             type: 'update',
             title: `Event Schedule Updated: "${newTitle}"`,
             message: updateMessage,
@@ -357,8 +391,8 @@ export async function PATCH(
       changes,
       notification: createdNotification,
     });
-  } catch (error: any) {
-    return NextResponse.json({ error: error?.message || 'Internal Server Error' }, { status: 500 });
+  } catch (error: unknown) {
+    return NextResponse.json({ error: errorMessage(error) }, { status: 500 });
   }
 }
 
@@ -414,7 +448,7 @@ export async function DELETE(
     // Check in-memory if Supabase had no record
     const serverEv = globalThis.__spott_server_events?.find((e) => e.id === id);
     if (serverEv) {
-      eventStatus = eventStatus || serverEv.status;
+      eventStatus = eventStatus || serverEv.status || "";
       rsvpCount = Math.max(rsvpCount, serverEv.registrations || 0);
     }
 
@@ -444,7 +478,7 @@ export async function DELETE(
     }
 
     return NextResponse.json({ success: true, message: 'Event deleted' });
-  } catch (error: any) {
-    return NextResponse.json({ error: error?.message || 'Internal Server Error' }, { status: 500 });
+  } catch (error: unknown) {
+    return NextResponse.json({ error: errorMessage(error) }, { status: 500 });
   }
 }

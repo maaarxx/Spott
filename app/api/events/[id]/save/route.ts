@@ -38,7 +38,7 @@ export async function POST(
       if (error) throw error;
       return NextResponse.json({ success: true, saved: true, message: 'Event saved to your plan.' });
     }
-  } catch (err: any) {
+  } catch (err: unknown) {
     return NextResponse.json(
       { success: false, message: 'Could not update saved event.' },
       { status: 500 }

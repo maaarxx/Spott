@@ -20,7 +20,7 @@ import {
   User,
 } from "lucide-react";
 import { logout, getCurrentUser, SpottAccount } from "@/lib/auth-store";
-import { getVerificationState, VerificationState } from "@/lib/verification-store";
+import { useVerificationState } from "@/lib/verification-store";
 
 interface NavItem {
   id: string;
@@ -93,7 +93,7 @@ function OrganizerNavContent({ children }: { children: React.ReactNode }) {
   const [userDropdownOpen, setUserDropdownOpen] = useState(false);
   const [currentUser, setCurrentUser2] = useState<SpottAccount | null>(null);
   const [authorized, setAuthorized] = useState(false);
-  const [verState, setVerState] = useState<VerificationState | null>(null);
+  const verState = useVerificationState();
 
   useEffect(() => {
     const syncAuth = () => {
@@ -107,13 +107,8 @@ function OrganizerNavContent({ children }: { children: React.ReactNode }) {
     const onAuthChange = () => syncAuth();
     window.addEventListener("spott_auth_changed", onAuthChange);
 
-    setVerState(getVerificationState());
-    const onVerChange = () => setVerState(getVerificationState());
-    window.addEventListener("spott_verification_updated", onVerChange);
-
     return () => {
       window.removeEventListener("spott_auth_changed", onAuthChange);
-      window.removeEventListener("spott_verification_updated", onVerChange);
     };
   }, [router]);
 

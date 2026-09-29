@@ -22,7 +22,7 @@ import {
 } from "lucide-react";
 import EventCard, { type EventData } from "@/components/EventCard";
 import CategoryPills from "@/components/CategoryPills";
-import { getStoredEvents, subscribeToEvents, saveStoredEvents } from "@/lib/events-store";
+import { getStoredEvents, subscribeToEvents, saveStoredEvents, useStoredEvents } from "@/lib/events-store";
 import { syncNotificationsForEvents } from "@/lib/notifications-store";
 import { getRecommendedFeaturedEvents } from "@/lib/featured-recommendation";
 import { getCurrentUser, getUserSavedEvents, saveUserSavedEvents } from "@/lib/auth-store";
@@ -34,8 +34,17 @@ import {
 import { getAllCategories, matchesCategory, matchesSearchQuery, matchesDirectText, DEFAULT_APP_CATEGORIES } from "@/lib/categories";
 
 export default function Home() {
+  const [nowTime] = useState(() => Date.now() - 2 * 60 * 60 * 1000);
   const router = useRouter();
-  const [events, setEvents] = useState<EventData[]>([]);
+  const storedEvents = useStoredEvents();
+  const [remoteEvents, setRemoteEvents] = useState<EventData[]>([]);
+  const events = useMemo(() => {
+    const merged = new Map(storedEvents.map((event) => [event.id, event]));
+    remoteEvents.forEach((event) => {
+      if (!merged.has(event.id)) merged.set(event.id, event);
+    });
+    return [...merged.values()];
+  }, [storedEvents, remoteEvents]);
   const [loading, setLoading] = useState(false);
   const [savedIds, setSavedIds] = useState<string[]>([]);
   const [categoriesList, setCategoriesList] = useState<string[]>(DEFAULT_APP_CATEGORIES);
@@ -59,27 +68,18 @@ export default function Home() {
   const isSearchOrNearMe = Boolean(searchQuery.trim() || nearMeOnly);
   const isViewAllEvents = viewMode === "all" && !isSearchOrNearMe;
 
-  const loadAllEvents = async () => {
-    const local = getStoredEvents();
-    setEvents(local);
-
-    try {
-      const res = await fetch("/api/events");
-      if (res.ok) {
-        const apiData = await res.json();
-        if (Array.isArray(apiData) && apiData.length > 0) {
-          saveStoredEvents(apiData, false);
-          syncNotificationsForEvents(apiData);
-          const freshLocal = getStoredEvents();
-          const existingIds = new Set(freshLocal.map((e) => e.id));
-          const merged = [...freshLocal, ...apiData.filter((e: any) => !existingIds.has(e.id))];
-          setEvents(merged);
-        }
-      }
-    } catch {}
-  };
-
   useEffect(() => {
+    let active = true;
+    fetch("/api/events")
+      .then((res) => (res.ok ? res.json() : []))
+      .then((apiData: EventData[]) => {
+        if (!active || !Array.isArray(apiData) || apiData.length === 0) return;
+        saveStoredEvents(apiData, false);
+        syncNotificationsForEvents(apiData);
+        setRemoteEvents(apiData);
+      })
+      .catch(() => {});
+
     const syncSaved = () => {
       const user = getCurrentUser();
       if (!user) {
@@ -90,17 +90,13 @@ export default function Home() {
     };
 
     syncSaved();
-    loadAllEvents();
 
-    const unsubscribe = subscribeToEvents(() => {
-      setEvents(getStoredEvents());
-    });
     window.addEventListener("spott_saved_updated", syncSaved);
     window.addEventListener("spott_auth_changed", syncSaved);
     window.addEventListener("storage", syncSaved);
 
     return () => {
-      unsubscribe();
+      active = false;
       window.removeEventListener("spott_saved_updated", syncSaved);
       window.removeEventListener("spott_auth_changed", syncSaved);
       window.removeEventListener("storage", syncSaved);
@@ -184,7 +180,6 @@ export default function Home() {
 
   // Upcoming near user (sorted chronologically)
   const upcomingNearEvents = useMemo(() => {
-    const nowTime = Date.now() - 2 * 60 * 60 * 1000;
     return events
       .filter((e) => {
         const t = new Date(e.date.replace(" ", "T")).getTime();
@@ -210,7 +205,7 @@ export default function Home() {
     // Category filter: applies unless the event has a direct keyword match in address, venue, or title
     if (selectedCategory && selectedCategory !== "All") {
       pool = pool.filter((e) => {
-        if (matchesCategory(e.categories || (e as any).category, selectedCategory)) {
+        if (matchesCategory(e.categories || e.category, selectedCategory)) {
           return true;
         }
         // Direct keyword match in address, venue, or title should not be hidden
@@ -263,7 +258,6 @@ export default function Home() {
 
     // Near Me Filter: Show upcoming events happening near user
     if (nearMeOnly) {
-      const nowTime = Date.now() - 2 * 60 * 60 * 1000;
       pool = pool.filter((e) => {
         const t = new Date(e.date.replace(" ", "T")).getTime();
         return !isNaN(t) && t >= nowTime;
@@ -721,7 +715,7 @@ export default function Home() {
                     <Calendar className="w-3.5 h-3.5 text-accent shrink-0" />
                     <select
                       value={dateFilter}
-                      onChange={(e) => setDateFilter(e.target.value as any)}
+                      onChange={(e) => setDateFilter(e.target.value as typeof dateFilter)}
                       className="bg-transparent text-xs font-bold text-ink focus:outline-none cursor-pointer pr-1"
                       title="Filter by date"
                     >
@@ -755,7 +749,7 @@ export default function Home() {
                     <DollarSign className="w-3.5 h-3.5 text-accent shrink-0" />
                     <select
                       value={priceFilter}
-                      onChange={(e) => setPriceFilter(e.target.value as any)}
+                      onChange={(e) => setPriceFilter(e.target.value as typeof priceFilter)}
                       className="bg-transparent text-xs font-bold text-ink focus:outline-none cursor-pointer pr-1"
                       title="Filter by price"
                     >
@@ -772,7 +766,7 @@ export default function Home() {
                   <span className="text-[11px] text-muted font-normal hidden md:inline">Sort:</span>
                   <select
                     value={sortBy}
-                    onChange={(e) => setSortBy(e.target.value as any)}
+                    onChange={(e) => setSortBy(e.target.value as typeof sortBy)}
                     className="bg-transparent text-xs font-bold text-ink focus:outline-none cursor-pointer pr-1"
                     title="Sort events"
                   >

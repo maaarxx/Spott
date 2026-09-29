@@ -54,7 +54,7 @@ function RsvpManagementContent() {
   const searchParams = useSearchParams();
   const urlEventId = searchParams.get("eventId");
 
-  const [availableEvents, setAvailableEvents] = useState<{ id: string; title: string; capacity?: number | null; requireApproval?: boolean }[]>([]);
+  const [availableEvents, setAvailableEvents] = useState<{ id: string; title: string; capacity?: number | null; requireApproval?: boolean | null }[]>([]);
   const [selectedEventKey, setSelectedEventKey] = useState<string>("");
   const [attendees, setAttendees] = useState<Attendee[]>([]);
   const [searchQuery, setSearchQuery] = useState("");
@@ -74,13 +74,16 @@ function RsvpManagementContent() {
         requireApproval: e.requireApproval,
       }));
       setAvailableEvents(list);
+      let nextSelectedEventKey = selectedEventKey;
       if (urlEventId && list.some((e) => e.id === urlEventId)) {
-        setSelectedEventKey(urlEventId);
+        nextSelectedEventKey = urlEventId;
       } else if (list.length > 0 && (!selectedEventKey || !list.some((e) => e.id === selectedEventKey))) {
-        setSelectedEventKey(list[0].id);
+        nextSelectedEventKey = list[0].id;
       } else if (list.length === 0) {
-        setSelectedEventKey("");
+        nextSelectedEventKey = "";
       }
+      setSelectedEventKey(nextSelectedEventKey);
+      loadAttendeesForEvent(nextSelectedEventKey);
     };
     loadEvents();
     const unsubscribeEvents = subscribeToEvents(loadEvents);
@@ -91,7 +94,7 @@ function RsvpManagementContent() {
     };
   }, [urlEventId, selectedEventKey]);
 
-  const loadAttendeesForEvent = (eventKey: string) => {
+  function loadAttendeesForEvent(eventKey: string) {
     if (!eventKey) {
       setAttendees([]);
       return;
@@ -128,7 +131,7 @@ function RsvpManagementContent() {
     } catch {
       setAttendees([]);
     }
-  };
+  }
 
   // Switch event handler
   const handleEventChange = (key: string) => {
@@ -137,9 +140,6 @@ function RsvpManagementContent() {
   };
 
   useEffect(() => {
-    if (selectedEventKey) {
-      loadAttendeesForEvent(selectedEventKey);
-    }
     const handleSync = () => {
       if (selectedEventKey) {
         loadAttendeesForEvent(selectedEventKey);

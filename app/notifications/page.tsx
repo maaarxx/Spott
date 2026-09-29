@@ -16,6 +16,7 @@ import {
 } from "@/lib/notifications-store";
 import { getStoredEvents } from "@/lib/events-store";
 import { getCurrentUser } from "@/lib/auth-store";
+import type { EventData } from "@/components/EventCard";
 import { processDueReminders } from "@/lib/reminders-store";
 
 export default function NotificationsPage() {
@@ -33,7 +34,7 @@ export default function NotificationsPage() {
       if (res.ok) {
         const apiData = await res.json();
         if (Array.isArray(apiData)) {
-          apiData.forEach((e: any) => validIds.add(e.id));
+          (apiData as EventData[]).forEach((event) => validIds.add(event.id));
           syncNotificationsForEvents(apiData);
         }
       }

@@ -16,7 +16,14 @@ export async function GET() {
 
     if (error) throw error;
 
-    const formatted = (data || []).map((n: any) => ({
+    const formatted = (data || []).map((n: {
+      notification_id: string;
+      type: string;
+      title: string;
+      message: string | null;
+      is_read: boolean;
+      created_at: string;
+    }) => ({
       id: n.notification_id,
       type: n.type,
       title: n.title,

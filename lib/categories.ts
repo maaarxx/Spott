@@ -18,6 +18,21 @@ export const DEFAULT_APP_CATEGORIES: string[] = [
 
 const STORAGE_KEY_CUSTOM_CATEGORIES = "spott_custom_categories";
 
+type EventSearchData = {
+  title?: string;
+  location?: string;
+  city?: string;
+  address?: string;
+  venue?: string;
+  venue_name?: string;
+  location_name?: string;
+  locations?: { address?: string; venue_name?: string };
+  description?: string;
+  organizer?: string;
+  categories?: string[];
+  category?: string;
+};
+
 export function getCustomCategories(): string[] {
   if (typeof window === "undefined") return [];
   try {
@@ -192,16 +207,7 @@ export function matchesCategory(
  * categories, category synonyms, and handles singular/plural variants.
  */
 export function matchesSearchQuery(
-  event: {
-    title?: string;
-    location?: string;
-    city?: string;
-    address?: string;
-    description?: string;
-    organizer?: string;
-    categories?: string[];
-    category?: string;
-  },
+  event: EventSearchData,
   searchQuery: string
 ): boolean {
   if (!searchQuery || !searchQuery.trim()) return true;
@@ -223,12 +229,12 @@ export function matchesSearchQuery(
   const location = typeof event.location === "string" ? event.location.toLowerCase() : "";
   const city = (event.city || "").toLowerCase();
   const address = (
-    (event as any).address ||
-    (event as any).venue ||
-    (event as any).venue_name ||
-    (event as any).location_name ||
-    (event as any).locations?.address ||
-    (event as any).locations?.venue_name ||
+    event.address ||
+    event.venue ||
+    event.venue_name ||
+    event.location_name ||
+    event.locations?.address ||
+    event.locations?.venue_name ||
     ""
   ).toLowerCase();
   const desc = (event.description || "").toLowerCase();
@@ -305,7 +311,7 @@ export function matchesSearchQuery(
  * address, venue, city, description, or organizer (ignoring category filters).
  */
 export function matchesDirectText(
-  event: any,
+  event: EventSearchData,
   query: string
 ): boolean {
   if (!query || !query.trim()) return false;

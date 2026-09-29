@@ -12,7 +12,7 @@ export type EventData = {
   title: string;
   description?: string;
   date: string;
-  endDate?: string;
+  endDate?: string | null;
   price: number;
   status?: string;
   organizer?: string;
@@ -26,6 +26,7 @@ export type EventData = {
   latitude?: number;
   longitude?: number;
   confirmedAt?: string | null;
+  confirmations?: number;
   createdAt?: string | null;
   cancelledAt?: string | null;
   cancelled_at?: string | null;
@@ -39,7 +40,7 @@ export type EventData = {
   imageUrl?: string | null;
   featuredReason?: string;
   capacity?: number | null;
-  requireApproval?: boolean;
+  requireApproval?: boolean | null;
   distanceKm?: number;
 };
 
@@ -81,7 +82,7 @@ export default function EventCard({
   const categoryLabel = event.categories?.[0] || "Community";
   const eventImage = event.coverImage || event.image || event.imageUrl;
 
-  const handleCardClick = (e: React.MouseEvent) => {
+  const handleCardClick = (e: React.SyntheticEvent) => {
     // If the click originated from inside a button, let the button handle it
     const target = e.target as HTMLElement;
     if (target.closest("button")) {
@@ -200,7 +201,7 @@ export default function EventCard({
         onKeyDown={(e) => {
           if (e.key === "Enter" || e.key === " ") {
             e.preventDefault();
-            handleCardClick(e as any);
+            handleCardClick(e);
           }
         }}
         className="bg-white border border-line rounded-2xl overflow-hidden hover:border-accent/40 hover:shadow-lg transition-all duration-200 flex flex-col group cursor-pointer"

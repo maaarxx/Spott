@@ -1,11 +1,11 @@
 "use client";
 
-import { useState, useEffect, useRef, Suspense } from "react";
+import { useState, useEffect, useRef, Suspense, useMemo } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
 import { Search, SlidersHorizontal, MapPin, X, ChevronDown, Check } from "lucide-react";
 import EventCard, { type EventData } from "@/components/EventCard";
 import MapView from "@/components/MapView";
-import { getStoredEvents, subscribeToEvents } from "@/lib/events-store";
+import { useStoredEvents } from "@/lib/events-store";
 import { getCurrentUser, getUserSavedEvents, saveUserSavedEvents } from "@/lib/auth-store";
 import { getAllCategories, matchesCategory, matchesSearchQuery, matchesDirectText } from "@/lib/categories";
 
@@ -32,7 +32,15 @@ function DiscoverContent() {
   const initialFilter = searchParams.get("filter") || "";
   const initialNearMe = searchParams.get("nearMe") === "true";
 
-  const [events, setEvents] = useState<EventData[]>([]);
+  const storedEvents = useStoredEvents();
+  const [remoteEvents, setRemoteEvents] = useState<EventData[]>([]);
+  const events = useMemo(() => {
+    const merged = new Map(storedEvents.map((event) => [event.id, event]));
+    remoteEvents.forEach((event) => {
+      if (!merged.has(event.id)) merged.set(event.id, event);
+    });
+    return [...merged.values()];
+  }, [storedEvents, remoteEvents]);
   const [loading, setLoading] = useState(false);
   const [searchQuery, setSearchQuery] = useState(initialQuery);
   const [selectedCategory, setSelectedCategory] = useState(initialCategory);
@@ -45,8 +53,10 @@ function DiscoverContent() {
   const [userLocation, setUserLocation] = useState<{ lat: number; lng: number } | null>(null);
   const [selectedRadius, setSelectedRadius] = useState<number | null>(null);
   const [showRadiusDropdown, setShowRadiusDropdown] = useState(false);
-  const [isLocating, setIsLocating] = useState(false);
-  const [locationNotice, setLocationNotice] = useState<string | null>(null);
+  const [isLocating, setIsLocating] = useState(initialNearMe);
+  const [locationNotice, setLocationNotice] = useState<string | null>(
+    initialNearMe ? "Requesting device location permission to find events near you..." : null
+  );
 
   const mapRadiusDropdownRef = useRef<HTMLDivElement>(null);
 
@@ -65,39 +75,24 @@ function DiscoverContent() {
     };
   }, [showRadiusDropdown]);
 
-  const loadAllEvents = async () => {
-    const local = getStoredEvents();
-    // Show local events immediately
-    setEvents(local);
-
-    try {
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), 1200);
-      const res = await fetch("/api/events", { signal: controller.signal });
-      clearTimeout(timer);
-      if (res.ok) {
-        const apiData = await res.json();
-        if (Array.isArray(apiData)) {
-          const freshLocal = getStoredEvents();
-          const existingIds = new Set(freshLocal.map((e) => e.id));
-          const apiFormatted = apiData
-            .filter((e: any) => !existingIds.has(e.id))
-            .map((e: any) => ({
-              ...e,
-              categories: Array.isArray(e.categories)
-                ? e.categories
-                : [e.category || "Community"].filter(Boolean),
-              latitude: typeof e.latitude === "string" ? parseFloat(e.latitude) : e.latitude,
-              longitude: typeof e.longitude === "string" ? parseFloat(e.longitude) : e.longitude,
-            }));
-          const merged = [...freshLocal, ...apiFormatted];
-          setEvents(merged);
-        }
-      }
-    } catch {}
-  };
-
   useEffect(() => {
+    let active = true;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 1200);
+    fetch("/api/events", { signal: controller.signal })
+      .then((res) => (res.ok ? res.json() : []))
+      .then((apiData: EventData[]) => {
+        if (!active || !Array.isArray(apiData)) return;
+        setRemoteEvents(apiData.map((event) => ({
+          ...event,
+          categories: Array.isArray(event.categories) ? event.categories : [event.category || "Community"].filter(Boolean),
+          latitude: typeof event.latitude === "string" ? parseFloat(event.latitude) : event.latitude,
+          longitude: typeof event.longitude === "string" ? parseFloat(event.longitude) : event.longitude,
+        })));
+      })
+      .catch(() => {})
+      .finally(() => clearTimeout(timer));
+
     const syncSaved = () => {
       const user = getCurrentUser();
       if (!user) {
@@ -108,17 +103,14 @@ function DiscoverContent() {
     };
 
     syncSaved();
-    loadAllEvents();
 
-    const unsubscribe = subscribeToEvents(() => {
-      setEvents(getStoredEvents());
-    });
     window.addEventListener("spott_saved_updated", syncSaved);
     window.addEventListener("spott_auth_changed", syncSaved);
     window.addEventListener("storage", syncSaved);
 
     return () => {
-      unsubscribe();
+      active = false;
+      controller.abort();
       window.removeEventListener("spott_saved_updated", syncSaved);
       window.removeEventListener("spott_auth_changed", syncSaved);
       window.removeEventListener("storage", syncSaved);
@@ -133,16 +125,6 @@ function DiscoverContent() {
     window.addEventListener("spott_categories_updated", syncCats);
     return () => window.removeEventListener("spott_categories_updated", syncCats);
   }, [events]);
-
-  // Update when URL search parameters change
-  useEffect(() => {
-    if (searchParams.get("q") !== null) {
-      setSearchQuery(searchParams.get("q") || "");
-    }
-    if (searchParams.get("category") !== null) {
-      setSelectedCategory(searchParams.get("category") || "");
-    }
-  }, [searchParams]);
 
   const handleToggleSave = (eventId: string) => {
     const user = getCurrentUser();
@@ -270,13 +252,33 @@ function DiscoverContent() {
   };
 
   useEffect(() => {
-    if (initialNearMe) {
-      requestUserLocation();
+    if (!initialNearMe) return;
+    if (!navigator.geolocation) {
+      alert("Geolocation is not supported by your browser.");
+      return;
     }
+    navigator.geolocation.getCurrentPosition(
+      (position) => {
+        const coords = { lat: position.coords.latitude, lng: position.coords.longitude };
+        setIsLocating(false);
+        setUserLocation(coords);
+        setSortBy("nearest");
+        setLocationNotice("✓ Location enabled: Showing events closest to you!");
+        setTimeout(() => setLocationNotice(null), 4000);
+      },
+      (error) => {
+        setIsLocating(false);
+        setLocationNotice(error.code === 1
+          ? "Location permission denied. Showing events from standard Manila baseline."
+          : "Could not determine your location. Showing events from standard Manila baseline.");
+        setTimeout(() => setLocationNotice(null), 5000);
+      },
+      { enableHighAccuracy: true, timeout: 10000, maximumAge: 30000 }
+    );
   }, [initialNearMe]);
 
   // Radius Dropdown Component matching exact user reference styling
-  const RadiusDropdownMenu = () => (
+  const radiusDropdownMenu = (
     <div className="absolute right-0 top-full mt-2 w-60 bg-[#1c1f22] border border-[#2b3036] rounded-xl shadow-2xl py-1.5 z-50 text-[#e2e8f0] animate-in fade-in zoom-in-95 duration-150">
       <div className="max-h-72 overflow-y-auto">
         {selectedRadius !== null && (
@@ -525,7 +527,7 @@ function DiscoverContent() {
                 </span>
                 <ChevronDown className="w-3 h-3 text-muted" />
               </button>
-              {showRadiusDropdown && <RadiusDropdownMenu />}
+              {showRadiusDropdown && radiusDropdownMenu}
             </div>
           </div>
 
@@ -569,7 +571,12 @@ export default function DiscoverPage() {
         </div>
       }
     >
-      <DiscoverContent />
+      <DiscoverContentShell />
     </Suspense>
   );
+}
+
+function DiscoverContentShell() {
+  const searchParams = useSearchParams();
+  return <DiscoverContent key={searchParams.toString()} />;
 }

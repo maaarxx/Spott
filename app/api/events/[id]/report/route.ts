@@ -27,7 +27,7 @@ export async function POST(
     if (error) throw error;
 
     return NextResponse.json({ success: true, message: 'Report submitted for admin review.' });
-  } catch (err: any) {
+  } catch (err: unknown) {
     return NextResponse.json(
       { success: false, message: 'Could not submit report.' },
       { status: 500 }

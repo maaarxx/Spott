@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { useRouter } from "next/navigation";
 import {
   CheckCircle2,
@@ -20,7 +20,7 @@ import Link from "next/link";
 import { format, addDays, isBefore, parseISO } from "date-fns";
 import type { EventData } from "@/components/EventCard";
 import { DEFAULT_EVENTS } from "@/lib/default-events";
-import { getStoredEvents, subscribeToEvents } from "@/lib/events-store";
+import { getStoredEvents, subscribeToEvents, useStoredEvents } from "@/lib/events-store";
 import { addNotification } from "@/lib/notifications-store";
 import {
   getCurrentUser,
@@ -39,6 +39,8 @@ import {
   hasUserReminder,
 } from "@/lib/reminders-store";
 import CancelRsvpModal from "@/components/CancelRsvpModal";
+import { useHydrated } from "@/lib/use-hydrated";
+import { parseGuestLists } from "@/lib/guest-list";
 
 type Tab = "saved" | "registered" | "created" | "upcoming" | "past";
 
@@ -81,13 +83,30 @@ function toggleUserReminder(eventId: string, email?: string): boolean {
 // ─── Component ───────────────────────────────────────────────────────────────
 export default function MyEventsPage() {
   const router = useRouter();
-  const [currentUser, setCurrentUser] = useState<SpottAccount | null>(null);
-  const [mounted, setMounted] = useState(false);
+  const [currentUser, setCurrentUser] = useState<SpottAccount | null>(() => getCurrentUser());
+  const mounted = useHydrated();
   const [activeTab, setActiveTab] = useState<Tab>("saved");
-  const [events, setEvents] = useState<EventData[]>([]);
-  const [savedIds, setSavedIds] = useState<string[]>([]);
-  const [registeredIds, setRegisteredIds] = useState<string[]>([]);
-  const [reminders, setReminders] = useState<string[]>([]);
+  const storedEvents = useStoredEvents();
+  const [remoteEvents, setRemoteEvents] = useState<EventData[]>([]);
+  const events = useMemo(() => {
+    const merged = new Map(storedEvents.map((event) => [event.id, event]));
+    remoteEvents.forEach((event) => {
+      if (!merged.has(event.id)) merged.set(event.id, event);
+    });
+    return [...merged.values()];
+  }, [storedEvents, remoteEvents]);
+  const [savedIds, setSavedIds] = useState<string[]>(() => {
+    const user = getCurrentUser();
+    return user ? getUserSavedEvents(user.email) : [];
+  });
+  const [registeredIds, setRegisteredIds] = useState<string[]>(() => {
+    const user = getCurrentUser();
+    return user ? getUserRegisteredEvents(user.email) : [];
+  });
+  const [reminders, setReminders] = useState<string[]>(() => {
+    const user = getCurrentUser();
+    return user ? getUserReminders(user.email) : [];
+  });
   const [toast, setToast] = useState<{ msg: string; type: "success" | "info" } | null>(null);
   const [calendarEventId, setCalendarEventId] = useState<string | null>(null);
   const [reminderPickerOpen, setReminderPickerOpen] = useState(false);
@@ -95,32 +114,9 @@ export default function MyEventsPage() {
   const [eventToCancel, setEventToCancel] = useState<EventData | null>(null);
   const [isCancellingRsvp, setIsCancellingRsvp] = useState(false);
 
-  const loadAllEvents = async () => {
-    const local = getStoredEvents();
-    // Show local events immediately
-    setEvents(local);
-
-    try {
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), 1200);
-      const res = await fetch("/api/events", { signal: controller.signal });
-      clearTimeout(timer);
-      if (res.ok) {
-        const apiData = await res.json();
-        if (Array.isArray(apiData)) {
-          const freshLocal = getStoredEvents();
-          const existingIds = new Set(freshLocal.map((e) => e.id));
-          const merged = [...freshLocal, ...apiData.filter((e: any) => !existingIds.has(e.id))];
-          setEvents(merged);
-        }
-      }
-    } catch {}
-  };
-
   const syncStorage = () => {
     const user = getCurrentUser();
     setCurrentUser(user);
-    setMounted(true);
 
     if (!user) {
       setSavedIds([]);
@@ -135,12 +131,19 @@ export default function MyEventsPage() {
   };
 
   useEffect(() => {
-    syncStorage();
-    loadAllEvents();
+    let active = true;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 1200);
+    fetch("/api/events", { signal: controller.signal })
+      .then((res) => (res.ok ? res.json() : []))
+      .then((apiData: EventData[]) => {
+        if (active && Array.isArray(apiData)) setRemoteEvents(apiData);
+      })
+      .catch(() => {})
+      .finally(() => clearTimeout(timer));
 
     const onStorageChange = () => {
       syncStorage();
-      loadAllEvents();
     };
 
     const unsubscribeEvents = subscribeToEvents(onStorageChange);
@@ -150,6 +153,8 @@ export default function MyEventsPage() {
     window.addEventListener("storage", onStorageChange);
 
     return () => {
+      active = false;
+      controller.abort();
       unsubscribeEvents();
       window.removeEventListener("spott_saved_updated", onStorageChange);
       window.removeEventListener("spott_registered_updated", onStorageChange);
@@ -197,10 +202,7 @@ export default function MyEventsPage() {
 
       // 3. Remove from guest list
       const rawGuests = localStorage.getItem("spott_guest_lists");
-      let guestMap: Record<string, any[]> = {};
-      try {
-        guestMap = rawGuests ? JSON.parse(rawGuests) : {};
-      } catch {}
+      const guestMap = parseGuestLists(rawGuests);
       let currentGuestList = guestMap[eventId] || [];
       currentGuestList = currentGuestList.filter(
         (a) => a.email?.toLowerCase() !== currentUser.email.toLowerCase() && a.id !== currentUser.email
@@ -521,10 +523,10 @@ export default function MyEventsPage() {
                       try {
                         const raw = localStorage.getItem("spott_guest_lists");
                         if (raw && currentUser?.email) {
-                          const map = JSON.parse(raw);
+                          const map = parseGuestLists(raw);
                           const list = map[event.id];
                           if (Array.isArray(list)) {
-                            const att = list.find((a: any) => a.email?.toLowerCase() === currentUser.email.toLowerCase());
+                            const att = list.find((attendee) => attendee.email?.toLowerCase() === currentUser.email.toLowerCase());
                             if (att?.status === "Pending") isPending = true;
                           }
                         }

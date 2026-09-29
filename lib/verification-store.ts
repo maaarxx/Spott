@@ -1,6 +1,7 @@
 "use client";
 
 import { getCurrentUser } from "./auth-store";
+import { useSyncExternalStore } from "react";
 
 export interface VerificationDocument {
   id: string;
@@ -22,6 +23,36 @@ export interface VerificationState {
   expiresDate?: string;
   decisionReason?: string;
   documents: VerificationDocument[];
+}
+
+let cachedVerificationKey: string | null = null;
+let cachedVerificationRaw: string | null | undefined;
+let cachedVerificationSnapshot: VerificationState | null = null;
+
+function subscribeToVerification(callback: () => void): () => void {
+  if (typeof window === "undefined") return () => {};
+  window.addEventListener("spott_verification_updated", callback);
+  window.addEventListener("storage", callback);
+  return () => {
+    window.removeEventListener("spott_verification_updated", callback);
+    window.removeEventListener("storage", callback);
+  };
+}
+
+function getVerificationSnapshot(): VerificationState | null {
+  if (typeof window === "undefined") return null;
+  const key = getVerificationStorageKey();
+  const raw = localStorage.getItem(key);
+  if (key !== cachedVerificationKey || raw !== cachedVerificationRaw) {
+    cachedVerificationKey = key;
+    cachedVerificationRaw = raw;
+    cachedVerificationSnapshot = getVerificationState();
+  }
+  return cachedVerificationSnapshot;
+}
+
+export function useVerificationState(): VerificationState | null {
+  return useSyncExternalStore(subscribeToVerification, getVerificationSnapshot, () => null);
 }
 
 export const getRealTimeDate = () =>

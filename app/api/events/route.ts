@@ -2,11 +2,31 @@ import { NextResponse } from 'next/server';
 import { createClient, createAdminClient, getAuthenticatedRole } from '@/lib/supabase-server';
 import { DEFAULT_EVENTS } from '@/lib/default-events';
 import { errorMessage } from '@/lib/error-message';
+import type { EventData } from '@/components/EventCard';
+
+type DbRelation<T> = T | T[] | null;
+type EventListRow = {
+  event_id: string;
+  title: string;
+  description: string | null;
+  start_datetime: string;
+  end_datetime: string | null;
+  created_at: string;
+  archived_at: string | null;
+  capacity: number | null;
+  require_approval: boolean | null;
+  price: number | string | null;
+  status: string;
+  is_still_happening_confirmed_at: string | null;
+  organizers?: DbRelation<{ organization_name?: string | null; verification_status?: string | null }>;
+  locations?: DbRelation<{ venue_name?: string | null; address?: string | null; city?: string | null; latitude?: number | string | null; longitude?: number | string | null }>;
+  event_category?: Array<{ categories?: DbRelation<{ category_name?: string | null }> }>;
+};
 
 
 // Server-side in-memory event cache for active dev session & offline resilience
 declare global {
-  var __spott_server_events: any[] | undefined;
+  var __spott_server_events: EventData[] | undefined;
 }
 if (!globalThis.__spott_server_events) {
   globalThis.__spott_server_events = [];
@@ -237,7 +257,8 @@ export async function GET(request: Request) {
     }
 
     // Get registration counts
-    const eventIds = (data || []).map((e: any) => e.event_id);
+    const dataRows = (data || []) as unknown as EventListRow[];
+    const eventIds = dataRows.map((event) => event.event_id);
     const regCounts: Record<string, number> = {};
     try {
       const { data: regData } = await supabase
@@ -245,15 +266,17 @@ export async function GET(request: Request) {
         .select('event_id')
         .in('event_id', eventIds.length > 0 ? eventIds : ['none']);
 
-      (regData || []).forEach((r: any) => {
-        regCounts[r.event_id] = (regCounts[r.event_id] || 0) + 1;
+      (regData || []).forEach((registration: { event_id: string }) => {
+        regCounts[registration.event_id] = (regCounts[registration.event_id] || 0) + 1;
       });
     } catch {
       // ignore
     }
 
     // Flatten the response for easier frontend usage
-    const formattedData = (data || []).map((event: any) => {
+    const formattedData = dataRows.map((event) => {
+      const organizer = Array.isArray(event.organizers) ? event.organizers[0] : event.organizers;
+      const location = Array.isArray(event.locations) ? event.locations[0] : event.locations;
       let desc = event.description || '';
       let coverImage: string | null = null;
       let capacity = event.capacity ? Number(event.capacity) : 100;
@@ -279,21 +302,24 @@ export async function GET(request: Request) {
         archiveExpiresAt: event.archived_at
           ? new Date(new Date(event.archived_at).getTime() + 30 * 24 * 60 * 60 * 1000).toISOString()
           : null,
-        price: parseFloat(event.price) || 0,
+        price: Number(event.price) || 0,
         status: event.status,
-        organizer: event.organizers?.organization_name || 'Unknown',
-        verified: event.organizers?.verification_status === 'verified',
-        location: event.locations?.venue_name && event.locations?.address && !event.locations.venue_name.includes(event.locations.address)
-          ? `${event.locations.venue_name}, ${event.locations.address}`
-          : event.locations?.venue_name
-          ? `${event.locations.venue_name}, ${event.locations.city || ''}`
-          : event.locations?.address || 'TBA',
-        address: event.locations?.address || '',
-        venue: event.locations?.venue_name || '',
-        city: event.locations?.city || '',
-        latitude: event.locations?.latitude ? parseFloat(event.locations.latitude) : 14.5638,
-        longitude: event.locations?.longitude ? parseFloat(event.locations.longitude) : 120.9965,
-        categories: (event.event_category || []).map((ec: any) => ec.categories?.category_name).filter(Boolean),
+        organizer: organizer?.organization_name || 'Unknown',
+        verified: organizer?.verification_status === 'verified',
+        location: location?.venue_name && location?.address && !location.venue_name.includes(location.address)
+          ? `${location.venue_name}, ${location.address}`
+          : location?.venue_name
+          ? `${location.venue_name}, ${location.city || ''}`
+          : location?.address || 'TBA',
+        address: location?.address || '',
+        venue: location?.venue_name || '',
+        city: location?.city || '',
+        latitude: location?.latitude ? Number(location.latitude) : 14.5638,
+        longitude: location?.longitude ? Number(location.longitude) : 120.9965,
+        categories: (event.event_category || []).map((entry) => {
+          const category = Array.isArray(entry.categories) ? entry.categories[0] : entry.categories;
+          return category?.category_name;
+        }).filter((name): name is string => Boolean(name)),
         registrations: regCounts[event.event_id] || 0,
         confirmedAt: event.is_still_happening_confirmed_at,
         capacity,
@@ -307,7 +333,7 @@ export async function GET(request: Request) {
     const serverEvents = (globalThis.__spott_server_events || [])
       .filter((event) => includeDashboardEvents || event.status === 'active')
       .filter((event) => requestedScope !== 'organizer' || (requestedOrganizerName && event.organizer?.toLowerCase() === requestedOrganizerName.toLowerCase()))
-      .filter((se) => !formattedData.some((fd: any) => fd.id === se.id))
+      .filter((se) => !formattedData.some((fd: { id: string }) => fd.id === se.id))
       .map((se) => ({
         ...se,
         capacity: typeof se.capacity === "number" ? se.capacity : 100,
@@ -316,7 +342,7 @@ export async function GET(request: Request) {
 
     // Filter by category name on server side (Supabase can't filter nested easily)
     if (category && category !== 'All' && category !== 'All categories') {
-      combined = combined.filter((e: any) =>
+      combined = combined.filter((e: EventData) =>
         e.categories?.some((c: string) => c.toLowerCase().includes(category.toLowerCase()))
       );
     }

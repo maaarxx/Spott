@@ -172,17 +172,21 @@ export function getUserRegisteredEvents(email?: string): string[] {
   try {
     const rawGuests = localStorage.getItem("spott_guest_lists");
     if (rawGuests) {
-      const guestMap = JSON.parse(rawGuests);
-      for (const [eventId, guestList] of Object.entries(guestMap)) {
-        if (Array.isArray(guestList)) {
-          const isAttending = guestList.some(
-            (g: any) =>
-              g.status !== "Declined" &&
-              ((g.email && g.email.trim().toLowerCase() === userEmail) ||
-              (current?.name && g.name && g.name.trim().toLowerCase() === current.name.trim().toLowerCase()))
-          );
-          if (isAttending) {
-            registeredSet.add(eventId);
+      const guestMap: unknown = JSON.parse(rawGuests);
+      if (guestMap && typeof guestMap === "object" && !Array.isArray(guestMap)) {
+        for (const [eventId, guestList] of Object.entries(guestMap)) {
+          if (Array.isArray(guestList)) {
+            const isAttending = guestList.some((guest: unknown) => {
+              if (!guest || typeof guest !== "object") return false;
+              const attendee = guest as { status?: unknown; email?: unknown; name?: unknown };
+              const attendeeEmail = typeof attendee.email === "string" ? attendee.email.trim().toLowerCase() : "";
+              const attendeeName = typeof attendee.name === "string" ? attendee.name.trim().toLowerCase() : "";
+              return attendee.status !== "Declined" && (
+                attendeeEmail === userEmail ||
+                Boolean(current?.name && attendeeName === current.name.trim().toLowerCase())
+              );
+            });
+            if (isAttending) registeredSet.add(eventId);
           }
         }
       }
@@ -197,9 +201,11 @@ export function getUserRegisteredEvents(email?: string): string[] {
       if (rawEvents) {
         const eventsList = JSON.parse(rawEvents);
         if (Array.isArray(eventsList)) {
-          eventsList.forEach((e: any) => {
-            if (e && e.id && (e.registrations || 0) > 0) {
-              registeredSet.add(String(e.id));
+          eventsList.forEach((event: unknown) => {
+            if (!event || typeof event !== "object") return;
+            const storedEvent = event as { id?: unknown; registrations?: unknown };
+            if (storedEvent.id && Number(storedEvent.registrations || 0) > 0) {
+              registeredSet.add(String(storedEvent.id));
             }
           });
         }

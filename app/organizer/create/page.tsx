@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useRef, useMemo, useEffect } from "react";
-import { useForm } from "react-hook-form";
+import { useForm, type FieldErrors } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import * as z from "zod";
 import Link from "next/link";
@@ -39,9 +39,9 @@ const eventSchema = z.object({
   price: z.coerce.number().min(0, "Price cannot be negative"),
   isFree: z.boolean(),
   category: z.string().min(1, "Please select a category"),
-  hasCapacityLimit: z.boolean().default(false),
+  hasCapacityLimit: z.boolean(),
   capacity: z.coerce.number().min(1, "Capacity must be at least 1").optional().nullable(),
-  requireApproval: z.boolean().default(false),
+  requireApproval: z.boolean(),
 });
 
 type EventFormValues = z.infer<typeof eventSchema>;
@@ -83,7 +83,7 @@ export default function CreateEventPage() {
     reset,
     formState: { errors },
   } = useForm<EventFormValues>({
-    resolver: zodResolver(eventSchema) as any,
+    resolver: zodResolver(eventSchema),
     defaultValues: {
       price: 0,
       isFree: true,
@@ -266,7 +266,7 @@ export default function CreateEventPage() {
     };
 
     // 1. Immediately save to directory and broadcast so event is instantly published
-    saveStoredEvent(newEventObj as any);
+    saveStoredEvent(newEventObj);
     setPublishedEventId(newEventObj.id);
     setSuccess(true);
 
@@ -353,9 +353,9 @@ export default function CreateEventPage() {
     setIsSubmitting(false);
   };
 
-  const onInvalid = (fieldErrors: any) => {
-    const firstKey = Object.keys(fieldErrors)[0];
-    const message = fieldErrors[firstKey]?.message || "Please fill in all required fields.";
+  const onInvalid = (fieldErrors: FieldErrors<EventFormValues>) => {
+    const firstField = Object.values(fieldErrors).find((field) => field?.message);
+    const message = firstField?.message || "Please fill in all required fields.";
     setErrorMsg(message);
     window.scrollTo({ top: 0, behavior: "smooth" });
   };

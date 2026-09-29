@@ -19,7 +19,7 @@ export async function POST(
     if (error) throw error;
 
     return NextResponse.json({ success: true, message: 'Thanks! The event was marked as still happening.' });
-  } catch (err: any) {
+  } catch (err: unknown) {
     return NextResponse.json(
       { success: false, message: 'Could not confirm event.' },
       { status: 500 }

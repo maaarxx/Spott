@@ -33,6 +33,7 @@ import {
   saveUserSavedEvents,
   SpottAccount,
 } from "@/lib/auth-store";
+import { parseGuestLists } from "@/lib/guest-list";
 
 export default function OrganizerProfilePage({
   params,
@@ -177,13 +178,9 @@ export default function OrganizerProfilePage({
     const now = new Date();
 
     // Check guest list from localStorage
-    let guestMap: Record<string, any[]> = {};
-    if (typeof window !== "undefined") {
-      try {
-        const raw = localStorage.getItem("spott_guest_lists");
-        if (raw) guestMap = JSON.parse(raw);
-      } catch {}
-    }
+    const guestMap = typeof window !== "undefined"
+      ? parseGuestLists(localStorage.getItem("spott_guest_lists"))
+      : {};
 
     organizerEvents.forEach((ev) => {
       const guests = Array.isArray(guestMap[ev.id]) ? guestMap[ev.id].length : 0;

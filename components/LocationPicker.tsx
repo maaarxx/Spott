@@ -130,9 +130,11 @@ export default function LocationPicker({
   const [manualPinSet, setManualPinSet] = useState(false);
   const abortControllerRef = useRef<AbortController | null>(null);
   const onCoordsRef = useRef(onCoordinatesChange);
-  onCoordsRef.current = onCoordinatesChange;
   const onLocationChangeRef = useRef(onLocationChange);
-  onLocationChangeRef.current = onLocationChange;
+  useEffect(() => {
+    onCoordsRef.current = onCoordinatesChange;
+    onLocationChangeRef.current = onLocationChange;
+  }, [onCoordinatesChange, onLocationChange]);
 
   // Auto-pin location whenever user inputs text
   useEffect(() => {
@@ -185,8 +187,8 @@ export default function LocationPicker({
           const newLng = parseFloat(data[0].lon);
           onCoordsRef.current(Number(newLat.toFixed(6)), Number(newLng.toFixed(6)));
         }
-      } catch (err: any) {
-        if (err.name !== "AbortError") {
+      } catch (error: unknown) {
+        if (!(error instanceof Error) || error.name !== "AbortError") {
           // Keep current pin if online query fails
         }
       }

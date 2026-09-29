@@ -27,6 +27,7 @@ import { getStoredEvents, saveStoredEvent, saveStoredEvents, subscribeToEvents }
 import { recordEventView } from "@/lib/views-store";
 import { addNotification } from "@/lib/notifications-store";
 import { addReport } from "@/lib/reports-store";
+import type { EventData } from "@/components/EventCard";
 import { getUserProfile } from "@/lib/user-profile-store";
 import {
   getCurrentUser,
@@ -38,31 +39,35 @@ import {
   SpottAccount,
 } from "@/lib/auth-store";
 
-type EventDetail = {
-  id: string;
-  title: string;
-  description: string;
-  date: string;
-  endDate?: string;
-  price: number;
-  status: string;
-  organizer: string;
-  verified: boolean;
-  location: string;
-  address: string;
-  city: string;
-  categories: string[];
-  registrations: number;
-  latitude?: number;
-  longitude?: number;
-  confirmedAt?: string | null;
-  coverImage?: string | null;
-  image?: string | null;
-  capacity?: number | null;
-  requireApproval?: boolean;
-  cancel_reason?: string;
-  cancelled_at?: string;
+type EventDetail = EventData & { confirmations?: number };
+type GuestEntry = {
+  id?: string;
+  name?: string;
+  email: string;
+  status?: "Confirmed" | "Pending" | "Declined";
+  dateRegistered?: string;
+  ticketType?: string;
+  phone?: string;
+  notes?: string;
 };
+
+function isGuestEntry(value: unknown): value is GuestEntry {
+  return Boolean(value && typeof value === "object" && "email" in value && typeof value.email === "string");
+}
+
+function parseGuestMap(raw: string | null): Record<string, GuestEntry[]> {
+  if (!raw) return {};
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
+    return Object.fromEntries(Object.entries(parsed).map(([eventId, entries]) => [
+      eventId,
+      Array.isArray(entries) ? entries.filter(isGuestEntry) : [],
+    ]));
+  } catch {
+    return {};
+  }
+}
 
 export default function EventDetailsPage({
   params,
@@ -105,11 +110,11 @@ export default function EventDetailsPage({
       try {
         const rawGuests = localStorage.getItem("spott_guest_lists");
         if (rawGuests) {
-          const guestMap = JSON.parse(rawGuests);
+      const guestMap = parseGuestMap(rawGuests);
           if (Array.isArray(guestMap[id])) {
             hasGuestList = true;
             guestListCount = guestMap[id].filter(
-              (a: any) => a.status === "Confirmed"
+              (attendee) => attendee.status === "Confirmed"
             ).length;
           }
         }
@@ -151,11 +156,11 @@ export default function EventDetailsPage({
         try {
           const rawGuests = localStorage.getItem("spott_guest_lists");
           if (rawGuests) {
-            const guestMap = JSON.parse(rawGuests);
+            const guestMap = parseGuestMap(rawGuests);
             const list = guestMap[id];
             if (Array.isArray(list)) {
               const matched = list.find(
-                (a: any) => a.email?.toLowerCase() === user.email.toLowerCase()
+                (attendee) => attendee.email.toLowerCase() === user.email.toLowerCase()
               );
               if (matched) {
                 foundStatus = matched.status || "Confirmed";
@@ -193,18 +198,18 @@ export default function EventDetailsPage({
       recordEventView(id, { organizer: foundLocal?.organizer || initialEvent?.organizer });
     }
     if (foundLocal) {
-      setEvent(foundLocal as any);
+      setEvent(foundLocal);
       const accurateCount = getAccurateRsvps(foundLocal.registrations || 0, userStatus.isConfirmed);
       setRsvpCount(accurateCount);
-      setConfirmationsCount((foundLocal as any).confirmations || 0);
+      setConfirmationsCount(foundLocal.confirmations || 0);
 
       // If guest list exists for this event, sync the confirmed registrations count
       try {
         const rawGuests = localStorage.getItem("spott_guest_lists");
         if (rawGuests) {
-          const guestMap = JSON.parse(rawGuests);
+          const guestMap = parseGuestMap(rawGuests);
           if (Array.isArray(guestMap[id])) {
-            const confirmedCount = guestMap[id].filter((a: any) => a.status === "Confirmed").length;
+            const confirmedCount = guestMap[id].filter((attendee) => attendee.status === "Confirmed").length;
             if (foundLocal.registrations !== confirmedCount) {
               foundLocal.registrations = confirmedCount;
               const updated = stored.map((e) => (e.id === id ? { ...e, registrations: confirmedCount } : e));
@@ -219,7 +224,7 @@ export default function EventDetailsPage({
         try {
           const res = await fetch(`/api/events/${id}`);
           if (!res.ok) throw new Error("Failed to fetch event");
-          const data = await res.json();
+          const data = await res.json() as EventDetail;
           if (data && data.title) {
             setEvent(data);
             const accurateCount = getAccurateRsvps(data.registrations || 0, userStatus.isConfirmed);
@@ -229,7 +234,7 @@ export default function EventDetailsPage({
         } catch {
           const fallback = DEFAULT_EVENTS.find((e) => e.id === id);
           if (fallback) {
-            setEvent(fallback as any);
+            setEvent(fallback);
             const accurateCount = getAccurateRsvps(fallback.registrations || 0, userStatus.isConfirmed);
             setRsvpCount(accurateCount);
           }
@@ -241,7 +246,7 @@ export default function EventDetailsPage({
 
     const loadAllAvailable = async () => {
       const local = getStoredEvents();
-      setAllAvailableEvents(local as any);
+      setAllAvailableEvents(local);
 
       try {
         const res = await fetch("/api/events");
@@ -252,11 +257,11 @@ export default function EventDetailsPage({
             const freshLocal = getStoredEvents();
             const pool = [...freshLocal, ...apiData];
             const seen = new Set<string>();
-            const deduped: EventDetail[] = [];
+            const deduped: EventData[] = [];
             for (const item of pool) {
               if (!seen.has(item.id)) {
                 seen.add(item.id);
-                deduped.push(item as any);
+                deduped.push(item);
               }
             }
             setAllAvailableEvents(deduped);
@@ -274,9 +279,9 @@ export default function EventDetailsPage({
       const accurateCount = getAccurateRsvps(match?.registrations ?? 0, currentStatus.isConfirmed);
       setRsvpCount(accurateCount);
       if (match) {
-        setEvent((prev) => (prev ? { ...prev, ...match, registrations: accurateCount } : match as any));
+        setEvent((prev) => (prev ? { ...prev, ...match, registrations: accurateCount } : match));
       }
-      setAllAvailableEvents(currentStored as any);
+      setAllAvailableEvents(currentStored);
     };
 
     const unsubscribeEvents = subscribeToEvents(handleSyncUpdate);
@@ -376,10 +381,7 @@ export default function EventDetailsPage({
 
       // 3. Update organizer guest lists in spott_guest_lists
       const rawGuests = localStorage.getItem("spott_guest_lists");
-      let guestMap: Record<string, any[]> = {};
-      try {
-        guestMap = rawGuests ? JSON.parse(rawGuests) : {};
-      } catch {}
+      const guestMap = parseGuestMap(rawGuests);
 
       const currentGuestList = guestMap[id] || [];
       const alreadyAttendingIdx = currentGuestList.findIndex(
@@ -467,10 +469,7 @@ export default function EventDetailsPage({
 
       // 3. Remove attendee from organizer guest lists
       const rawGuests = localStorage.getItem("spott_guest_lists");
-      let guestMap: Record<string, any[]> = {};
-      try {
-        guestMap = rawGuests ? JSON.parse(rawGuests) : {};
-      } catch {}
+      const guestMap = parseGuestMap(rawGuests);
 
       const userEmail = user.email.trim().toLowerCase();
       const userName = (user.name || "").trim().toLowerCase();

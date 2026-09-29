@@ -21,34 +21,31 @@ import {
   OrganizerProfile,
 } from "@/lib/organizer-store";
 import { subscribeToEvents, saveStoredEvents } from "@/lib/events-store";
+import { useHydrated } from "@/lib/use-hydrated";
+import type { EventData } from "@/components/EventCard";
 
 export default function OrganizersDirectoryPage() {
+  const mounted = useHydrated();
   const [organizers, setOrganizers] = useState<
     Array<OrganizerProfile & { eventCount: number; isVerified: boolean }>
-  >([]);
+  >(() => getAllOrganizersList());
   const [searchQuery, setSearchQuery] = useState("");
   const [filterType, setFilterType] = useState<"all" | "verified">("all");
 
-  const syncOrganizers = async () => {
-    setOrganizers(getAllOrganizersList());
-
-    try {
-      const res = await fetch("/api/events");
-      if (res.ok) {
-        const apiData = await res.json();
-        if (Array.isArray(apiData) && apiData.length > 0) {
-          saveStoredEvents(apiData);
-          setOrganizers(getAllOrganizersList(apiData));
-        }
-      }
-    } catch {}
-  };
-
   useEffect(() => {
-    syncOrganizers();
+    let active = true;
+    fetch("/api/events")
+      .then((res) => (res.ok ? res.json() : []))
+      .then((apiData: EventData[]) => {
+        if (!active || !Array.isArray(apiData) || apiData.length === 0) return;
+        saveStoredEvents(apiData);
+        setOrganizers(getAllOrganizersList(apiData));
+      })
+      .catch(() => {});
     const unsubProfile = subscribeToOrganizerProfile(() => setOrganizers(getAllOrganizersList()));
     const unsubEvents = subscribeToEvents(() => setOrganizers(getAllOrganizersList()));
     return () => {
+      active = false;
       unsubProfile();
       unsubEvents();
     };
@@ -76,6 +73,8 @@ export default function OrganizersDirectoryPage() {
   const verifiedCount = useMemo(() => {
     return organizers.filter((o) => o.isVerified).length;
   }, [organizers]);
+
+  if (!mounted) return <div className="min-h-[60vh]" aria-busy="true" />;
 
   return (
     <div className="min-h-screen bg-paper pb-20">
