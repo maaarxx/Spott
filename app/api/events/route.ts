@@ -253,6 +253,15 @@ export async function GET(request: Request) {
     const { data, error } = await Promise.race([query, timeoutPromise]);
 
     if (error || !data) {
+      // Don't silently turn database failures into an empty public feed. This
+      // keeps the response safe while making the underlying failure visible
+      // in the Vercel function logs for diagnosis.
+      const databaseError = error && "code" in error ? error : null;
+      console.error("Failed to load public events from Supabase", {
+        code: databaseError?.code,
+        message: error?.message || (!data ? "Database returned no event data" : undefined),
+        hint: databaseError?.hint,
+      });
       return NextResponse.json(includeDashboardEvents ? [] : filterDefaultEvents(search, category, city));
     }
 
