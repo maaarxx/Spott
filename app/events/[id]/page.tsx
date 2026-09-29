@@ -17,9 +17,6 @@ import {
   Lock,
   X,
   Users,
-  Bell,
-  BellRing,
-  CalendarPlus,
   AlertTriangle,
 } from "lucide-react";
 import Link from "next/link";
@@ -30,13 +27,7 @@ import { getStoredEvents, saveStoredEvent, saveStoredEvents, subscribeToEvents }
 import { recordEventView } from "@/lib/views-store";
 import { addNotification } from "@/lib/notifications-store";
 import { addReport } from "@/lib/reports-store";
-import {
-  setEventReminder,
-  removeEventReminder,
-  getUserRemindersForEvent,
-  EventReminder,
-  subscribeToReminders,
-} from "@/lib/reminders-store";
+import { getUserProfile } from "@/lib/user-profile-store";
 import {
   getCurrentUser,
   getUserSavedEvents,
@@ -46,29 +37,6 @@ import {
   SPOTT_ACCOUNTS,
   SpottAccount,
 } from "@/lib/auth-store";
-
-function buildGoogleCalendarUrl(evt: { title: string; description?: string; date: string; endDate?: string; location?: string; city?: string }): string {
-  try {
-    const startIso = new Date(evt.date.replace(" ", "T")).toISOString().replace(/-|:|\.\d\d\d/g, "");
-    let endIso = startIso;
-    if (evt.endDate) {
-      endIso = new Date(evt.endDate.replace(" ", "T")).toISOString().replace(/-|:|\.\d\d\d/g, "");
-    } else {
-      const endD = new Date(new Date(evt.date.replace(" ", "T")).getTime() + 2 * 60 * 60 * 1000);
-      endIso = endD.toISOString().replace(/-|:|\.\d\d\d/g, "");
-    }
-    const params = new URLSearchParams({
-      action: "TEMPLATE",
-      text: evt.title,
-      dates: `${startIso}/${endIso}`,
-      details: evt.description || `Event on Spott: ${evt.title}`,
-      location: evt.location ? `${evt.location}${evt.city ? `, ${evt.city}` : ""}` : "",
-    });
-    return `https://calendar.google.com/calendar/render?${params.toString()}`;
-  } catch {
-    return "https://calendar.google.com";
-  }
-}
 
 type EventDetail = {
   id: string;
@@ -122,57 +90,6 @@ export default function EventDetailsPage({
   const [isCancellingRsvp, setIsCancellingRsvp] = useState(false);
   const [allAvailableEvents, setAllAvailableEvents] = useState<EventDetail[]>([]);
   const hasTrackedView = useRef(false);
-
-  // Event reminders state
-  const [userReminders, setUserReminders] = useState<EventReminder[]>([]);
-  const [reminderDropdownOpen, setReminderDropdownOpen] = useState(false);
-  const [isSettingReminder, setIsSettingReminder] = useState(false);
-
-  useEffect(() => {
-    if (typeof window === "undefined") return;
-    const update = () => {
-      const u = getCurrentUser();
-      if (u) {
-        setUserReminders(getUserRemindersForEvent(id, u.email));
-      } else {
-        setUserReminders(getUserRemindersForEvent(id, "anonymous"));
-      }
-    };
-    update();
-    const unsub = subscribeToReminders(update);
-    return () => unsub();
-  }, [id, currentUser]);
-
-  const handleSetReminderOption = async (label: string, mins: number) => {
-    if (!event) return;
-    setIsSettingReminder(true);
-    const user = currentUser?.email || "anonymous";
-    const res = await setEventReminder({
-      eventId: event.id,
-      eventTitle: event.title,
-      eventDate: event.date,
-      offsetLabel: label,
-      offsetMinutes: mins,
-      userEmailOrId: user,
-    });
-    setIsSettingReminder(false);
-    setReminderDropdownOpen(false);
-
-    if (res.success) {
-      setUserReminders(getUserRemindersForEvent(event.id, user));
-      showToast(`✓ Reminder set for ${label}!`);
-    } else {
-      showToast(`⚠️ ${res.error || "Failed to set reminder."}`);
-    }
-  };
-
-  const handleRemoveReminder = async (label?: string) => {
-    if (!event) return;
-    const user = currentUser?.email || "anonymous";
-    await removeEventReminder(event.id, label, user);
-    setUserReminders(getUserRemindersForEvent(event.id, user));
-    showToast(label ? `✓ Removed reminder for ${label}.` : "✓ Reminder removed.");
-  };
 
   const showToast = (msg: string) => {
     setToastMessage(msg);
@@ -437,7 +354,7 @@ export default function EventDetailsPage({
 
       // 1. Update registered event IDs for user
       const currentRegs = getUserRegisteredEvents(user.email);
-      let regIds = [...currentRegs];
+      const regIds = [...currentRegs];
       if (!regIds.includes(id)) regIds.push(id);
       saveUserRegisteredEvents(regIds, user.email);
 
@@ -464,7 +381,7 @@ export default function EventDetailsPage({
         guestMap = rawGuests ? JSON.parse(rawGuests) : {};
       } catch {}
 
-      let currentGuestList = guestMap[id] || [];
+      const currentGuestList = guestMap[id] || [];
       const alreadyAttendingIdx = currentGuestList.findIndex(
         (a) => a.email?.toLowerCase() === user.email.toLowerCase() || a.id === user.email
       );
@@ -475,7 +392,7 @@ export default function EventDetailsPage({
         status: newStatus,
         dateRegistered: new Date().toISOString().split("T")[0],
         ticketType: "General Admission",
-        phone: "+63 917 123 4567",
+        phone: getUserProfile(user.email).phone,
         notes: isFull ? "Waitlist (Event Full)" : requireApproval ? "Awaiting Screening" : "Direct RSVP",
       };
 
@@ -1142,120 +1059,6 @@ export default function EventDetailsPage({
                   <Share2 className="w-4 h-4" />
                   <span>Share</span>
                 </button>
-              </div>
-
-              <div className="text-[11px] text-muted text-center">
-                Last updated: {event.confirmedAt ? format(new Date(event.confirmedAt), "MMM d, yyyy · h:mm a") : "Recently updated"}
-              </div>
-
-              <hr className="border-line m-0" />
-
-              {/* Quick Actions: Google Calendar & Event Reminders */}
-              <div className="space-y-2.5">
-                <span className="text-[11px] font-bold text-muted uppercase tracking-wider block">
-                  Quick Actions
-                </span>
-
-                {/* Add to Google Calendar */}
-                <a
-                  href={buildGoogleCalendarUrl(event)}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="w-full flex items-center gap-2.5 px-3.5 py-2.5 rounded-xl border border-line hover:border-[#ff6b35] hover:bg-[#fff8f5] text-xs font-bold text-ink hover:text-[#ff6b35] transition-all no-underline group"
-                >
-                  <CalendarPlus className="w-4 h-4 text-[#ff6b35] shrink-0" />
-                  <span className="flex-1">Add to Google Calendar</span>
-                  <ExternalLink className="w-3.5 h-3.5 text-muted group-hover:text-[#ff6b35] shrink-0 transition-colors" />
-                </a>
-
-                {/* Set Event Reminder */}
-                <div className="relative">
-                  <button
-                    type="button"
-                    onClick={() => setReminderDropdownOpen((prev) => !prev)}
-                    className={`w-full flex items-center gap-2.5 px-3.5 py-2.5 rounded-xl border text-xs font-bold transition-all cursor-pointer text-left ${
-                      userReminders.length > 0
-                        ? "border-[#ff6b35] bg-[#fff8f5] text-[#ff6b35]"
-                        : "border-line hover:border-[#ff6b35] hover:bg-[#fff8f5] text-ink hover:text-[#ff6b35]"
-                    }`}
-                  >
-                    {userReminders.length > 0 ? (
-                      <BellRing className="w-4 h-4 text-[#ff6b35] shrink-0" />
-                    ) : (
-                      <Bell className="w-4 h-4 text-[#ff6b35] shrink-0" />
-                    )}
-                    <span className="flex-1 truncate">
-                      {userReminders.length > 0
-                        ? `Reminder Set (${userReminders[0].offsetLabel})`
-                        : "Set Event Reminder"}
-                    </span>
-                    <span className="text-[10px] text-muted font-normal shrink-0">
-                      {userReminders.length > 0 ? "Change" : "Select"}
-                    </span>
-                  </button>
-
-                  {reminderDropdownOpen && (
-                    <div className="absolute left-0 right-0 bottom-full mb-1 sm:bottom-auto sm:top-full sm:mt-1 bg-white border border-[#e6e1d8] rounded-2xl shadow-xl z-30 p-3 space-y-1.5 animate-in fade-in zoom-in-95">
-                      <div className="flex items-center justify-between px-2 pb-1 border-b border-gray-100">
-                        <p className="text-[11px] font-black uppercase tracking-wider text-[#666]">
-                          Remind me before event
-                        </p>
-                        <button
-                          type="button"
-                          onClick={() => setReminderDropdownOpen(false)}
-                          className="text-gray-400 hover:text-gray-600 p-0.5 cursor-pointer"
-                        >
-                          <X className="w-3.5 h-3.5" />
-                        </button>
-                      </div>
-
-                      {[
-                        { label: "1 day before", mins: 1440 },
-                        { label: "3 hours before", mins: 180 },
-                        { label: "1 hour before", mins: 60 },
-                        { label: "30 minutes before", mins: 30 },
-                      ].map(({ label, mins }) => {
-                        const isActive = userReminders.some((r) => r.offsetLabel === label);
-                        return (
-                          <button
-                            key={mins}
-                            type="button"
-                            disabled={isSettingReminder}
-                            onClick={() => handleSetReminderOption(label, mins)}
-                            className={`w-full flex items-center justify-between px-3 py-2 rounded-xl text-xs font-bold transition-colors cursor-pointer text-left ${
-                              isActive
-                                ? "bg-[#fff0e8] text-[#ff6b35]"
-                                : "text-ink hover:bg-gray-50"
-                            }`}
-                          >
-                            <div className="flex items-center gap-2">
-                              <Clock className="w-3.5 h-3.5 text-[#ff6b35] shrink-0" />
-                              <span>{label}</span>
-                            </div>
-                            {isActive && (
-                              <span className="text-[10px] text-[#ff6b35] font-black uppercase">Active</span>
-                            )}
-                          </button>
-                        );
-                      })}
-
-                      {userReminders.length > 0 && (
-                        <div className="pt-1 border-t border-gray-100">
-                          <button
-                            type="button"
-                            onClick={() => {
-                              handleRemoveReminder();
-                              setReminderDropdownOpen(false);
-                            }}
-                            className="w-full px-3 py-1.5 rounded-lg text-xs font-bold text-rose-600 hover:bg-rose-50 transition-colors cursor-pointer text-center"
-                          >
-                            Remove Reminder
-                          </button>
-                        </div>
-                      )}
-                    </div>
-                  )}
-                </div>
               </div>
 
               <hr className="border-line m-0" />

@@ -6,6 +6,7 @@ import { useState, Suspense, useEffect } from "react";
 import {
   LayoutGrid,
   CalendarDays,
+  Archive,
   PlusCircle,
   Users,
   BarChart3,
@@ -43,6 +44,12 @@ const navItems: NavItem[] = [
     href: "/organizer?tab=events",
     label: "My Events",
     icon: CalendarDays,
+  },
+  {
+    id: "archive",
+    href: "/organizer?tab=archive",
+    label: "Archive",
+    icon: Archive,
   },
   {
     id: "create",

@@ -217,7 +217,7 @@ export default function NotificationsPage() {
             </div>
             <h3 className="text-base font-bold text-ink mb-1">No notifications yet</h3>
             <p className="text-xs text-muted max-w-sm mx-auto">
-              You're all caught up! Updates from organizers, event schedule changes, and accreditation decisions will appear here in real time.
+              You&apos;re all caught up! Updates from organizers, event schedule changes, and accreditation decisions will appear here in real time.
             </p>
           </div>
         ) : (

@@ -4,6 +4,7 @@ import { getCurrentUser } from "./auth-store";
 import { getStoredEvents } from "./events-store";
 import { DEFAULT_EVENTS } from "./default-events";
 import { getVerificationState } from "./verification-store";
+import type { EventData } from "@/components/EventCard";
 
 export interface OrganizerProfile {
   name: string;
@@ -160,7 +161,7 @@ export function subscribeToOrganizerProfile(callback: () => void): () => void {
  * Returns a list of all distinct organizers found in the system
  * (from registered profiles, events, and default groups)
  */
-export function getAllOrganizersList(extraEvents?: any[]): Array<OrganizerProfile & { eventCount: number; isVerified: boolean }> {
+export function getAllOrganizersList(extraEvents?: EventData[]): Array<OrganizerProfile & { eventCount: number; isVerified: boolean }> {
   const orgMap = new Map<string, OrganizerProfile>();
 
   // 1. Seed with known default profiles
@@ -172,7 +173,7 @@ export function getAllOrganizersList(extraEvents?: any[]): Array<OrganizerProfil
   const storedEvents = typeof window !== "undefined" ? getStoredEvents() : [];
   const eventPool = [...storedEvents, ...DEFAULT_EVENTS, ...(extraEvents || [])];
   const seenEventIds = new Set<string>();
-  const allEvents: any[] = [];
+  const allEvents: EventData[] = [];
   for (const ev of eventPool) {
     if (!seenEventIds.has(ev.id)) {
       seenEventIds.add(ev.id);

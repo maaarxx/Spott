@@ -15,7 +15,7 @@ export const SIGNUP_STORE_KEY = "spott_signed_up_users";
 export const USERS_UPDATED_EVENT = "spott_users_updated";
 export const DELETED_USERS_KEY = "spott_deleted_user_ids";
 
-const currentYear = new Date().getFullYear();
+const seedYear = 2026;
 
 // Seed initial users with deterministic ISO dates
 export const INITIAL_ADMIN_USERS: AdminUser[] = [
@@ -25,8 +25,8 @@ export const INITIAL_ADMIN_USERS: AdminUser[] = [
     email: "admin@spott.ph",
     role: "Admin",
     status: "Active",
-    joined: `Jan 01, ${currentYear}`,
-    joinedAt: new Date(currentYear, 0, 1, 8, 0, 0).toISOString(),
+    joined: `Sep 20, ${seedYear}`,
+    joinedAt: new Date(seedYear, 8, 20, 8, 0, 0).toISOString(),
   },
   {
     id: "u-2",
@@ -34,8 +34,8 @@ export const INITIAL_ADMIN_USERS: AdminUser[] = [
     email: "mcg@spott.ph",
     role: "Organizer",
     status: "Active",
-    joined: `Jan 01, ${currentYear}`,
-    joinedAt: new Date(currentYear, 0, 1, 9, 30, 0).toISOString(),
+    joined: `Sep 20, ${seedYear}`,
+    joinedAt: new Date(seedYear, 8, 20, 9, 30, 0).toISOString(),
   },
   {
     id: "u-3",
@@ -43,8 +43,8 @@ export const INITIAL_ADMIN_USERS: AdminUser[] = [
     email: "jdc@spott.ph",
     role: "Student",
     status: "Active",
-    joined: `Jan 01, ${currentYear}`,
-    joinedAt: new Date(currentYear, 0, 1, 10, 15, 0).toISOString(),
+    joined: `Sep 20, ${seedYear}`,
+    joinedAt: new Date(seedYear, 8, 20, 10, 15, 0).toISOString(),
   },
   {
     id: "u-4",
@@ -52,8 +52,8 @@ export const INITIAL_ADMIN_USERS: AdminUser[] = [
     email: "gamer@spott.ph",
     role: "Organizer",
     status: "Active",
-    joined: `Jan 15, ${currentYear}`,
-    joinedAt: new Date(currentYear, 0, 15, 14, 0, 0).toISOString(),
+    joined: `Sep 29, ${seedYear}`,
+    joinedAt: new Date(seedYear, 8, 29, 14, 0, 0).toISOString(),
   },
   {
     id: "u-5",
@@ -61,8 +61,8 @@ export const INITIAL_ADMIN_USERS: AdminUser[] = [
     email: "hobby@spott.ph",
     role: "Organizer",
     status: "Active",
-    joined: `Feb 01, ${currentYear}`,
-    joinedAt: new Date(currentYear, 1, 1, 11, 20, 0).toISOString(),
+    joined: `Sep 29, ${seedYear}`,
+    joinedAt: new Date(seedYear, 8, 29, 11, 20, 0).toISOString(),
   },
   {
     id: "u-6",
@@ -70,8 +70,8 @@ export const INITIAL_ADMIN_USERS: AdminUser[] = [
     email: "tech@spott.ph",
     role: "Organizer",
     status: "Active",
-    joined: `Feb 10, ${currentYear}`,
-    joinedAt: new Date(currentYear, 1, 10, 16, 45, 0).toISOString(),
+    joined: `Sep 29, ${seedYear}`,
+    joinedAt: new Date(seedYear, 8, 29, 16, 45, 0).toISOString(),
   },
 ];
 
@@ -227,8 +227,13 @@ export function getAdminUsers(): AdminUser[] {
       if (!existing) {
         list.push({ ...initU });
         updated = true;
-      } else if (!existing.joinedAt) {
+      } else if (
+        !existing.joinedAt ||
+        new Date(existing.joinedAt).getTime() !== new Date(initU.joinedAt || "").getTime() ||
+        existing.joined !== initU.joined
+      ) {
         existing.joinedAt = initU.joinedAt;
+        existing.joined = initU.joined;
         updated = true;
       }
     }
@@ -444,9 +449,11 @@ export function deleteAdminUser(user: { id: string; email: string; name?: string
       if (signupsRaw) {
         const signups = JSON.parse(signupsRaw);
         if (Array.isArray(signups)) {
-          const filtered = signups.filter(
-            (s: any) => s?.email?.trim().toLowerCase() !== emailLower
-          );
+          const filtered = signups.filter((signup: unknown) => {
+            if (!signup || typeof signup !== "object") return true;
+            const email = (signup as { email?: unknown }).email;
+            return typeof email !== "string" || email.trim().toLowerCase() !== emailLower;
+          });
           localStorage.setItem(SIGNUP_STORE_KEY, JSON.stringify(filtered));
         }
       }

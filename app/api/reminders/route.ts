@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import { createAdminClient, getAuthenticatedRole } from '@/lib/supabase-server';
+import { errorMessage } from '@/lib/error-message';
 
 // Server-side in-memory cache for event reminders resilience
 interface StoredReminder {
@@ -51,8 +52,8 @@ export async function GET(request: Request) {
     if (userId) list = list.filter((r) => r.user_id === userId);
 
     return NextResponse.json(list);
-  } catch (error: any) {
-    return NextResponse.json({ error: error?.message || 'Failed to fetch reminders' }, { status: 500 });
+  } catch (error: unknown) {
+    return NextResponse.json({ error: errorMessage(error, 'Failed to fetch reminders') }, { status: 500 });
   }
 }
 
@@ -113,8 +114,8 @@ export async function POST(request: Request) {
     } catch {}
 
     return NextResponse.json({ success: true, reminder: newRecord }, { status: 201 });
-  } catch (error: any) {
-    return NextResponse.json({ error: error?.message || 'Internal Server Error' }, { status: 500 });
+  } catch (error: unknown) {
+    return NextResponse.json({ error: errorMessage(error) }, { status: 500 });
   }
 }
 
@@ -150,7 +151,7 @@ export async function DELETE(request: Request) {
     } catch {}
 
     return NextResponse.json({ success: true, message: 'Reminder deleted' });
-  } catch (error: any) {
-    return NextResponse.json({ error: error?.message || 'Internal Server Error' }, { status: 500 });
+  } catch (error: unknown) {
+    return NextResponse.json({ error: errorMessage(error) }, { status: 500 });
   }
 }

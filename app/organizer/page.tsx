@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, Suspense } from "react";
+import { useState, Suspense, useMemo } from "react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import {
@@ -33,7 +33,6 @@ import {
   MoreVertical,
   Activity,
   PieChart,
-  ArrowUp,
   SlidersHorizontal,
   X,
   Zap,
@@ -63,6 +62,7 @@ import PdfViewerModal from "@/components/PdfViewerModal";
 import { addNotification, removeNotificationsForEvent } from "@/lib/notifications-store";
 import { getStoredEvents, saveStoredEvent, saveStoredEvents, deleteStoredEvent, subscribeToEvents } from "@/lib/events-store";
 import { getCurrentUser } from "@/lib/auth-store";
+import type { EventData } from "@/components/EventCard";
 import {
   getEventViews,
   getEventUniqueViews,
@@ -117,7 +117,10 @@ export interface OrganizerEvent {
   capacity: number;
   views: number;
   uniqueViews?: number;
-  status: "Active" | "Draft" | "Past" | "Cancelled";
+  status: "Active" | "Draft" | "Archived" | "Cancelled";
+  archivedAt?: string | null;
+  archiveExpiresAt?: string | null;
+  createdAt?: string | null;
   location: string;
   category: string;
   price: number;
@@ -125,33 +128,24 @@ export interface OrganizerEvent {
   cancelReason?: string | null;
 }
 
+interface StoredGuestEntry {
+  dateRegistered?: string;
+  registeredAt?: string;
+  status?: string;
+  email?: string;
+  name?: string;
+}
+
 const initialEvents: OrganizerEvent[] = [];
 
 // Daily RSVP data for Organizer Analytics Chart
-const emptyWeeklyRsvpData = [
-  { day: "Mon", count: 0, height: 4 },
-  { day: "Tue", count: 0, height: 4 },
-  { day: "Wed", count: 0, height: 4 },
-  { day: "Thu", count: 0, height: 4 },
-  { day: "Fri", count: 0, height: 4 },
-  { day: "Sat", count: 0, height: 4 },
-  { day: "Sun", count: 0, height: 4 },
-];
-
-const emptyHourlyTraffic = [
-  { hour: "8 AM", val: 0 },
-  { hour: "10 AM", val: 0 },
-  { hour: "12 PM", val: 0 },
-  { hour: "2 PM", val: 0 },
-  { hour: "4 PM", val: 0 },
-  { hour: "6 PM", val: 0 },
-  { hour: "8 PM", val: 0 },
-  { hour: "10 PM", val: 0 },
-];
-
 function OrganizerContent() {
   const searchParams = useSearchParams();
   const activeTab = searchParams.get("tab") || "overview";
+  const [analyticsMonth, setAnalyticsMonth] = useState(() => {
+    const now = new Date();
+    return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
+  });
 
   const [events, setEvents] = useState<OrganizerEvent[]>([]);
   const [searchQuery, setSearchQuery] = useState("");
@@ -167,6 +161,7 @@ function OrganizerContent() {
   const [previewDocName, setPreviewDocName] = useState<string | null>(null);
   const [verBannerFadingOut, setVerBannerFadingOut] = useState(false);
   const [verBannerHidden, setVerBannerHidden] = useState(false);
+  const [verificationHydrated, setVerificationHydrated] = useState(false);
 
   // Profile editing state
   const [profileData, setProfileData] = useState<OrganizerProfile>(() => {
@@ -227,18 +222,40 @@ function OrganizerContent() {
   };
 
   useEffect(() => {
+    if (!verificationHydrated) return;
+    const orgSlug = currentOrgName.trim().toLowerCase().replace(/[^a-z0-9_-]/g, "_");
+    const dismissedKey = `spott_verification_overview_dismissed_${orgSlug}`;
+
     if (verState.status === "approved") {
+      let wasDismissed = false;
+      try {
+        wasDismissed = localStorage.getItem(dismissedKey) === "true";
+      } catch {}
+      if (wasDismissed) {
+        setVerBannerFadingOut(false);
+        setVerBannerHidden(true);
+        return;
+      }
+      setVerBannerHidden(false);
       const fadeTimer = setTimeout(() => setVerBannerFadingOut(true), 2000);
-      const hideTimer = setTimeout(() => setVerBannerHidden(true), 2700);
+      const hideTimer = setTimeout(() => {
+        try {
+          localStorage.setItem(dismissedKey, "true");
+        } catch {}
+        setVerBannerHidden(true);
+      }, 2700);
       return () => {
         clearTimeout(fadeTimer);
         clearTimeout(hideTimer);
       };
     } else {
+      try {
+        localStorage.removeItem(dismissedKey);
+      } catch {}
       setVerBannerFadingOut(false);
       setVerBannerHidden(false);
     }
-  }, [verState.status]);
+  }, [verState.status, currentOrgName, verificationHydrated]);
 
   // Upload modal state
   const [uploadModalOpen, setUploadModalOpen] = useState(false);
@@ -252,7 +269,7 @@ function OrganizerContent() {
     "Priority verification request for upcoming campus event season."
   );
 
-  const mapToOrganizerEvents = (list: any[]): OrganizerEvent[] => {
+  const mapToOrganizerEvents = (list: EventData[]): OrganizerEvent[] => {
     return list.map((e) => {
       let timeStr = "TBA";
       let dateStr = e.date || "";
@@ -274,9 +291,18 @@ function OrganizerContent() {
         capacity: typeof e.capacity === "number" ? e.capacity : (e.capacity ? Number(e.capacity) : 100),
         views: getEventViews(e.id, e.registrations || 0),
         uniqueViews: getEventUniqueViews(e.id, e.registrations || 0),
-        status: (e.status === "cancelled" ? "Cancelled" : e.status === "active" ? "Active" : e.status === "draft" ? "Draft" : e.status === "past" ? "Past" : "Active") as any,
-        cancelledAt: (e as any).cancelled_at || (e as any).cancelledAt || null,
-        cancelReason: (e as any).cancel_reason || (e as any).cancelReason || null,
+        status: (["archived", "past", "completed", "done"].includes(String(e.status).toLowerCase())
+          ? "Archived"
+          : e.status === "cancelled"
+            ? "Cancelled"
+            : e.status === "draft"
+              ? "Draft"
+              : "Active") as OrganizerEvent["status"],
+        archivedAt: e.archivedAt || null,
+        archiveExpiresAt: e.archiveExpiresAt || null,
+        createdAt: e.createdAt || e.confirmedAt || null,
+        cancelledAt: e.cancelled_at || e.cancelledAt || null,
+        cancelReason: e.cancel_reason || e.cancelReason || null,
         location: e.location || "Campus Venue",
         category: e.categories?.[0] || "School Events",
         price: e.price || 0,
@@ -288,7 +314,7 @@ function OrganizerContent() {
     const user = getCurrentUser();
     const myOrg = (user?.organization || user?.name || "Metro Creative Group").trim().toLowerCase();
 
-    const filterForOrg = (list: any[]) => {
+    const filterForOrg = (list: EventData[]) => {
       return list.filter((e) => isOrgEvent(e.organizer, myOrg));
     };
 
@@ -330,7 +356,7 @@ function OrganizerContent() {
     }
 
     try {
-      const res = await fetch("/api/events");
+      const res = await fetch("/api/events?scope=organizer");
       if (res.ok) {
         const apiData = await res.json();
         if (Array.isArray(apiData) && apiData.length > 0) {
@@ -370,6 +396,7 @@ function OrganizerContent() {
     const orgName = user?.organization || user?.name || "Metro Creative Group";
     setCurrentOrgName(orgName);
     setVerState(getVerificationState(orgName));
+    setVerificationHydrated(true);
 
     const handleUpdate = () => {
       const u = getCurrentUser();
@@ -419,24 +446,81 @@ function OrganizerContent() {
     showAlert(`Removed "${name}" from uploaded credentials.`);
   };
 
-  const filteredEvents = events.filter((e) => {
+  const visibleEvents = activeTab === "archive"
+    ? events.filter((event) => event.status === "Archived")
+    : events.filter((event) => event.status !== "Archived");
+  const filteredEvents = visibleEvents.filter((e) => {
     const matchesSearch =
       e.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
       e.location.toLowerCase().includes(searchQuery.toLowerCase());
-    const matchesStatus = statusFilter === "All" || e.status === statusFilter;
+    const matchesStatus = activeTab === "archive" || statusFilter === "All" || e.status === statusFilter;
     const catMatch = categoryFilter === "All" || matchesCategory(e.category, categoryFilter);
     return matchesSearch && matchesStatus && catMatch;
   });
 
-  const totalEvents = events.length;
-  const totalRSVPs = events.reduce((acc, curr) => acc + curr.rsvps, 0);
-  const totalViews = events.reduce((acc, curr) => acc + curr.views, 0);
-  const totalUniqueViews = events.reduce((acc, curr) => acc + (curr.uniqueViews || Math.max(1, Math.round(curr.views * 0.72))), 0);
+  const monthlyRsvpStats = useMemo(() => {
+    const [year, month] = analyticsMonth.split("-").map(Number);
+    const start = new Date(year, month - 1, 1);
+    const end = new Date(year, month, 1);
+    const weekCount = Math.ceil(new Date(year, month, 0).getDate() / 7);
+    const weeks = Array.from({ length: weekCount }, (_, index) => ({ label: `Week ${index + 1}`, count: 0 }));
+    const statusCounts = { Confirmed: 0, Pending: 0, Declined: 0 };
+    const attendeeVisits = new Map<string, number>();
+    let total = 0;
+    try {
+      const guestMap: Record<string, StoredGuestEntry[]> = JSON.parse(localStorage.getItem("spott_guest_lists") || "{}");
+      for (const event of events) {
+        const list = Array.isArray(guestMap[event.id]) ? guestMap[event.id] : [];
+        for (const attendee of list) {
+          const registeredAt = new Date(attendee.dateRegistered || attendee.registeredAt || "");
+          if (!Number.isFinite(registeredAt.getTime()) || registeredAt < start || registeredAt >= end) continue;
+          total += 1;
+          if (attendee.status === "Confirmed" || attendee.status === "Pending" || attendee.status === "Declined") {
+            statusCounts[attendee.status] += 1;
+          }
+          const bucket = Math.min(weeks.length - 1, Math.floor((registeredAt.getDate() - 1) / 7));
+          weeks[bucket].count += 1;
+          const attendeeKey = String(attendee.email || attendee.name || "unknown").trim().toLowerCase();
+          attendeeVisits.set(attendeeKey, (attendeeVisits.get(attendeeKey) || 0) + 1);
+        }
+      }
+    } catch {}
+    const uniqueAttendees = attendeeVisits.size;
+    const repeatAttendees = Array.from(attendeeVisits.values()).filter((count) => count > 1).length;
+    const maxWeek = Math.max(...weeks.map((week) => week.count), 1);
+    return {
+      total,
+      statusCounts,
+      uniqueAttendees,
+      repeatRate: uniqueAttendees ? Math.round((repeatAttendees / uniqueAttendees) * 100) : 0,
+      weeks: weeks.map((week) => ({ ...week, height: week.count ? Math.max(12, Math.round((week.count / maxWeek) * 100)) : 4 })),
+      start,
+      end: new Date(end.getTime() - 1),
+    };
+  }, [events, analyticsMonth]);
+
+  const monthlyEventsCreated = events.filter((event) => {
+    const createdAt = event.createdAt ? new Date(event.createdAt).getTime() : NaN;
+    return Number.isFinite(createdAt) && createdAt >= monthlyRsvpStats.start.getTime() && createdAt <= monthlyRsvpStats.end.getTime();
+  }).length;
+
+  const activeEvents = events.filter((event) => event.status !== "Archived");
+  const upcomingEvents = activeEvents
+    .filter((event) => event.status === "Active")
+    .filter((event) => {
+      const eventTime = new Date(`${event.date}T${event.time || "23:59"}`).getTime();
+      return Number.isFinite(eventTime) && eventTime >= Date.now();
+    })
+    .sort((a, b) => new Date(`${a.date}T${a.time}`).getTime() - new Date(`${b.date}T${b.time}`).getTime());
+  const totalEvents = activeEvents.length;
+  const totalRSVPs = activeEvents.reduce((acc, curr) => acc + curr.rsvps, 0);
+  const totalViews = activeEvents.reduce((acc, curr) => acc + curr.views, 0);
+  const totalUniqueViews = activeEvents.reduce((acc, curr) => acc + (curr.uniqueViews || Math.max(1, Math.round(curr.views * 0.72))), 0);
   const regRate = Math.round((totalRSVPs / Math.max(totalViews, 1)) * 100);
 
   const activeCount = events.filter((e) => e.status === "Active").length;
   const draftCount = events.filter((e) => e.status === "Draft").length;
-  const pastCount = events.filter((e) => e.status === "Past").length;
+  const archivedCount = events.filter((e) => e.status === "Archived").length;
   const cancelledCount = events.filter((e) => e.status === "Cancelled").length;
 
   const [cancellingEvent, setCancellingEvent] = useState<OrganizerEvent | null>(null);
@@ -500,8 +584,8 @@ function OrganizerContent() {
     const target = stored.find((e) => e.id === cancellingEvent.id);
     if (target) {
       target.status = "cancelled";
-      (target as any).cancelled_at = new Date().toISOString();
-      (target as any).cancel_reason = reason;
+      target.cancelledAt = new Date().toISOString();
+      target.cancelReason = reason;
       saveStoredEvent(target);
     }
 
@@ -586,7 +670,7 @@ function OrganizerContent() {
       confirmedAt: new Date().toISOString(),
     };
 
-    saveStoredEvent(updatedEventData as any);
+    saveStoredEvent(updatedEventData);
     setEvents((prev) => prev.map((ev) => (ev.id === editingEvent.id ? editingEvent : ev)));
 
     // If changes occurred and event is active, notify attendees with type 'update'
@@ -699,7 +783,7 @@ function OrganizerContent() {
                 )}
               </div>
               <p className="text-[11px] text-[#888888] mt-2">
-                {totalEvents === 0 ? "No events yet" : `${activeCount} active, ${draftCount} draft, ${pastCount} past`}
+                {totalEvents === 0 ? "No events yet" : `${activeCount} active, ${draftCount} draft, ${archivedCount} archived`}
               </p>
             </div>
 
@@ -915,14 +999,14 @@ function OrganizerContent() {
           <div className="bg-white border border-[#e6e1d8] rounded-2xl shadow-sm overflow-hidden">
             <div className="p-5 sm:p-6 border-b border-[#e6e1d8] flex items-center justify-between">
               <div>
-                <h2 className="text-lg font-black text-[#171717]">Recent Events Overview</h2>
-                <p className="text-xs text-[#666666] mt-0.5">Quick status preview of latest listings</p>
+                <h2 className="text-lg font-black text-[#171717]">Upcoming Event Highlights</h2>
+                <p className="text-xs text-[#666666] mt-0.5">Next scheduled live events and attendee activity</p>
               </div>
               <Link
                 href="/organizer?tab=events"
                 className="text-xs font-bold text-[#ff6b35] hover:underline flex items-center gap-1"
               >
-                <span>View Full Management</span>
+                  <span>View My Events</span>
                 <ArrowUpRight className="w-3.5 h-3.5" />
               </Link>
             </div>
@@ -940,14 +1024,14 @@ function OrganizerContent() {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-[#e6e1d8]">
-                  {events.length === 0 ? (
+                  {upcomingEvents.length === 0 ? (
                     <tr>
                       <td colSpan={6} className="py-10 text-center text-xs text-[#888888]">
-                        No events published yet. Click &quot;Create New Event&quot; to publish your first campus event.
+                        No upcoming live events. Publish an event or check the event archive for completed events.
                       </td>
                     </tr>
                   ) : (
-                    events.slice(0, 3).map((evt) => (
+                    upcomingEvents.slice(0, 3).map((evt) => (
                       <tr key={evt.id} className="hover:bg-[#faf8f3]/60 transition-colors">
                         <td className="py-4 px-6 font-bold text-[#171717]">{evt.name}</td>
                         <td className="py-4 px-6 text-xs text-[#555555]">{evt.date}</td>
@@ -996,29 +1080,31 @@ function OrganizerContent() {
       {/* ========================================================================= */}
       {/* 2. MY EVENTS TAB: Dedicated Event Management & Publishing                 */}
       {/* ========================================================================= */}
-      {activeTab === "events" && (
+      {(activeTab === "events" || activeTab === "archive") && (
         <div className="space-y-6">
           {/* Header & Quick Action */}
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
             <div>
               <h1 className="text-2xl sm:text-3xl font-black text-[#171717] tracking-tight">
-                My Events Management
+                {activeTab === "archive" ? "Archived Events" : "My Events Management"}
               </h1>
               <p className="text-sm text-[#666666] mt-0.5">
-                Full directory of your created campus events, ticket capacity, and live publishing controls.
+                {activeTab === "archive"
+                  ? `${archivedCount} completed events retained for 30 days after archiving.`
+                  : "Full directory of your created campus events, ticket capacity, and live publishing controls."}
               </p>
             </div>
-            <Link
+            {activeTab !== "archive" && <Link
               href="/organizer/create"
               className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-[#ff6b35] text-white font-bold text-sm shadow-md hover:bg-[#e0531f] transition-all no-underline shrink-0"
             >
               <PlusCircle className="w-4 h-4" />
               <span>Create New Event</span>
-            </Link>
+            </Link>}
           </div>
 
           {/* Quick Filter Counts */}
-          <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
+          {activeTab === "events" && <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
             <button
               onClick={() => setStatusFilter("All")}
               className={`p-4 rounded-2xl border text-left transition-all cursor-pointer ${
@@ -1046,15 +1132,10 @@ function OrganizerContent() {
               <span className={`text-[11px] font-bold uppercase tracking-wider block ${statusFilter === "Draft" ? "text-amber-400" : "text-amber-600"}`}>Drafts</span>
               <span className="text-2xl font-black text-amber-500">{draftCount}</span>
             </button>
-            <button
-              onClick={() => setStatusFilter("Past")}
-              className={`p-4 rounded-2xl border text-left transition-all cursor-pointer ${
-                statusFilter === "Past" ? "bg-[#171717] text-white border-[#171717] shadow-sm" : "bg-white border-[#e6e1d8] hover:border-gray-500"
-              }`}
-            >
-              <span className={`text-[11px] font-bold uppercase tracking-wider block ${statusFilter === "Past" ? "text-gray-300" : "text-gray-500"}`}>Archived / Past</span>
-              <span className="text-2xl font-black">{pastCount}</span>
-            </button>
+            <Link href="/organizer?tab=archive" className="no-underline p-4 rounded-2xl border text-left transition-all bg-white border-[#e6e1d8] hover:border-gray-500">
+              <span className="text-[11px] font-bold uppercase tracking-wider block text-gray-500">Archived / Past</span>
+              <span className="text-2xl font-black">{archivedCount}</span>
+            </Link>
             <button
               onClick={() => setStatusFilter("Cancelled")}
               className={`p-4 rounded-2xl border text-left transition-all cursor-pointer ${
@@ -1064,7 +1145,7 @@ function OrganizerContent() {
               <span className={`text-[11px] font-bold uppercase tracking-wider block ${statusFilter === "Cancelled" ? "text-rose-400" : "text-rose-600"}`}>Cancelled</span>
               <span className="text-2xl font-black text-rose-500">{cancelledCount}</span>
             </button>
-          </div>
+          </div>}
 
           {/* Search & Category Filter Toolbar */}
           <div className="bg-white border border-[#e6e1d8] rounded-2xl p-4 shadow-sm flex flex-col sm:flex-row sm:items-center justify-between gap-3">
@@ -1166,6 +1247,11 @@ function OrganizerContent() {
 
                     {/* Right Actions */}
                     <div className="flex flex-wrap lg:flex-col items-end gap-2 shrink-0 pt-4 lg:pt-0 border-t lg:border-t-0 border-[#e6e1d8]">
+                      {evt.status === "Archived" ? (
+                        <p className="text-xs font-semibold text-[#666666]">
+                          Retained until {evt.archiveExpiresAt ? new Date(evt.archiveExpiresAt).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }) : "30 days after archive"}
+                        </p>
+                      ) : <>
                       <div className="flex items-center gap-2">
                         <Link
                           href={`/organizer/rsvp?eventId=${evt.id}`}
@@ -1220,6 +1306,7 @@ function OrganizerContent() {
                           <Trash2 className="w-4 h-4" />
                         </button>
                       </div>
+                      </>}
                     </div>
                   </div>
                 );
@@ -1238,46 +1325,44 @@ function OrganizerContent() {
             <div>
               <h1 className="text-2xl sm:text-3xl font-black text-[#171717]">Organizer Analytics & Insights</h1>
               <p className="text-sm text-[#666666] mt-0.5">
-                Audience reach, conversion funnel, RSVP velocity, and attendee engagement trends.
+                Monthly event and attendee activity for {monthlyRsvpStats.start.toLocaleDateString("en-US", { month: "long", year: "numeric" })}.
               </p>
             </div>
+            <label className="flex flex-col gap-1 text-[11px] font-bold uppercase tracking-wide text-[#666666]">
+              Reporting month
+              <input type="month" value={analyticsMonth} max={new Date().toISOString().slice(0, 7)} onChange={(event) => setAnalyticsMonth(event.target.value)} className="px-3 py-2 rounded-xl border border-[#e6e1d8] bg-white text-sm font-semibold normal-case tracking-normal text-[#171717]" />
+            </label>
           </div>
 
           {/* Top 4 KPI Metrics */}
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
             <div className="bg-white border border-[#e6e1d8] rounded-2xl p-5 shadow-sm">
-              <span className="text-xs font-bold text-[#666666] uppercase block mb-1">Conversion Rate</span>
+              <span className="text-xs font-bold text-[#666666] uppercase block mb-1">RSVPs This Month</span>
               <p className="text-3xl sm:text-4xl font-black text-[#171717]">
-                {totalViews > 0 ? `${((totalRSVPs / totalViews) * 100).toFixed(1)}%` : "0.0%"}
+                {monthlyRsvpStats.total}
               </p>
               <p className="text-xs text-[#666666] font-bold mt-2 flex items-center gap-1">
-                {totalRSVPs > 0 ? (
-                  <span className="text-emerald-600 flex items-center gap-1">
-                    <ArrowUp className="w-3.5 h-3.5" /> Live conversion rate
-                  </span>
-                ) : (
-                  "No registration traffic yet"
-                )}
+                {monthlyRsvpStats.statusCounts.Confirmed} confirmed · {monthlyRsvpStats.statusCounts.Pending} awaiting review
               </p>
             </div>
             <div className="bg-white border border-[#e6e1d8] rounded-2xl p-5 shadow-sm">
               <span className="text-xs font-bold text-[#666666] uppercase block mb-1">Avg RSVPs / Event</span>
               <p className="text-3xl sm:text-4xl font-black text-[#ff6b35]">
-                {totalEvents > 0 ? (totalRSVPs / totalEvents).toFixed(1) : "0"}
+                {monthlyEventsCreated}
               </p>
-              <p className="text-xs text-[#666666] font-medium mt-2">Target: 50 RSVPs</p>
+              <p className="text-xs text-[#666666] font-medium mt-2">Events created in selected month</p>
             </div>
             <div className="bg-white border border-[#e6e1d8] rounded-2xl p-5 shadow-sm">
-              <span className="text-xs font-bold text-[#666666] uppercase block mb-1">Repeat Attendees</span>
+              <span className="text-xs font-bold text-[#666666] uppercase block mb-1">Unique Attendees</span>
               <p className="text-3xl sm:text-4xl font-black text-[#171717]">
-                {totalRSVPs > 0 ? "35%" : "0%"}
+                {monthlyRsvpStats.uniqueAttendees}
               </p>
               <p className="text-xs text-[#666666] font-medium mt-2">
-                {totalRSVPs > 0 ? "High student brand loyalty" : "No attendance history yet"}
+                {monthlyRsvpStats.repeatRate}% returned for multiple RSVPs
               </p>
             </div>
             <div className="bg-white border border-[#e6e1d8] rounded-2xl p-5 shadow-sm">
-              <span className="text-xs font-bold text-[#666666] uppercase block mb-1">Total Page Impressions</span>
+              <span className="text-xs font-bold text-[#666666] uppercase block mb-1">Listing Views · All Time</span>
               <p className="text-3xl sm:text-4xl font-black text-[#171717]">{totalViews}</p>
               <p className="text-xs text-emerald-600 font-semibold mt-2">
                 {totalUniqueViews} unique visitor{totalUniqueViews !== 1 ? 's' : ''} across listings
@@ -1291,8 +1376,8 @@ function OrganizerContent() {
             <div className="lg:col-span-2 bg-white border border-[#e6e1d8] rounded-2xl p-6 shadow-sm flex flex-col justify-between">
               <div className="flex items-center justify-between mb-4">
                 <div>
-                  <h3 className="text-base font-black text-[#171717]">Weekly RSVP Velocity</h3>
-                  <p className="text-xs text-[#666666]">Registrations received per day over the past 7 days</p>
+                  <h3 className="text-base font-black text-[#171717]">RSVPs by Week</h3>
+                  <p className="text-xs text-[#666666]">Registrations during the selected month</p>
                 </div>
                 {hoveredDay && (
                   <span className="text-xs font-black text-[#ff6b35] bg-[#fff0e8] px-2.5 py-1 rounded-lg">
@@ -1304,22 +1389,11 @@ function OrganizerContent() {
               {/* Bar visualization */}
               <div className="pt-6 pb-2">
                 <div className="h-44 flex items-end justify-between gap-4 px-2 border-b border-[#e6e1d8]">
-                  {(totalRSVPs > 0
-                    ? [
-                        { day: "Mon", count: Math.round(totalRSVPs * 0.1), height: 35 },
-                        { day: "Tue", count: Math.round(totalRSVPs * 0.15), height: 55 },
-                        { day: "Wed", count: Math.round(totalRSVPs * 0.12), height: 45 },
-                        { day: "Thu", count: Math.round(totalRSVPs * 0.2), height: 75 },
-                        { day: "Fri", count: Math.round(totalRSVPs * 0.25), height: 100 },
-                        { day: "Sat", count: Math.round(totalRSVPs * 0.1), height: 40 },
-                        { day: "Sun", count: Math.round(totalRSVPs * 0.08), height: 30 },
-                      ]
-                    : emptyWeeklyRsvpData
-                  ).map((d) => (
+                  {monthlyRsvpStats.weeks.map((d) => (
                     <div
-                      key={d.day}
+                      key={d.label}
                       className="flex-1 flex flex-col items-center gap-1.5 h-full justify-end cursor-pointer group"
-                      onMouseEnter={() => setHoveredDay(d)}
+                      onMouseEnter={() => setHoveredDay({ day: d.label, count: d.count })}
                       onMouseLeave={() => setHoveredDay(null)}
                     >
                       <div className="opacity-0 group-hover:opacity-100 transition-opacity text-[10px] font-black text-[#171717] bg-white border px-1.5 py-0.5 rounded shadow-xs mb-1">
@@ -1334,17 +1408,17 @@ function OrganizerContent() {
                         }`}
                       />
                       <span className="text-xs font-bold text-[#666666] group-hover:text-[#ff6b35] mt-1">
-                        {d.day}
+                        {d.label}
                       </span>
                     </div>
                   ))}
                 </div>
                 <div className="flex justify-between text-[11px] text-[#888888] font-medium pt-2 px-1">
-                  <span>Monday</span>
+                  <span>{monthlyRsvpStats.start.toLocaleDateString("en-US", { month: "short", day: "numeric" })}</span>
                   <span className="font-bold text-[#ff6b35]">
-                    {totalRSVPs > 0 ? "Peak Day: Friday" : "No peak signups yet"}
+                    {monthlyRsvpStats.total > 0 ? `${monthlyRsvpStats.total} RSVP${monthlyRsvpStats.total === 1 ? "" : "s"} this month` : "No RSVPs this month"}
                   </span>
-                  <span>Sunday</span>
+                  <span>{monthlyRsvpStats.end.toLocaleDateString("en-US", { month: "short", day: "numeric" })}</span>
                 </div>
               </div>
             </div>
@@ -1354,19 +1428,19 @@ function OrganizerContent() {
               <div>
                 <h3 className="text-base font-black text-[#171717]">RSVP Status Distribution</h3>
                 <p className="text-xs text-[#666666]">
-                  Current breakdown of all {totalRSVPs} participant replies
+                  Status breakdown for {monthlyRsvpStats.total} RSVPs in this month
                 </p>
               </div>
 
               {/* Segmented bar visual */}
               <div className="py-6 space-y-4">
-                {totalRSVPs === 0 ? (
+                {monthlyRsvpStats.total === 0 ? (
                   <div className="h-5 w-full bg-gray-100 rounded-full" />
                 ) : (
                   <div className="h-5 w-full flex rounded-full overflow-hidden shadow-inner">
-                    <div style={{ width: "70%" }} className="bg-emerald-500" title="Confirmed: 70%" />
-                    <div style={{ width: "20%" }} className="bg-[#ff6b35]" title="Pending: 20%" />
-                    <div style={{ width: "10%" }} className="bg-rose-500" title="Declined: 10%" />
+                    <div style={{ width: `${monthlyRsvpStats.statusCounts.Confirmed / monthlyRsvpStats.total * 100}%` }} className="bg-emerald-500" title="Confirmed" />
+                    <div style={{ width: `${monthlyRsvpStats.statusCounts.Pending / monthlyRsvpStats.total * 100}%` }} className="bg-[#ff6b35]" title="Pending" />
+                    <div style={{ width: `${monthlyRsvpStats.statusCounts.Declined / monthlyRsvpStats.total * 100}%` }} className="bg-rose-500" title="Declined" />
                   </div>
                 )}
 
@@ -1377,7 +1451,7 @@ function OrganizerContent() {
                       <span>Confirmed Guests</span>
                     </div>
                     <span className="text-[#171717]">
-                      {totalRSVPs > 0 ? `${Math.round(totalRSVPs * 0.7)} (70%)` : "0 (0%)"}
+                      {monthlyRsvpStats.statusCounts.Confirmed} ({Math.round(monthlyRsvpStats.statusCounts.Confirmed / Math.max(monthlyRsvpStats.total, 1) * 100)}%)
                     </span>
                   </div>
                   <div className="flex items-center justify-between text-xs font-bold">
@@ -1386,7 +1460,7 @@ function OrganizerContent() {
                       <span>Pending Verification</span>
                     </div>
                     <span className="text-[#171717]">
-                      {totalRSVPs > 0 ? `${Math.round(totalRSVPs * 0.2)} (20%)` : "0 (0%)"}
+                      {monthlyRsvpStats.statusCounts.Pending} ({Math.round(monthlyRsvpStats.statusCounts.Pending / Math.max(monthlyRsvpStats.total, 1) * 100)}%)
                     </span>
                   </div>
                   <div className="flex items-center justify-between text-xs font-bold">
@@ -1395,7 +1469,7 @@ function OrganizerContent() {
                       <span>Declined / Cancelled</span>
                     </div>
                     <span className="text-[#171717]">
-                      {totalRSVPs > 0 ? `${Math.round(totalRSVPs * 0.1)} (10%)` : "0 (0%)"}
+                      {monthlyRsvpStats.statusCounts.Declined} ({Math.round(monthlyRsvpStats.statusCounts.Declined / Math.max(monthlyRsvpStats.total, 1) * 100)}%)
                     </span>
                   </div>
                 </div>
@@ -1407,96 +1481,23 @@ function OrganizerContent() {
             </div>
           </div>
 
-          {/* Chart Grid 2: Peak Sign-Up Hours & Discovery Channels */}
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-            {/* Peak Hours Chart */}
-            <div className="bg-white border border-[#e6e1d8] rounded-2xl p-6 shadow-sm">
-              <div className="flex items-center justify-between mb-4">
-                <div>
-                  <h3 className="text-base font-black text-[#171717]">Peak RSVP Rush Hours</h3>
-                  <p className="text-xs text-[#666666]">When students register for your listings throughout the day</p>
-                </div>
+          <div className="bg-white border border-[#e6e1d8] rounded-2xl p-6 shadow-sm">
+            <h3 className="text-base font-black text-[#171717]">Reporting Window</h3>
+            <p className="text-xs text-[#666666] mt-1">
+              Monthly RSVP and event totals use records dated {monthlyRsvpStats.start.toLocaleDateString("en-US", { month: "short", day: "numeric" })} through {monthlyRsvpStats.end.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}. Values refresh when registrations or event data change.
+            </p>
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 mt-5">
+              <div className="p-4 rounded-xl bg-[#faf8f3] border border-[#e6e1d8]">
+                <span className="text-[10px] uppercase tracking-wide font-bold text-[#888888]">Events created</span>
+                <p className="text-xl font-black text-[#171717] mt-1">{monthlyEventsCreated}</p>
               </div>
-
-              <div className="space-y-2 pt-2">
-                {(totalRSVPs > 0
-                  ? [
-                      { hour: "8 AM", val: Math.round(totalRSVPs * 0.08) },
-                      { hour: "10 AM", val: Math.round(totalRSVPs * 0.18) },
-                      { hour: "12 PM", val: Math.round(totalRSVPs * 0.45), peak: true },
-                      { hour: "2 PM", val: Math.round(totalRSVPs * 0.28) },
-                      { hour: "4 PM", val: Math.round(totalRSVPs * 0.22) },
-                      { hour: "6 PM", val: Math.round(totalRSVPs * 0.38) },
-                      { hour: "8 PM", val: Math.round(totalRSVPs * 0.5), peak: true },
-                      { hour: "10 PM", val: Math.round(totalRSVPs * 0.15) },
-                    ]
-                  : emptyHourlyTraffic
-                ).map((h) => (
-                  <div key={h.hour} className="flex items-center gap-3 text-xs font-bold">
-                    <span className="w-14 text-[#666666] shrink-0 text-right">{h.hour}</span>
-                    <div className="flex-1 h-3 bg-gray-100 rounded-full overflow-hidden">
-                      <div
-                        style={{ width: `${Math.min(h.val, 100)}%` }}
-                        className={`h-full rounded-full ${
-                          h.peak ? "bg-[#ff6b35]" : "bg-[#171717]/70"
-                        }`}
-                      />
-                    </div>
-                    <span className={`w-10 text-right ${h.peak ? "text-[#ff6b35] font-black" : "text-[#666666]"}`}>
-                      {h.val}
-                    </span>
-                  </div>
-                ))}
+              <div className="p-4 rounded-xl bg-[#faf8f3] border border-[#e6e1d8]">
+                <span className="text-[10px] uppercase tracking-wide font-bold text-[#888888]">RSVP submissions</span>
+                <p className="text-xl font-black text-[#171717] mt-1">{monthlyRsvpStats.total}</p>
               </div>
-            </div>
-
-            {/* Discovery Source Breakdown */}
-            <div className="bg-white border border-[#e6e1d8] rounded-2xl p-6 shadow-sm space-y-4">
-              <div>
-                <h3 className="text-base font-black text-[#171717]">Discovery Channels</h3>
-                <p className="text-xs text-[#666666]">Where attendees are discovering your event links</p>
-              </div>
-
-              <div className="space-y-4 pt-2">
-                <div>
-                  <div className="flex justify-between text-xs font-bold mb-1">
-                    <span className="text-[#171717]">Interactive Campus Map</span>
-                    <span className="text-[#ff6b35]">{totalViews > 0 ? "48%" : "0%"} ({Math.round(totalViews * 0.48)} views)</span>
-                  </div>
-                  <div className="h-2.5 bg-gray-100 rounded-full overflow-hidden">
-                    <div style={{ width: totalViews > 0 ? "48%" : "0%" }} className="h-full bg-[#ff6b35] rounded-full" />
-                  </div>
-                </div>
-
-                <div>
-                  <div className="flex justify-between text-xs font-bold mb-1">
-                    <span className="text-[#171717]">Discover Feed Search</span>
-                    <span className="text-[#171717]">{totalViews > 0 ? "28%" : "0%"} ({Math.round(totalViews * 0.28)} views)</span>
-                  </div>
-                  <div className="h-2.5 bg-gray-100 rounded-full overflow-hidden">
-                    <div style={{ width: totalViews > 0 ? "28%" : "0%" }} className="h-full bg-[#171717] rounded-full" />
-                  </div>
-                </div>
-
-                <div>
-                  <div className="flex justify-between text-xs font-bold mb-1">
-                    <span className="text-[#171717]">Direct Link & Social Shares</span>
-                    <span className="text-[#171717]">{totalViews > 0 ? "16%" : "0%"} ({Math.round(totalViews * 0.16)} views)</span>
-                  </div>
-                  <div className="h-2.5 bg-gray-100 rounded-full overflow-hidden">
-                    <div style={{ width: totalViews > 0 ? "16%" : "0%" }} className="h-full bg-emerald-500 rounded-full" />
-                  </div>
-                </div>
-
-                <div>
-                  <div className="flex justify-between text-xs font-bold mb-1">
-                    <span className="text-[#171717]">In-App Push Notifications</span>
-                    <span className="text-[#171717]">{totalViews > 0 ? "8%" : "0%"} ({Math.round(totalViews * 0.08)} views)</span>
-                  </div>
-                  <div className="h-2.5 bg-gray-100 rounded-full overflow-hidden">
-                    <div style={{ width: totalViews > 0 ? "8%" : "0%" }} className="h-full bg-[#ff6b35] rounded-full" />
-                  </div>
-                </div>
+              <div className="p-4 rounded-xl bg-[#faf8f3] border border-[#e6e1d8]">
+                <span className="text-[10px] uppercase tracking-wide font-bold text-[#888888]">Listing views · all time</span>
+                <p className="text-xl font-black text-[#171717] mt-1">{totalViews}</p>
               </div>
             </div>
           </div>
@@ -2225,12 +2226,12 @@ function OrganizerContent() {
                   <label className="block text-xs font-bold text-[#171717] mb-1">Status</label>
                   <select
                     value={editingEvent.status}
-                    onChange={(e) => setEditingEvent({ ...editingEvent, status: e.target.value as any })}
+                    onChange={(e) => setEditingEvent({ ...editingEvent, status: e.target.value as OrganizerEvent["status"] })}
                     className="w-full px-3 py-2 border border-[#e6e1d8] rounded-xl text-xs font-bold text-[#171717] outline-none focus:border-[#ff6b35] bg-white"
                   >
                     <option value="Active">Active (Live)</option>
                     <option value="Draft">Draft</option>
-                    <option value="Past">Past</option>
+                    <option value="Archived">Archived</option>
                     <option value="Cancelled">Cancelled</option>
                   </select>
                 </div>

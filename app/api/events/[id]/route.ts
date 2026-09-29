@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import { createAdminClient, getAuthenticatedRole } from '@/lib/supabase-server';
+import { DEFAULT_EVENTS } from '@/lib/default-events';
 
 // Server-side in-memory event cache
 declare global {
@@ -58,7 +59,6 @@ export async function GET(
       const serverEvent = globalThis.__spott_server_events?.find((e) => e.id === id);
       if (serverEvent?.status === 'active') return NextResponse.json(serverEvent);
 
-      const { DEFAULT_EVENTS } = require('@/lib/default-events');
       const fallbackEvent = (DEFAULT_EVENTS || []).find((e: any) => e.id === id);
       if (fallbackEvent) {
         return NextResponse.json(fallbackEvent);
@@ -118,7 +118,6 @@ export async function GET(
 
     return NextResponse.json(formattedData);
   } catch {
-    const { DEFAULT_EVENTS } = require('@/lib/default-events');
     const fallbackEvent = (DEFAULT_EVENTS || []).find((e: any) => e.id === id);
     if (fallbackEvent) {
       return NextResponse.json(fallbackEvent);

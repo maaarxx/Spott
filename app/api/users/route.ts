@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import { createAdminClient, getAuthenticatedRole } from '@/lib/supabase-server';
+import { errorMessage } from '@/lib/error-message';
 
 export async function GET() {
   try {
@@ -56,7 +57,7 @@ export async function POST(request: Request) {
     }
 
     return NextResponse.json({ success: true, user: data });
-  } catch (error: any) {
-    return NextResponse.json({ error: error?.message || 'Server error' }, { status: 500 });
+  } catch (error: unknown) {
+    return NextResponse.json({ error: errorMessage(error, 'Server error') }, { status: 500 });
   }
 }

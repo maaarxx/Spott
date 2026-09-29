@@ -52,7 +52,7 @@ import {
 } from "@/lib/verification-store";
 import PdfViewerModal from "@/components/PdfViewerModal";
 import { addNotification, removeNotificationsForEvent } from "@/lib/notifications-store";
-import { getStoredEvents, deleteStoredEvent, saveStoredEvent, subscribeToEvents } from "@/lib/events-store";
+import { getStoredEvents, deleteStoredEvent, saveStoredEvent, saveStoredEvents, subscribeToEvents } from "@/lib/events-store";
 import {
   getPendingOrganizers,
   approveOrganizer,
@@ -91,6 +91,7 @@ import {
   ReportItem,
 } from "@/lib/reports-store";
 import { getUserProfile, getInitials } from "@/lib/user-profile-store";
+import type { EventData } from "@/components/EventCard";
 
 type Report = ReportItem;
 
@@ -113,12 +114,17 @@ interface AdminEvent {
   organizer: string;
   category: string;
   date: string;
+  createdAt?: string | null;
   rsvps: number;
   capacity?: number;
-  status: "Active" | "Draft" | "Past" | "Flagged";
+  status: "Active" | "Draft" | "Archived" | "Flagged";
+  archivedAt?: string | null;
+  archiveExpiresAt?: string | null;
   isLargeGathering?: boolean;
   isKeywordFlagged?: boolean;
   matchedKeywords?: string[];
+  location?: string;
+  registrations?: number;
 }
 
 interface MonthlyData {
@@ -128,10 +134,14 @@ interface MonthlyData {
   heightPercent: number;
 }
 
+interface StoredGuestEntry {
+  dateRegistered?: string;
+  registeredAt?: string;
+}
+
 const initialReports: Report[] = [];
 const initialVerifications: VerificationReq[] = [];
 
-const currentYear = new Date().getFullYear();
 const formatDate = (daysOffset: number = 0) => {
   const d = new Date(Date.now() + daysOffset * 86400000);
   return d.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
@@ -144,9 +154,15 @@ function AdminContent() {
   const currentTab = searchParams.get("tab") || "dashboard";
 
   const [reports, setReports] = useState<Report[]>(initialReports);
+  const [reportTab, setReportTab] = useState<"active" | "archive">("active");
   const [verifications, setVerifications] = useState<VerificationReq[]>(initialVerifications);
   const [usersList, setUsersList] = useState<AdminUser[]>(INITIAL_ADMIN_USERS);
   const [eventsList, setEventsList] = useState<AdminEvent[]>(initialEventsList);
+  const [analyticsMonth, setAnalyticsMonth] = useState(() => {
+    const now = new Date();
+    return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
+  });
+  const [eventScope, setEventScope] = useState<"active" | "archive">("active");
   const [hoveredMonth, setHoveredMonth] = useState<MonthlyData | null>(null);
   const [actionNotice, setActionNotice] = useState<string | null>(null);
   const [pendingOrganizers, setPendingOrganizers] = useState<PendingOrganizer[]>([]);
@@ -160,60 +176,76 @@ function AdminContent() {
   const [tempThreshold, setTempThreshold] = useState<number>(200);
   const [tempSensitivity, setTempSensitivity] = useState<"Strict" | "Standard">("Strict");
 
-  // Dynamically compute monthly activity from eventsList
+  // Aggregate activity for a selectable calendar month, grouped by week.
   const monthlyActivity: MonthlyData[] = useMemo(() => {
-    const months = ["May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov"];
-    const monthStats: Record<string, { events: number; rsvps: number }> = {
-      May: { events: 0, rsvps: 0 },
-      Jun: { events: 0, rsvps: 0 },
-      Jul: { events: 0, rsvps: 0 },
-      Aug: { events: 0, rsvps: 0 },
-      Sep: { events: 0, rsvps: 0 },
-      Oct: { events: 0, rsvps: 0 },
-      Nov: { events: 0, rsvps: 0 },
+    const [year, month] = analyticsMonth.split("-").map(Number);
+    const start = new Date(year, month - 1, 1);
+    const end = new Date(year, month, 1);
+    const weekCount = Math.ceil(new Date(year, month, 0).getDate() / 7);
+    const weeks = Array.from({ length: weekCount }, (_, index) => ({ month: `Week ${index + 1}`, events: 0, rsvps: 0, heightPercent: 6 }));
+    const inRange = (value?: string | null) => {
+      if (!value) return false;
+      const time = new Date(value).getTime();
+      return Number.isFinite(time) && time >= start.getTime() && time < end.getTime();
     };
 
-    eventsList.forEach((evt) => {
-      let mName = "";
-      if (evt.date) {
-        try {
-          const d = new Date(evt.date.includes(" ") ? evt.date.replace(" ", "T") : evt.date);
-          if (!isNaN(d.getTime())) {
-            mName = d.toLocaleString("en-US", { month: "short" });
-          }
-        } catch {}
-        if (!mName || !monthStats[mName]) {
-          const raw = evt.date.toLowerCase();
-          if (raw.includes("-05-") || raw.includes("may")) mName = "May";
-          else if (raw.includes("-06-") || raw.includes("jun")) mName = "Jun";
-          else if (raw.includes("-07-") || raw.includes("jul")) mName = "Jul";
-          else if (raw.includes("-08-") || raw.includes("aug")) mName = "Aug";
-          else if (raw.includes("-09-") || raw.includes("sep")) mName = "Sep";
-          else if (raw.includes("-10-") || raw.includes("oct")) mName = "Oct";
-          else if (raw.includes("-11-") || raw.includes("nov")) mName = "Nov";
+    for (const event of eventsList) {
+      const createdAt = event.createdAt || event.date;
+      if (inRange(createdAt)) {
+        const day = new Date(createdAt).getDate();
+        weeks[Math.min(weeks.length - 1, Math.floor((day - 1) / 7))].events += 1;
+      }
+    }
+
+    try {
+      const guestMap: Record<string, StoredGuestEntry[]> = JSON.parse(localStorage.getItem("spott_guest_lists") || "{}");
+      for (const event of eventsList) {
+        const list = guestMap[event.id] || [];
+        for (const attendee of list) {
+          const registeredAt = attendee.dateRegistered || attendee.registeredAt;
+          if (!registeredAt || !inRange(registeredAt)) continue;
+          const day = new Date(registeredAt).getDate();
+          weeks[Math.min(weeks.length - 1, Math.floor((day - 1) / 7))].rsvps += 1;
         }
       }
-      if (mName && monthStats[mName]) {
-        monthStats[mName].events += 1;
-        monthStats[mName].rsvps += (evt.rsvps || 0);
+    } catch {}
+
+    const maxCount = Math.max(...weeks.map((week) => week.events + week.rsvps), 1);
+    return weeks.map((week) => ({
+      ...week,
+      heightPercent: week.events + week.rsvps > 0
+        ? Math.max(12, Math.round(((week.events + week.rsvps) / maxCount) * 85))
+        : 6,
+    }));
+  }, [eventsList, analyticsMonth]);
+
+  const monthlyMetrics = useMemo(() => {
+    const [year, month] = analyticsMonth.split("-").map(Number);
+    const start = new Date(year, month - 1, 1);
+    const end = new Date(year, month, 1);
+    const isInMonth = (value?: string | null) => {
+      if (!value) return false;
+      const time = new Date(value).getTime();
+      return Number.isFinite(time) && time >= start.getTime() && time < end.getTime();
+    };
+    let rsvps = 0;
+    try {
+      const guestMap: Record<string, StoredGuestEntry[]> = JSON.parse(localStorage.getItem("spott_guest_lists") || "{}");
+      for (const event of eventsList) {
+        const list = guestMap[event.id] || [];
+        rsvps += list.filter((attendee) => isInMonth(attendee.dateRegistered || attendee.registeredAt)).length;
       }
-    });
-
-    const maxCount = Math.max(...Object.values(monthStats).map((s) => s.events), 1);
-
-    return months.map((m) => {
-      const stat = monthStats[m];
-      const heightPercent = stat.events > 0 
-        ? Math.max(25, Math.round((stat.events / maxCount) * 85))
-        : 6;
-      return {
-        month: m,
-        events: stat.events,
-        rsvps: stat.rsvps,
-        heightPercent,
-      };
-    });
-  }, [eventsList]);
+    } catch {}
+    return {
+      users: usersList.filter((user) => isInMonth(user.joinedAt || user.joined)).length,
+      events: eventsList.filter((event) => isInMonth(event.createdAt || event.date)).length,
+      rsvps,
+      reports: reports.filter((report) => isInMonth(report.submitted)).length,
+      openReports: reports.filter((report) => report.status === "open" && isInMonth(report.submitted)).length,
+      monthLabel: start.toLocaleDateString("en-US", { month: "long", year: "numeric" }),
+      rangeLabel: `${start.toLocaleDateString("en-US", { month: "short", day: "numeric" })} – ${new Date(end.getTime() - 1).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}`,
+    };
+  }, [analyticsMonth, eventsList, usersList, reports]);
 
   // Verification store state & PDF preview (SSR-safe initial baseline)
   const [verState, setVerState] = useState<VerificationState>(defaultVerificationState);
@@ -222,7 +254,7 @@ function AdminContent() {
   useEffect(() => {
     // Sync with client localStorage on mount to prevent SSR hydration mismatch
     const syncVerifications = () => {
-      const current = getVerificationState();
+      const current = getVerificationState("Metro Creative Group");
       setVerState(current);
 
       // Scan ALL organizer verification keys across localStorage (not just Metro)
@@ -240,6 +272,16 @@ function AdminContent() {
             if (seen.has(orgName.toLowerCase())) continue;
             seen.add(orgName.toLowerCase());
             if (!parsed.documents || parsed.documents.length === 0) continue;
+            if (parsed.status !== "pending") {
+              const expiry = parsed.expiresDate ? new Date(parsed.expiresDate).getTime() : NaN;
+              const decision = parsed.decidedAt ? new Date(parsed.decidedAt).getTime() : NaN;
+              const expiresAt = Number.isFinite(expiry)
+                ? expiry
+                : Number.isFinite(decision)
+                  ? decision + 30 * 24 * 60 * 60 * 1000
+                  : Date.now() + 30 * 24 * 60 * 60 * 1000;
+              if (expiresAt <= Date.now()) continue;
+            }
             allVerifications.push({
               id: `ver-${key}`,
               organizer: orgName,
@@ -285,7 +327,7 @@ function AdminContent() {
       setVerifications(allVerifications);
     };
 
-    const mapToAdminEvents = (list: any[]): AdminEvent[] => {
+    const mapToAdminEvents = (list: EventData[]): AdminEvent[] => {
       const modSettings = getModerationSettings();
       const modKeywords = getModerationKeywords();
 
@@ -296,7 +338,7 @@ function AdminContent() {
           if (rawGuests) {
             const guestMap = JSON.parse(rawGuests);
             if (Array.isArray(guestMap[e.id])) {
-              const activeAttendees = guestMap[e.id].filter((a: any) => a.status !== "Declined");
+              const activeAttendees = guestMap[e.id].filter((attendee: { status?: string }) => attendee.status !== "Declined");
               rsvpCount = Math.max(rsvpCount, activeAttendees.length);
             }
           }
@@ -328,11 +370,22 @@ function AdminContent() {
           id: e.id,
           title: e.title,
           organizer: e.organizer || "Metro Creative Group",
+          location: e.location,
           category: e.categories?.[0] || "General",
           date: e.date,
+          createdAt: e.createdAt || e.confirmedAt || null,
           rsvps: rsvpCount,
+          registrations: rsvpCount,
           capacity: cap,
-          status: (e.status === "active" ? "Active" : e.status === "draft" ? "Draft" : e.status === "flagged" ? "Flagged" : "Active") as any,
+          status: (["archived", "past", "completed", "done"].includes(String(e.status).toLowerCase())
+            ? "Archived"
+            : e.status === "draft"
+              ? "Draft"
+              : e.status === "flagged"
+                ? "Flagged"
+                : "Active") as AdminEvent["status"],
+          archivedAt: e.archivedAt || null,
+          archiveExpiresAt: e.archiveExpiresAt || (e.archivedAt ? new Date(new Date(e.archivedAt).getTime() + 30 * 24 * 60 * 60 * 1000).toISOString() : null),
           isLargeGathering: isLarge,
           isKeywordFlagged: matched.length > 0,
           matchedKeywords: matched,
@@ -347,19 +400,13 @@ function AdminContent() {
       try {
         const controller = new AbortController();
         const timer = setTimeout(() => controller.abort(), 1200);
-        const res = await fetch("/api/events", { signal: controller.signal });
+        const res = await fetch("/api/events?scope=admin", { signal: controller.signal });
         clearTimeout(timer);
         if (res.ok) {
           const apiData = await res.json();
           if (Array.isArray(apiData)) {
-            const freshStored = getStoredEvents();
-            const existingIds = new Set(freshStored.map((e) => e.id));
-            const newFromApi = apiData.filter((e: any) => !existingIds.has(e.id));
-            if (newFromApi.length > 0) {
-              newFromApi.forEach((item: any) => saveStoredEvent(item));
-            }
-            const merged = [...freshStored, ...newFromApi];
-            setEventsList(mapToAdminEvents(merged));
+            saveStoredEvents(apiData, false);
+            setEventsList(mapToAdminEvents(getStoredEvents()));
           }
         }
       } catch {}
@@ -581,7 +628,7 @@ function AdminContent() {
       const target = stored.find((e) => e.id === updated.id);
       if (target) {
         target.title = updated.title;
-        target.status = updated.status.toLowerCase() as any;
+        target.status = updated.status.toLowerCase();
         saveStoredEvent(target);
       }
     } catch {}
@@ -756,6 +803,14 @@ function AdminContent() {
   }).length;
 
   const pendingReportsCount = reports.filter((r) => r.status === "open").length;
+  const activeReports = reports.filter((report) => report.status === "open");
+  const archivedReports = reports.filter((report) => report.status === "resolved");
+  const displayedReports = reportTab === "active" ? activeReports : archivedReports;
+  const archivedAdminEvents = eventsList.filter((event) => event.status === "Archived");
+  const displayedAdminEvents = (eventScope === "active"
+    ? eventsList.filter((event) => event.status !== "Archived")
+    : archivedAdminEvents
+  ).filter((event) => event.title.toLowerCase().includes(eventSearch.toLowerCase()));
   const pendingVerificationsCount = activeVerifications.length;
 
   return (
@@ -816,10 +871,10 @@ function AdminContent() {
                   </div>
                 </div>
                 <div className="flex items-baseline gap-2">
-                  <span className="text-3xl sm:text-4xl font-black text-[#171717]">{eventsList.length}</span>
+                  <span className="text-3xl sm:text-4xl font-black text-[#171717]">{eventsList.filter((event) => event.status === "Active").length}</span>
                 </div>
                 <p className="text-[11px] text-[#ff6b35] font-semibold mt-2">
-                  {eventsList.length === 0 ? "No events published yet" : `Across campus categories`}
+                  {eventsList.filter((event) => event.status === "Active").length === 0 ? "No active events" : `Across campus categories`}
                 </p>
               </div>
             </Link>
@@ -895,14 +950,14 @@ function AdminContent() {
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-[#e6e1d8]">
-                      {reports.length === 0 ? (
+                      {activeReports.length === 0 ? (
                         <tr>
                           <td colSpan={4} className="py-8 text-center text-xs text-[#888888]">
                             No reports submitted. All campus listings are in good standing.
                           </td>
                         </tr>
                       ) : (
-                        reports.map((rep) => (
+                        activeReports.slice(0, 6).map((rep) => (
                           <tr key={rep.id} className="hover:bg-[#faf8f3]/60 transition-colors">
                             <td className="py-3.5 px-5 font-bold text-[#171717] whitespace-nowrap">
                               {rep.reporter}
@@ -970,14 +1025,14 @@ function AdminContent() {
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-[#e6e1d8]">
-                      {verifications.length === 0 ? (
+                      {activeVerifications.length === 0 ? (
                         <tr>
                           <td colSpan={3} className="py-8 text-center text-xs text-[#888888]">
                             No verification requests pending review.
                           </td>
                         </tr>
                       ) : (
-                        verifications.map((ver) => (
+                        activeVerifications.slice(0, 6).map((ver) => (
                           <tr key={ver.id} className="hover:bg-[#faf8f3]/60 transition-colors">
                             <td className="py-3.5 px-5">
                               <div className="font-bold text-[#171717]">{ver.organizer}</div>
@@ -1041,9 +1096,14 @@ function AdminContent() {
                 </p>
               </div>
 
+              <label className="flex flex-col gap-1 text-[10px] font-bold uppercase tracking-wide text-[#666666]">
+                Reporting month
+                <input type="month" value={analyticsMonth} max={new Date().toISOString().slice(0, 7)} onChange={(event) => { setAnalyticsMonth(event.target.value); setHoveredMonth(null); }} className="px-3 py-2 rounded-xl border border-[#e6e1d8] bg-white text-xs font-semibold normal-case tracking-normal text-[#171717]" />
+              </label>
+
               {hoveredMonth ? (
                 <div className="inline-flex items-center gap-3 px-3 py-1.5 rounded-xl bg-[#fff0e8] border border-[#ff6b35]/20 text-xs font-bold text-[#ff6b35]">
-                  <span>{hoveredMonth.month} {currentYear}:</span>
+                  <span>{hoveredMonth.month} · {monthlyMetrics.monthLabel}:</span>
                   <span className="text-[#171717]">{hoveredMonth.events} {hoveredMonth.events === 1 ? "Event" : "Events"}</span>
                   <span>•</span>
                   <span className="text-[#171717]">{hoveredMonth.rsvps} {hoveredMonth.rsvps === 1 ? "RSVP" : "RSVPs"}</span>
@@ -1051,12 +1111,11 @@ function AdminContent() {
               ) : (
                 (() => {
                   const activeOrPeak =
-                    monthlyActivity.find((m) => m.events > 0) ||
-                    monthlyActivity.find((m) => m.month === "Oct") ||
+                    monthlyActivity.find((m) => m.events > 0 || m.rsvps > 0) ||
                     monthlyActivity[0];
                   return (
                     <div className="inline-flex items-center gap-3 px-3 py-1.5 rounded-xl bg-[#faf8f3] border border-[#e6e1d8] text-xs font-bold text-[#666666]">
-                      <span>{activeOrPeak.month} {currentYear}:</span>
+                      <span>{activeOrPeak.month} · {monthlyMetrics.monthLabel}:</span>
                       <span className="text-[#171717]">{activeOrPeak.events} {activeOrPeak.events === 1 ? "Event" : "Events"}</span>
                       <span>•</span>
                       <span className="text-[#171717]">{activeOrPeak.rsvps} {activeOrPeak.rsvps === 1 ? "RSVP" : "RSVPs"}</span>
@@ -1068,8 +1127,8 @@ function AdminContent() {
 
             <div className="pt-8 pb-4">
               <div className="h-52 flex items-end justify-between gap-3 sm:gap-8 px-4 border-b border-[#e6e1d8]">
-                {monthlyActivity.map((item) => {
-                  const hasEvents = item.events > 0;
+              {monthlyActivity.map((item) => {
+                  const hasEvents = item.events > 0 || item.rsvps > 0;
                   return (
                     <div
                       key={item.month}
@@ -1084,7 +1143,7 @@ function AdminContent() {
                             : "opacity-0 group-hover:opacity-100 text-[#171717] bg-white border border-[#e6e1d8] shadow-md"
                         }`}
                       >
-                        {item.events} evts
+                        {item.events} events
                       </div>
 
                       <div
@@ -1103,7 +1162,7 @@ function AdminContent() {
                           hasEvents ? "text-[#ff6b35]" : "text-[#666666] group-hover:text-[#171717]"
                         }`}
                       >
-                        {item.month}
+                        {item.month.replace("Week ", "W")}
                       </span>
                     </div>
                   );
@@ -1111,7 +1170,7 @@ function AdminContent() {
               </div>
 
               <div className="flex items-center justify-between text-xs text-[#888888] font-medium pt-3 px-2">
-                <span>May {currentYear}</span>
+                <span>{monthlyMetrics.rangeLabel}</span>
                 <span className="flex items-center gap-1.5 text-xs font-bold text-[#888888]">
                   {eventsList.length > 0 ? (
                     <><TrendingUp className="w-3.5 h-3.5 text-[#ff6b35]" /> Event data accumulates as organizers publish listings ({eventsList.length} published)</>
@@ -1119,7 +1178,7 @@ function AdminContent() {
                     "No event data yet — chart will populate when events are published"
                   )}
                 </span>
-                <span>Nov {currentYear}</span>
+                <span>Month-to-date</span>
               </div>
             </div>
           </div>
@@ -1157,7 +1216,7 @@ function AdminContent() {
               </div>
               <select
                 value={userSortOrder}
-                onChange={(e) => setUserSortOrder(e.target.value as any)}
+                onChange={(e) => setUserSortOrder(e.target.value as typeof userSortOrder)}
                 className="px-3 py-2 text-xs font-bold border border-[#e6e1d8] rounded-xl bg-white text-[#171717] focus:outline-none focus:border-[#ff6b35] cursor-pointer"
                 title="Sort registered users"
               >
@@ -1271,7 +1330,7 @@ function AdminContent() {
                   <th className="py-3.5 px-6">Email</th>
                   <th className="py-3.5 px-6">Role</th>
                   <th className="py-3.5 px-6">Status</th>
-                  <th className="py-3.5 px-6">Joined (Real-Time)</th>
+                  <th className="py-3.5 px-6">Joined</th>
                   <th className="py-3.5 px-6 text-right">Actions</th>
                 </tr>
               </thead>
@@ -1372,9 +1431,11 @@ function AdminContent() {
         <div className="space-y-6">
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
             <div>
-              <h1 className="text-2xl sm:text-3xl font-black text-[#171717]">Campus Events Moderation</h1>
+                <h1 className="text-2xl sm:text-3xl font-black text-[#171717]">{eventScope === "archive" ? "Archived Campus Events" : "Campus Events Moderation"}</h1>
               <p className="text-sm text-[#666666] mt-0.5">
-                Monitoring all {eventsList.length} active and scheduled campus events.
+                {eventScope === "archive"
+                  ? `${archivedAdminEvents.length} past events retained for 30 days after archiving.`
+                  : `Monitoring ${eventsList.filter((event) => event.status !== "Archived").length} active and scheduled campus events.`}
               </p>
             </div>
             <div className="relative w-full sm:w-72">
@@ -1387,6 +1448,15 @@ function AdminContent() {
                 className="w-full pl-10 pr-3 py-2 text-xs sm:text-sm border border-[#e6e1d8] rounded-xl bg-white focus:outline-none focus:border-[#ff6b35]"
               />
             </div>
+          </div>
+
+          <div className="flex items-center gap-2 bg-[#f0ede6] p-1.5 rounded-2xl border border-[#e6e1d8] w-fit">
+            <button type="button" onClick={() => setEventScope("active")} className={`px-4 py-2 rounded-xl text-xs font-black transition-all ${eventScope === "active" ? "bg-[#171717] text-white" : "text-[#666666] hover:text-[#171717]"}`}>
+              Active Events ({eventsList.filter((event) => event.status !== "Archived").length})
+            </button>
+            <button type="button" onClick={() => setEventScope("archive")} className={`px-4 py-2 rounded-xl text-xs font-black transition-all ${eventScope === "archive" ? "bg-[#171717] text-white" : "text-[#666666] hover:text-[#171717]"}`}>
+              Archive ({archivedAdminEvents.length})
+            </button>
           </div>
 
           <div className="bg-white border border-[#e6e1d8] rounded-2xl shadow-sm overflow-hidden">
@@ -1402,16 +1472,14 @@ function AdminContent() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-[#e6e1d8]">
-                {eventsList.length === 0 ? (
+                {displayedAdminEvents.length === 0 ? (
                   <tr>
                     <td colSpan={6} className="py-12 text-center text-xs text-[#888888]">
-                      No events currently listed across campus. When organizers publish events, they will appear here for moderation.
+                      {eventScope === "archive" ? "Past events will remain here for 30 days after archiving." : "No active or scheduled events currently need monitoring."}
                     </td>
                   </tr>
                 ) : (
-                  eventsList
-                    .filter((e) => e.title.toLowerCase().includes(eventSearch.toLowerCase()))
-                    .map((e) => (
+                  displayedAdminEvents.map((e) => (
                       <tr key={e.id} className="hover:bg-[#faf8f3]/60 transition-colors">
                         <td className="py-4 px-6 font-bold text-[#171717]">
                           <div className="flex flex-col gap-1">
@@ -1440,7 +1508,9 @@ function AdminContent() {
                           <span className={`text-xs font-bold px-2.5 py-0.5 rounded-full ${
                             e.status === "Active" ? "bg-emerald-50 text-emerald-700 border border-emerald-200" : e.status === "Draft" ? "bg-amber-50 text-amber-700 border border-amber-200" : e.status === "Flagged" ? "bg-rose-50 text-rose-700 border border-rose-200" : "bg-gray-100 text-gray-700 border border-gray-200"
                           }`}>
-                            {e.status}
+                            {e.status === "Archived" && e.archiveExpiresAt
+                              ? `Archived · until ${new Date(e.archiveExpiresAt).toLocaleDateString("en-US", { month: "short", day: "numeric" })}`
+                              : e.status}
                           </span>
                         </td>
                         <td className="py-4 px-6 text-right">
@@ -1475,24 +1545,46 @@ function AdminContent() {
                 {pendingReportsCount} Open Review{pendingReportsCount !== 1 ? 's' : ''}
               </span>
               <span className="text-xs font-bold px-3 py-1.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200">
-                {reports.filter((r) => r.status === "resolved").length} Resolved
+                {archivedReports.length} Archived
               </span>
             </div>
           </div>
 
-          {reports.length === 0 ? (
+          <div className="flex items-center gap-2 bg-[#f0ede6] p-1.5 rounded-2xl border border-[#e6e1d8] w-fit">
+            <button
+              type="button"
+              onClick={() => setReportTab("active")}
+              className={`px-4 py-2 rounded-xl text-xs font-black transition-all ${reportTab === "active" ? "bg-[#171717] text-white" : "text-[#666666] hover:text-[#171717]"}`}
+            >
+              Active Incidents ({activeReports.length})
+            </button>
+            <button
+              type="button"
+              onClick={() => setReportTab("archive")}
+              className={`px-4 py-2 rounded-xl text-xs font-black transition-all flex items-center gap-1.5 ${reportTab === "archive" ? "bg-[#171717] text-white" : "text-[#666666] hover:text-[#171717]"}`}
+            >
+              <Archive className="w-3.5 h-3.5" />
+              Archive History ({archivedReports.length})
+            </button>
+          </div>
+
+          {displayedReports.length === 0 ? (
             <div className="bg-white border border-[#e6e1d8] rounded-2xl shadow-sm p-12 text-center space-y-3">
               <div className="w-12 h-12 rounded-full bg-emerald-50 text-emerald-600 flex items-center justify-center mx-auto">
-                <Check className="w-6 h-6" />
+                {reportTab === "archive" ? <Archive className="w-6 h-6" /> : <Check className="w-6 h-6" />}
               </div>
-              <h3 className="font-black text-base text-[#171717]">All Good! No Reports Pending</h3>
+              <h3 className="font-black text-base text-[#171717]">
+                {reportTab === "archive" ? "No Archived Incidents" : "All Good! No Reports Pending"}
+              </h3>
               <p className="text-xs text-[#666666] max-w-sm mx-auto leading-relaxed">
-                There are currently no active attendee safety or policy violation reports on Spott.
+                {reportTab === "archive"
+                  ? "Resolved incidents will be retained here for 30 days."
+                  : "There are currently no active attendee safety or policy violation reports on Spott."}
               </p>
             </div>
           ) : (
             <div className="bg-white border border-[#e6e1d8] rounded-2xl shadow-sm p-6 space-y-4">
-              {reports.map((rep) => (
+              {displayedReports.map((rep) => (
                 <div
                   key={rep.id}
                   className="flex flex-col sm:flex-row sm:items-center justify-between p-4 rounded-xl bg-[#faf8f3] border border-[#e6e1d8] gap-4 hover:border-[#ff6b35]/40 transition-colors"
@@ -1523,7 +1615,7 @@ function AdminContent() {
 
                     {rep.details && (
                       <p className="text-xs text-[#444444] bg-white p-2.5 rounded-lg border border-[#e6e1d8] mt-1 leading-relaxed">
-                        "{rep.details}"
+                        &quot;{rep.details}&quot;
                       </p>
                     )}
 
@@ -1532,6 +1624,11 @@ function AdminContent() {
                         <Check className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
                         <span>Action: {rep.resolutionNote}</span>
                         {rep.decidedAt ? <span className="text-[#888888] font-normal">({rep.decidedAt})</span> : null}
+                        {rep.expiresAt ? (
+                          <span className="text-[#888888] font-normal">
+                            · Retained until {new Date(rep.expiresAt).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}
+                          </span>
+                        ) : null}
                       </div>
                     )}
                   </div>
@@ -1652,7 +1749,7 @@ function AdminContent() {
                   <span className="font-bold text-[#171717]">{moderationSettings.sensitivity} Policy</span>
                 </div>
                 <p className="text-[11px] text-[#888888] pt-1 leading-relaxed">
-                  Events with capacity or RSVPs at or above {moderationSettings.capacityThreshold} will display a "Crowd Review" badge in your Events moderation list.
+                  Events with capacity or RSVPs at or above {moderationSettings.capacityThreshold} will display a &quot;Crowd Review&quot; badge in your Events moderation list.
                 </p>
               </div>
 
@@ -1773,7 +1870,7 @@ function AdminContent() {
                           {isExpedited && verState.expediteNote && (
                             <div className="text-xs text-amber-900 bg-amber-100/70 px-2.5 py-1 rounded-lg border border-amber-300/60 inline-flex items-center gap-1.5 mt-1 font-medium">
                               <span className="font-black text-amber-800">Note:</span>
-                              <span>"{verState.expediteNote}"</span>
+                              <span>&quot;{verState.expediteNote}&quot;</span>
                             </div>
                           )}
                         </div>
@@ -2009,62 +2106,41 @@ function AdminContent() {
             <div>
               <h1 className="text-2xl sm:text-3xl font-black text-[#171717]">Platform Analytics & System Intelligence</h1>
               <p className="text-sm text-[#666666] mt-0.5">
-                High-level engagement, growth trajectory, category distribution, and moderation response trends.
+                Monthly platform adoption, event activity, RSVP volume, and moderation trends.
               </p>
             </div>
-            <span className="text-xs font-bold px-3 py-1.5 bg-emerald-50 text-emerald-700 rounded-xl border border-emerald-200 flex items-center gap-1.5 self-start sm:self-auto">
-              <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
-              Live Data
-            </span>
+            <label className="flex flex-col gap-1 text-[11px] font-bold uppercase tracking-wide text-[#666666]">
+              Reporting month · {monthlyMetrics.rangeLabel}
+              <input type="month" value={analyticsMonth} max={new Date().toISOString().slice(0, 7)} onChange={(event) => setAnalyticsMonth(event.target.value)} className="px-3 py-2 rounded-xl border border-[#e6e1d8] bg-white text-sm font-semibold normal-case tracking-normal text-[#171717]" />
+            </label>
           </div>
 
           {/* Top 4 KPI Metrics — all derived from real state */}
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
             <div className="bg-white border border-[#e6e1d8] rounded-2xl p-5 shadow-sm">
-              <span className="text-xs font-bold text-[#666666] uppercase block mb-1">Registered Users</span>
-              <p className="text-3xl sm:text-4xl font-black text-[#171717]">{usersList.length}</p>
+              <span className="text-xs font-bold text-[#666666] uppercase block mb-1">Users Joined</span>
+              <p className="text-3xl sm:text-4xl font-black text-[#171717]">{monthlyMetrics.users}</p>
               <p className="text-xs text-[#888888] font-medium mt-2">
-                {usersList.length === 0 ? "No accounts yet" : `${usersList.filter(u => u.role === "Student").length} students, ${usersList.filter(u => u.role === "Organizer").length} organizers`}
+                {monthlyMetrics.monthLabel} · {usersList.filter((user) => user.status === "Active").length} active accounts total
               </p>
             </div>
             <div className="bg-white border border-[#e6e1d8] rounded-2xl p-5 shadow-sm">
-              <span className="text-xs font-bold text-[#666666] uppercase block mb-1">Total Events</span>
-              <p className="text-3xl sm:text-4xl font-black text-[#ff6b35]">{eventsList.length}</p>
+              <span className="text-xs font-bold text-[#666666] uppercase block mb-1">Events Created</span>
+              <p className="text-3xl sm:text-4xl font-black text-[#ff6b35]">{monthlyMetrics.events}</p>
               <p className="text-xs text-[#666666] font-medium mt-2">
-                {eventsList.length === 0 ? "No events published yet" : `${eventsList.filter(e => e.status === "Active").length} active, ${eventsList.filter(e => e.status === "Draft").length} draft`}
+                {monthlyMetrics.monthLabel} · {eventsList.filter((event) => event.status === "Active").length} active now
               </p>
             </div>
             <div className="bg-white border border-[#e6e1d8] rounded-2xl p-5 shadow-sm">
-              <span className="text-xs font-bold text-[#666666] uppercase block mb-1">Verified Organizations</span>
-              {(() => {
-                // Count all organizers whose live status is "approved"
-                const approvedCount = verifications.filter((v) => {
-                  const isMetro = v.organizer.toLowerCase().includes("metro creative");
-                  return (isMetro ? verState.status : v.status) === "approved";
-                }).length;
-                const pendingCount = verifications.filter((v) => {
-                  const isMetro = v.organizer.toLowerCase().includes("metro creative");
-                  return (isMetro ? verState.status : v.status) === "pending";
-                }).length;
-                return (
-                  <>
-                    <p className="text-3xl sm:text-4xl font-black text-[#171717]">{approvedCount}</p>
-                    <p className="text-xs text-[#888888] font-medium mt-2">
-                      {pendingCount > 0
-                        ? `${pendingCount} pending review`
-                        : approvedCount === 0
-                        ? "No verified orgs yet"
-                        : `${approvedCount} verified org${approvedCount !== 1 ? "s" : ""}`}
-                    </p>
-                  </>
-                );
-              })()}
+              <span className="text-xs font-bold text-[#666666] uppercase block mb-1">RSVP Submissions</span>
+              <p className="text-3xl sm:text-4xl font-black text-[#171717]">{monthlyMetrics.rsvps}</p>
+              <p className="text-xs text-[#888888] font-medium mt-2">Received during {monthlyMetrics.monthLabel}</p>
             </div>
             <div className="bg-white border border-[#e6e1d8] rounded-2xl p-5 shadow-sm">
               <span className="text-xs font-bold text-[#666666] uppercase block mb-1">Open Reports</span>
               {(() => {
-                const openCount = reports.filter((r) => r.status === "open").length;
-                const resolvedCount = reports.filter((r) => r.status === "resolved").length;
+                const openCount = monthlyMetrics.openReports;
+                const resolvedCount = monthlyMetrics.reports - monthlyMetrics.openReports;
                 return (
                   <>
                     <p className={`text-3xl sm:text-4xl font-black ${openCount > 0 ? "text-rose-600" : "text-emerald-600"}`}>
@@ -2199,10 +2275,10 @@ function AdminContent() {
               ) : (() => {
                 const venues: Record<string, { events: number; rsvps: number }> = {};
                 eventsList.forEach(e => {
-                  const v = (e as any).location || "Campus Venue";
+                  const v = e.location || "Campus Venue";
                   if (!venues[v]) venues[v] = { events: 0, rsvps: 0 };
                   venues[v].events += 1;
-                  venues[v].rsvps += (e as any).rsvps || 0;
+                  venues[v].rsvps += e.registrations || 0;
                 });
                 const sorted = Object.entries(venues).sort((a, b) => b[1].events - a[1].events).slice(0, 4);
                 const maxEvents = sorted[0]?.[1].events || 1;
@@ -2287,7 +2363,7 @@ function AdminContent() {
                 <label className="block text-[#666666] mb-1.5">Assigned Platform Role</label>
                 <select
                   value={selectedUser.role}
-                  onChange={(e) => setSelectedUser({ ...selectedUser, role: e.target.value as any })}
+                  onChange={(e) => setSelectedUser({ ...selectedUser, role: e.target.value as typeof selectedUser.role })}
                   className="w-full border border-[#e6e1d8] rounded-xl px-3.5 py-2.5 text-sm font-bold bg-white focus:outline-none focus:border-[#ff6b35]"
                 >
                   <option value="Student">Student (Standard Attendee)</option>
@@ -2326,7 +2402,7 @@ function AdminContent() {
                 return (
                   <div className="p-3 bg-[#faf8f3] border border-[#e6e1d8] rounded-xl flex items-center justify-between text-xs">
                     <div>
-                      <span className="text-[#888888] font-bold block text-[10px] uppercase tracking-wider">Date Joined (Real-Time)</span>
+                      <span className="text-[#888888] font-bold block text-[10px] uppercase tracking-wider">Date Joined</span>
                       <span className="text-[#171717] font-extrabold text-sm flex items-center gap-1.5 mt-0.5">
                         {rt.isRecent && (
                           <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse inline-block" />
@@ -2406,7 +2482,7 @@ function AdminContent() {
               <div>
                 <label className="block text-[#666666] mb-1.5">Listing Status</label>
                 <div className="grid grid-cols-4 gap-1.5">
-                  {(["Active", "Draft", "Past", "Flagged"] as const).map((st) => (
+                  {(["Active", "Draft", "Archived", "Flagged"] as const).map((st) => (
                     <button
                       key={st}
                       type="button"
@@ -2477,7 +2553,7 @@ function AdminContent() {
                 <p className="font-bold text-rose-900">Event: {selectedReport.event}</p>
                 <p className="text-rose-800">Violation: {selectedReport.reason}</p>
                 <p className="text-rose-700">Reported by: {selectedReport.reporter}</p>
-                {selectedReport.details && <p className="text-[#555555] pt-1">Note: "{selectedReport.details}"</p>}
+                {selectedReport.details && <p className="text-[#555555] pt-1">Note: &quot;{selectedReport.details}&quot;</p>}
               </div>
 
               <div className="space-y-2 pt-2">
@@ -2545,7 +2621,7 @@ function AdminContent() {
                     <span>⚡ Priority Expedited (Emergency Review Active)</span>
                   </div>
                   <p className="text-[11px] text-amber-800">
-                    "{verState.expediteNote || "Organizer requested priority accreditation."}"
+                    &quot;{verState.expediteNote || "Organizer requested priority accreditation."}&quot;
                   </p>
                 </div>
               )}

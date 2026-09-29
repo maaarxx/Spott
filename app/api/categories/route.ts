@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import { createClient } from '@/lib/supabase-server';
+import { errorMessage } from '@/lib/error-message';
 
 export async function GET() {
   try {
@@ -13,8 +14,8 @@ export async function GET() {
     if (error) throw error;
 
     return NextResponse.json({ success: true, categories: data });
-  } catch (err: any) {
-    console.warn("Categories query failed, using fallback:", err.message);
+  } catch (err: unknown) {
+    console.warn("Categories query failed, using fallback:", errorMessage(err));
     const defaultCategories = [
       { category_id: "1", category_name: "Music" },
       { category_id: "2", category_name: "Food" },

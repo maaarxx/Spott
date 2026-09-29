@@ -20,7 +20,8 @@ import {
 } from "lucide-react";
 import { getStoredEvents, saveStoredEvent, subscribeToEvents } from "@/lib/events-store";
 import { addNotification } from "@/lib/notifications-store";
-import { getCurrentUser } from "@/lib/auth-store";
+import { getCurrentUser, getUserRegisteredEvents, saveUserRegisteredEvents } from "@/lib/auth-store";
+import { getUserProfile } from "@/lib/user-profile-store";
 
 function isOrgEvent(eventOrg: string | undefined | null, currentOrg: string): boolean {
   const normCurrent = (currentOrg || "").trim().toLowerCase();
@@ -46,6 +47,7 @@ interface Attendee {
   ticketType?: string;
   phone?: string;
   notes?: string;
+  checkedIn?: boolean;
 }
 
 function RsvpManagementContent() {
@@ -97,7 +99,10 @@ function RsvpManagementContent() {
     try {
       const raw = localStorage.getItem("spott_guest_lists");
       const parsed = raw ? JSON.parse(raw) : {};
-      const list: Attendee[] = parsed[eventKey] || [];
+      const list: Attendee[] = (parsed[eventKey] || []).map((attendee: Attendee) => ({
+        ...attendee,
+        phone: getUserProfile(attendee.email).phone,
+      }));
 
       // If attendee list is empty in storage but event has registrations in directory:
       const stored = getStoredEvents();
@@ -110,7 +115,7 @@ function RsvpManagementContent() {
           status: "Confirmed",
           dateRegistered: new Date().toISOString().split("T")[0],
           ticketType: "General Admission",
-          phone: "+63 917 123 4567",
+          phone: getUserProfile("jdc@spott.ph").phone,
           notes: "Campus Student RSVP",
         };
         parsed[eventKey] = [autoAttendee];
@@ -169,12 +174,13 @@ function RsvpManagementContent() {
   const handleExportCSV = () => {
     const currentEvent = availableEvents.find((e) => e.id === selectedEventKey);
     const eventTitle = currentEvent ? currentEvent.title : "Event";
-    const headers = ["Name", "Email", "RSVP Status", "Date Registered", "Ticket Type", "Notes"];
+    const headers = ["Name", "Email", "RSVP Status", "Date Registered", "Checked In", "Ticket Type", "Notes"];
     const rows = attendees.map((a) => [
       `"${a.name}"`,
       `"${a.email}"`,
       `"${a.status}"`,
       `"${a.dateRegistered}"`,
+      `"${a.checkedIn ? "Yes" : "No"}"`,
       `"${a.ticketType || ""}"`,
       `"${a.notes || ""}"`,
     ]);
@@ -199,36 +205,39 @@ function RsvpManagementContent() {
 
   // Toggle status (e.g. Cancel or Confirm / Approve)
   const handleToggleStatus = (id: string, newStatus: "Confirmed" | "Pending" | "Declined") => {
-    let affectedAttendee: Attendee | null = null;
+    const affectedAttendee = attendees.find((a) => a.id === id);
+    if (!affectedAttendee || affectedAttendee.status === newStatus) return;
 
-    setAttendees((prev) => {
-      const target = prev.find((a) => a.id === id);
-      if (target) affectedAttendee = target;
-      const updated = prev.map((a) => (a.id === id ? { ...a, status: newStatus } : a));
-      if (selectedEventKey) {
-        try {
-          const raw = localStorage.getItem("spott_guest_lists");
-          const map = raw ? JSON.parse(raw) : {};
-          map[selectedEventKey] = updated;
-          localStorage.setItem("spott_guest_lists", JSON.stringify(map));
-        } catch {}
+    const updated = attendees.map((a) => (a.id === id ? { ...a, status: newStatus } : a));
+    setAttendees(updated);
 
-        // Keep registrations counter in sync with confirmed attendees
-        try {
-          const stored = getStoredEvents();
-          const evtIdx = stored.findIndex((e) => e.id === selectedEventKey);
-          if (evtIdx !== -1) {
-            const confirmedTotal = updated.filter((a) => a.status === "Confirmed").length;
-            stored[evtIdx].registrations = confirmedTotal;
-            saveStoredEvent(stored[evtIdx]);
-          }
-        } catch {}
+    if (selectedEventKey) {
+      try {
+        const raw = localStorage.getItem("spott_guest_lists");
+        const map = raw ? JSON.parse(raw) : {};
+        map[selectedEventKey] = updated;
+        localStorage.setItem("spott_guest_lists", JSON.stringify(map));
+      } catch {}
 
-        window.dispatchEvent(new Event("spott_events_updated"));
-        window.dispatchEvent(new Event("spott_registered_updated"));
+      if (newStatus === "Declined" && affectedAttendee.email) {
+        const remainingEventIds = getUserRegisteredEvents(affectedAttendee.email)
+          .filter((eventId) => eventId !== selectedEventKey);
+        saveUserRegisteredEvents(remainingEventIds, affectedAttendee.email);
       }
-      return updated;
-    });
+
+      // The event's registration count represents confirmed attendees only.
+      try {
+        const stored = getStoredEvents();
+        const evtIdx = stored.findIndex((e) => e.id === selectedEventKey);
+        if (evtIdx !== -1) {
+          stored[evtIdx].registrations = updated.filter((a) => a.status === "Confirmed").length;
+          saveStoredEvent(stored[evtIdx]);
+        }
+      } catch {}
+
+      window.dispatchEvent(new Event("spott_events_updated"));
+      window.dispatchEvent(new Event("spott_registered_updated"));
+    }
 
     if (affectedAttendee && selectedEvent) {
       if (newStatus === "Confirmed") {
@@ -237,6 +246,7 @@ function RsvpManagementContent() {
           title: `RSVP Confirmed: "${selectedEvent.title}"`,
           message: `Your RSVP for ${selectedEvent.title} was confirmed.`,
           targetRole: "user",
+          recipientEmail: affectedAttendee.email,
           link: `/events/${selectedEventKey}`,
         });
       } else if (newStatus === "Declined") {
@@ -245,6 +255,7 @@ function RsvpManagementContent() {
           title: `RSVP Update: "${selectedEvent.title}"`,
           message: `Your RSVP for ${selectedEvent.title} was declined by the organizer.`,
           targetRole: "user",
+          recipientEmail: affectedAttendee.email,
           link: `/events/${selectedEventKey}`,
         });
       }
@@ -252,6 +263,23 @@ function RsvpManagementContent() {
 
     if (selectedAttendee && selectedAttendee.id === id) {
       setSelectedAttendee((prev) => (prev ? { ...prev, status: newStatus } : null));
+    }
+  };
+
+  const handleToggleCheckIn = (id: string) => {
+    const updated = attendees.map((attendee) => attendee.id === id
+      ? { ...attendee, checkedIn: !attendee.checkedIn }
+      : attendee);
+    setAttendees(updated);
+    try {
+      const raw = localStorage.getItem("spott_guest_lists");
+      const map = raw ? JSON.parse(raw) : {};
+      map[selectedEventKey] = updated;
+      localStorage.setItem("spott_guest_lists", JSON.stringify(map));
+      window.dispatchEvent(new Event("spott_registered_updated"));
+    } catch {}
+    if (selectedAttendee?.id === id) {
+      setSelectedAttendee((current) => current ? { ...current, checkedIn: !current.checkedIn } : null);
     }
   };
 
@@ -311,10 +339,10 @@ function RsvpManagementContent() {
           <p className="text-[11px] text-[#888888] mt-2">Active registrations</p>
         </div>
 
-        {/* Confirmed */}
+        {/* Going */}
         <div className="bg-white border border-[#e6e1d8] rounded-2xl p-5 shadow-sm hover:border-emerald-500/40 transition-colors">
           <span className="text-xs font-bold text-emerald-700 uppercase tracking-wide block mb-2">
-            Confirmed
+            Going
           </span>
           <div className="flex items-baseline gap-2">
             <span className="text-3xl sm:text-4xl font-black text-emerald-600">
@@ -332,17 +360,17 @@ function RsvpManagementContent() {
           <p className="text-[11px] text-[#888888] mt-2">
             {selectedEvent?.capacity
               ? `${Math.max(0, selectedEvent.capacity - confirmedCount)} spots remaining`
-              : "Checked-in & reserved"}
+              : `${attendees.filter((attendee) => attendee.checkedIn).length} checked in`}
           </p>
         </div>
 
-        {/* Pending */}
+        {/* Maybe */}
         <div className={`bg-white border rounded-2xl p-5 shadow-sm transition-colors ${
           pendingCount > 0 ? "border-[#ff6b35] bg-[#fffbf9]" : "border-[#e6e1d8] hover:border-[#ff6b35]/40"
         }`}>
           <div className="flex items-center justify-between mb-2">
             <span className="text-xs font-bold text-[#ff6b35] uppercase tracking-wide">
-              Pending
+              Maybe
             </span>
             {pendingCount > 0 && (
               <span className="text-[10px] font-black uppercase px-2 py-0.5 rounded-full bg-amber-100 text-amber-800 animate-pulse">
@@ -399,8 +427,8 @@ function RsvpManagementContent() {
               className="px-3.5 py-2 text-xs sm:text-sm font-bold border border-[#e6e1d8] rounded-xl bg-white text-[#171717] focus:outline-none focus:border-[#ff6b35] cursor-pointer"
             >
               <option value="All">Status: All</option>
-              <option value="Confirmed">Confirmed</option>
-              <option value="Pending">Pending</option>
+              <option value="Confirmed">Going</option>
+              <option value="Pending">Maybe</option>
               <option value="Declined">Declined</option>
             </select>
           </div>
@@ -415,13 +443,14 @@ function RsvpManagementContent() {
                 <th className="py-3.5 px-6">Email</th>
                 <th className="py-3.5 px-6">RSVP Status</th>
                 <th className="py-3.5 px-6">Date Registered</th>
+                <th className="py-3.5 px-6">Check-in</th>
                 <th className="py-3.5 px-6 text-right">Actions</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-[#e6e1d8]">
               {filteredAttendees.length === 0 ? (
                 <tr>
-                  <td colSpan={5} className="py-12 text-center text-[#888888] text-sm">
+                  <td colSpan={6} className="py-12 text-center text-[#888888] text-sm">
                     {attendees.length === 0
                       ? "No RSVPs recorded yet. When guests register for your events, they will appear here in real-time."
                       : "No attendees match your search."}
@@ -458,11 +487,18 @@ function RsvpManagementContent() {
                               : "bg-rose-500"
                           }`}
                         />
-                        {attendee.status}
+                        {attendee.status === "Confirmed" ? "Going" : attendee.status === "Pending" ? "Maybe" : "Declined"}
                       </span>
                     </td>
                     <td className="py-4 px-6 text-xs font-semibold text-[#444444] whitespace-nowrap">
                       {attendee.dateRegistered}
+                    </td>
+                    <td className="py-4 px-6 whitespace-nowrap">
+                      {attendee.status === "Confirmed" ? (
+                        <button type="button" onClick={() => handleToggleCheckIn(attendee.id)} className={`px-2.5 py-1 rounded-lg text-xs font-bold ${attendee.checkedIn ? "bg-emerald-100 text-emerald-800" : "bg-white border border-[#e6e1d8] text-[#666666] hover:border-emerald-500"}`}>
+                          {attendee.checkedIn ? "Checked in" : "Check in"}
+                        </button>
+                      ) : <span className="text-xs text-[#aaaaaa]">—</span>}
                     </td>
                     <td className="py-4 px-6 text-right whitespace-nowrap">
                       <div className="inline-flex items-center gap-3">
@@ -539,7 +575,7 @@ function RsvpManagementContent() {
                 </div>
                 <div>
                   <span className="text-[11px] font-bold text-[#666666] uppercase block">Registered</span>
-                  <span className="text-xs font-black text-[#171717]">{selectedAttendee.dateRegistered}</span>
+                    <span className="text-xs font-black text-[#171717]">{selectedAttendee.dateRegistered}</span>
                 </div>
                 {selectedAttendee.phone && (
                   <div className="col-span-2">
@@ -548,15 +584,6 @@ function RsvpManagementContent() {
                   </div>
                 )}
               </div>
-
-              {selectedAttendee.notes && (
-                <div>
-                  <span className="text-xs font-bold text-[#666666] block mb-1">Attendee Note:</span>
-                  <p className="text-xs bg-gray-50 p-2.5 rounded-lg border border-gray-200 text-[#444444]">
-                    "{selectedAttendee.notes}"
-                  </p>
-                </div>
-              )}
 
               <div>
                 <span className="text-xs font-bold text-[#666666] block mb-2">Update RSVP Status:</span>
@@ -569,7 +596,7 @@ function RsvpManagementContent() {
                         : "bg-white text-emerald-700 border-emerald-200 hover:bg-emerald-50"
                     }`}
                   >
-                    Confirmed
+                    Going
                   </button>
                   <button
                     onClick={() => handleToggleStatus(selectedAttendee.id, "Pending")}
@@ -579,7 +606,7 @@ function RsvpManagementContent() {
                         : "bg-white text-[#ff6b35] border-[#ff6b35]/30 hover:bg-[#fff0e8]"
                     }`}
                   >
-                    Pending
+                    Maybe
                   </button>
                   <button
                     onClick={() => handleToggleStatus(selectedAttendee.id, "Declined")}

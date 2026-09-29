@@ -417,7 +417,7 @@ export default function MyEventsPage() {
               <Bookmark className="w-12 h-12 text-muted mx-auto mb-4 stroke-1" />
               <h3 className="font-bold text-lg text-ink mb-2">No events found</h3>
               <p className="text-muted text-sm mb-6">
-                You haven't {activeTab} any events yet. Explore events happening around you.
+                You haven&apos;t {activeTab} any events yet. Explore events happening around you.
               </p>
               <Link
                 href="/discover"

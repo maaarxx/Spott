@@ -62,6 +62,7 @@ CREATE TABLE public.events (
   end_datetime TIMESTAMP,
   price DECIMAL(10,2) DEFAULT 0,
   status VARCHAR(20) DEFAULT 'active',
+  archived_at TIMESTAMP WITH TIME ZONE DEFAULT NULL,
   capacity INTEGER DEFAULT NULL,
   require_approval BOOLEAN DEFAULT FALSE,
   is_still_happening_confirmed_at TIMESTAMP,

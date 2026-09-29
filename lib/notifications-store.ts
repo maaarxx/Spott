@@ -11,6 +11,7 @@ export type NotificationItem = {
   title: string;
   message: string;
   targetRole: TargetRole;
+  recipientEmail?: string;
   isRead: boolean;
   createdAt: string;
   link?: string;
@@ -53,7 +54,7 @@ export function getNotifications(role: TargetRole = "all", email?: string): Noti
   if (typeof window === "undefined") return INITIAL_NOTIFICATIONS;
   try {
     const raw = localStorage.getItem(STORAGE_KEY_NOTIFS);
-    let list: NotificationItem[] = raw ? JSON.parse(raw) : INITIAL_NOTIFICATIONS;
+    const list: NotificationItem[] = raw ? JSON.parse(raw) : INITIAL_NOTIFICATIONS;
     if (!raw) {
       localStorage.setItem(STORAGE_KEY_NOTIFS, JSON.stringify(INITIAL_NOTIFICATIONS));
     }
@@ -63,6 +64,13 @@ export function getNotifications(role: TargetRole = "all", email?: string): Noti
     if (role !== "all") {
       filtered = list.filter((n) => n.targetRole === role || n.targetRole === "all");
     }
+
+    const currentEmail = (email || getCurrentUser()?.email || "").trim().toLowerCase();
+    filtered = filtered.filter(
+      (notification) =>
+        !notification.recipientEmail ||
+        (!!currentEmail && notification.recipientEmail.trim().toLowerCase() === currentEmail)
+    );
 
     // User-scoped read tracking: each user (especially new users) has their own read status
     const readIds = getUserReadNotifIds(email);
@@ -81,6 +89,7 @@ export function addNotification(
     title: string;
     message: string;
     targetRole?: TargetRole;
+    recipientEmail?: string;
     link?: string;
   }
 ): NotificationItem {
@@ -90,6 +99,7 @@ export function addNotification(
     title: data.title,
     message: data.message,
     targetRole: data.targetRole || "all",
+    recipientEmail: data.recipientEmail?.trim().toLowerCase(),
     isRead: false,
     createdAt: new Date().toISOString(),
     link: data.link,
@@ -197,7 +207,14 @@ export function removeNotificationsForEvent(eventId: string, eventTitle?: string
   } catch {}
 }
 
-export function syncNotificationsForEvents(events: any[]) {
+export function syncNotificationsForEvents(events: Array<{
+  id: string;
+  title: string;
+  organizer?: string;
+  city?: string;
+  location?: string;
+  date?: string;
+}>) {
   if (typeof window === "undefined" || !events?.length) return;
   try {
     const raw = localStorage.getItem(STORAGE_KEY_NOTIFS);

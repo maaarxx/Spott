@@ -177,7 +177,7 @@ function DiscoverContent() {
   const refLng = userLocation?.lng ?? 121.0244;
 
   // Filter events based on search, category, and radius
-  let filteredEvents = events.filter((event) => {
+  const filteredEvents = events.filter((event) => {
     const categories = Array.isArray(event.categories) ? event.categories : [];
     const matchesSearch = matchesSearchQuery(event, searchQuery);
     const hasDirectMatch = searchQuery.trim() ? matchesDirectText(event, searchQuery) : false;

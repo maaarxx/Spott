@@ -220,8 +220,9 @@ export async function recordEventView(
 export function subscribeToViews(callback: (eventId?: string) => void): () => void {
   if (typeof window === "undefined") return () => {};
 
-  const handleCustom = (e: any) => {
-    callback(e?.detail?.eventId);
+  const handleCustom = (event: Event) => {
+    const eventId = (event as CustomEvent<{ eventId?: string }>).detail?.eventId;
+    callback(eventId);
   };
 
   const handleStorage = (e: StorageEvent) => {

@@ -1,60 +1,81 @@
-# Spott – Spotting your next spot!
+# Spott
 
-## Description
-Spott is a low-friction local event discovery platform where users can discover events such as concerts, workshops, night markets, school events, and community activities. It allows users to browse seamlessly without logging in, while providing Organizers and Admins powerful dashboards to manage and verify events.
+Spott is a local event discovery app for finding concerts, workshops, markets, school events, and other community activities. Visitors can browse events, while attendees, organizers, and administrators have tools for saved events, RSVPs, event management, and moderation.
 
 ## Features
-- **Event Discovery**: Browse, search, and filter events by category with a responsive map/list toggle UI.
-- **Dynamic Event Details**: Detailed pages for events displaying organizer verification status, live RSVP counts, and dynamic pricing.
-- **RSVP & Saving**: Authenticated users can register for events and save them for later.
-- **Organizer Dashboard**: Verified organizers can create and manage their events.
-- **Admin Dashboard**: For moderating reports and verifying organizers.
-- **Responsive Design**: Works perfectly across mobile, tablet, and desktop viewports.
 
-## Technology Stack
-- **Frontend**: Next.js (App Router), React, TypeScript, Tailwind CSS
-- **Backend**: Next.js API Routes (Serverless)
-- **Database**: PostgreSQL hosted on Supabase (accessed via `@supabase/supabase-js`)
-- **Validation**: Zod + React Hook Form
+- Search and filter events by category, date, organizer, price, and location; browse events in list or map views.
+- View event details, organizer verification, RSVP counts, and cancellation updates.
+- Save events, register for events, and manage reminders and notifications.
+- Create and manage event listings as an organizer; organizer verification is managed through the admin area.
+- Review reports, users, and organizer verification in the admin dashboard.
+- Automatically archive ended events and remove archived records after 30 days.
 
-## API Documentation
+## Routes
 
-### 1. Events API (GET)
-**Endpoint**: `GET /api/events`
-**Purpose**: Retrieve available events for the discovery feed.
-**Query Parameters**: 
-- `categoryId` (optional): Filter by category ID.
-- `search` (optional): Filter by title substring.
-**Returns**: Array of event objects populated with organizer, location, and category data.
+| Route | Purpose |
+| --- | --- |
+| `/` | Home and event discovery |
+| `/discover` | Event discovery view |
+| `/events/[id]` | Event details |
+| `/organizers` and `/organizers/[name]` | Organizer directory and profiles |
+| `/login` | Sign-in and registration |
+| `/my-events` | Attendee event list |
+| `/notifications` | Notifications |
+| `/profile` | User profile |
+| `/organizer` | Organizer dashboard |
+| `/organizer/create` | Create an event |
+| `/organizer/rsvp` | Manage event RSVPs |
+| `/admin` | Admin dashboard |
 
-### 2. Single Event API (GET)
-**Endpoint**: `GET /api/events/[id]`
-**Purpose**: Retrieve full details for a specific event.
-**Returns**: Event details object including description, pricing, and live activity metrics.
+## API
 
-### 3. Create Event API (POST)
-**Endpoint**: `POST /api/events`
-**Purpose**: Allows organizers to create new event listings.
-**Body**: JSON containing title, description, category_id, location_id, start_datetime, price.
-**Returns**: The newly created event object.
+| Endpoint | Methods | Purpose |
+| --- | --- | --- |
+| `/api/events` | `GET`, `POST` | List/filter events or create an event. GET supports `search` (or `q`), `category`, `city`, and `scope` (`public`, `organizer`, or `admin`). Creating events requires an organizer or admin; organizers must be verified. |
+| `/api/events/[id]` | `GET`, `PATCH`, `DELETE` | Read, update, cancel, or delete an event. Updates require organizer or admin access and organizers may only manage their own events. |
+| `/api/events/[id]/register` | `POST` | Register for an event. |
+| `/api/events/[id]/save` | `POST` | Save or unsave an event. |
+| `/api/events/[id]/report` | `POST` | Report an event. |
+| `/api/events/[id]/confirm` | `POST` | Confirm that an event is still happening. |
+| `/api/categories` | `GET` | List event categories. |
+| `/api/notifications` | `GET` | Read notifications. |
+| `/api/reminders` | `GET`, `POST`, `DELETE` | List, create, or remove event reminders. |
+| `/api/users` | `GET`, `POST` | Read or create user records. |
+| `/api/views` | `GET`, `POST` | Record and query event listing views. |
+| `/api/admin/clear-data` | `POST` | Admin-only data maintenance endpoint. |
 
-## Installation
+## Technology
 
-To run this project locally:
+- Next.js App Router, React, and TypeScript
+- Tailwind CSS 4
+- Supabase PostgreSQL and Supabase Auth integration
+- Leaflet and Google Maps integrations
+- React Hook Form and Zod are available for form handling and validation
 
-1. Clone the repository and navigate into it.
-2. Install dependencies:
+Some demo account and app state flows are stored in browser `localStorage`. Server API operations that access protected Supabase data require Supabase credentials and an authenticated role.
+
+## Local Development
+
+Requirements: Node.js and npm.
+
 ```bash
 npm install
-```
-3. Create a `.env.local` file with your Supabase credentials:
-```env
-NEXT_PUBLIC_SUPABASE_URL=your_supabase_url
-NEXT_PUBLIC_SUPABASE_ANON_KEY=your_anon_key
-SUPABASE_SERVICE_ROLE_KEY=your_service_role_key
-```
-4. Start the development server:
-```bash
 npm run dev
 ```
-5. Open [http://localhost:3000](http://localhost:3000) in your browser.
+
+Open [http://localhost:3000](http://localhost:3000). The app can serve local demo content without Supabase configuration. Supabase-backed data and protected API operations require credentials configured in the runtime environment.
+
+### Database
+
+For a new database, `database/schema.sql` defines the tables and includes sample data. **It drops and recreates existing application tables**, so do not run it against a database with data you need to keep. The incremental SQL files under `database/migrations/` and `supabase/migrations/` are for updating an existing schema; review and apply only the migrations your database still needs. Event archiving uses the `archive_expired_events` database function and optionally Supabase `pg_cron`.
+
+## Scripts
+
+```bash
+npm run dev      # Start the development server
+npm run build    # Create a production build
+npm start        # Run the production server
+npm run lint     # Run ESLint
+npm test         # Run Node.js tests
+```

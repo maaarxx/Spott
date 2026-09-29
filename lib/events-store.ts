@@ -3,10 +3,18 @@
 import type { EventData } from "@/components/EventCard";
 import { removeNotificationsForEvent } from "@/lib/notifications-store";
 import { getVerificationState } from "@/lib/verification-store";
+import { maintainEventArchive } from "@/lib/event-archive.mjs";
 
 const STORAGE_KEY_EVENTS = "spott_events_directory";
 const STORAGE_KEY_UPDATE_PULSE = "spott_events_last_update";
 const BROADCAST_CHANNEL_NAME = "spott_events_sync";
+function persistMaintainedEvents(events: EventData[], changed: boolean) {
+  if (changed && typeof window !== "undefined") {
+    try {
+      localStorage.setItem(STORAGE_KEY_EVENTS, JSON.stringify(events));
+    } catch {}
+  }
+}
 
 export function broadcastEventsUpdated() {
   if (typeof window === "undefined") return;
@@ -67,8 +75,10 @@ export function getStoredEvents(): EventData[] {
   try {
     const raw = localStorage.getItem(STORAGE_KEY_EVENTS);
     if (!raw) return [];
-    const list: EventData[] = JSON.parse(raw);
-    return list.map((e: any) => {
+    const maintained = maintainEventArchive(JSON.parse(raw));
+    const list: EventData[] = maintained.events;
+    persistMaintainedEvents(list, maintained.changed);
+    return list.map((e) => {
       let lat = typeof e.latitude === "string" ? parseFloat(e.latitude) : e.latitude;
       let lng = typeof e.longitude === "string" ? parseFloat(e.longitude) : e.longitude;
       if (!lat || !lng || isNaN(lat) || isNaN(lng)) {

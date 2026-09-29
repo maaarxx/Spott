@@ -21,10 +21,18 @@ export type EventData = {
   address?: string;
   city?: string;
   categories: string[];
+  category?: string;
   registrations?: number;
   latitude?: number;
   longitude?: number;
   confirmedAt?: string | null;
+  createdAt?: string | null;
+  cancelledAt?: string | null;
+  cancelled_at?: string | null;
+  cancelReason?: string | null;
+  cancel_reason?: string | null;
+  archivedAt?: string | null;
+  archiveExpiresAt?: string | null;
   isSaved?: boolean;
   coverImage?: string | null;
   image?: string | null;

@@ -12,6 +12,8 @@ const eslintConfig = defineConfig([
     "out/**",
     "build/**",
     "next-env.d.ts",
+    // One-off data scripts under scratch are not part of the application build.
+    "scratch/**",
   ]),
 ]);
 

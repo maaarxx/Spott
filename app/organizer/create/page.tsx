@@ -802,7 +802,7 @@ export default function CreateEventPage() {
                     </span>
                   </div>
                   <span className="text-xs text-[#666] block mt-0.5">
-                    When enabled, new attendees will enter a <strong>"Pending"</strong> queue in your RSVP Management dashboard until you click Approve.
+                    When enabled, new attendees will enter a <strong>&quot;Pending&quot;</strong> queue in your RSVP Management dashboard until you click Approve.
                   </span>
                 </div>
               </label>

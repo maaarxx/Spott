@@ -14,6 +14,8 @@ export interface ReportItem {
   submitted: string;
   resolutionNote?: string;
   decidedAt?: string;
+  resolvedAt?: string;
+  expiresAt?: string;
 }
 
 const STORAGE_KEY_REPORTS = "spott_incident_reports";
@@ -24,7 +26,30 @@ export function getReports(): ReportItem[] {
   if (typeof window === "undefined") return [];
   try {
     const raw = localStorage.getItem(STORAGE_KEY_REPORTS);
-    return raw ? JSON.parse(raw) : [];
+    if (!raw) return [];
+    const parsed: ReportItem[] = JSON.parse(raw);
+    const now = Date.now();
+    let changed = false;
+    const reports = parsed.filter((report) => {
+      if (report.status !== "resolved") return true;
+
+      const parsedDecision = report.decidedAt ? new Date(report.decidedAt).getTime() : NaN;
+      const legacyDecision = Number.isFinite(parsedDecision) ? parsedDecision : now;
+      const resolvedAt = report.resolvedAt || new Date(legacyDecision).toISOString();
+      const expiresAt = report.expiresAt || new Date(legacyDecision + 30 * 24 * 60 * 60 * 1000).toISOString();
+      if (!report.resolvedAt || !report.expiresAt) {
+        report.resolvedAt = resolvedAt;
+        report.expiresAt = expiresAt;
+        changed = true;
+      }
+      if (new Date(expiresAt).getTime() <= now) {
+        changed = true;
+        return false;
+      }
+      return true;
+    });
+    if (changed) localStorage.setItem(STORAGE_KEY_REPORTS, JSON.stringify(reports));
+    return reports;
   } catch {
     return [];
   }
@@ -105,6 +130,8 @@ export function resolveReport(id: string, resolutionNote: string = "Resolved by 
     status: "resolved",
     resolutionNote,
     decidedAt: formattedDate,
+    resolvedAt: now.toISOString(),
+    expiresAt: new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000).toISOString(),
   };
 
   saveReports(list);

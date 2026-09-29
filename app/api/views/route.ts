@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import { createAdminClient, getAuthenticatedRole } from '@/lib/supabase-server';
+import { errorMessage } from '@/lib/error-message';
 
 // Server-side in-memory cache to support 24-hr dedupe resilience and fast stats
 interface StoredViewRecord {
@@ -173,9 +174,9 @@ export async function POST(request: Request) {
       },
       { status: 201 }
     );
-  } catch (error: any) {
+  } catch (error: unknown) {
     return NextResponse.json(
-      { error: error?.message || 'Internal Server Error' },
+      { error: errorMessage(error) },
       { status: 500 }
     );
   }
@@ -268,9 +269,9 @@ export async function GET(request: Request) {
       totalViews,
       uniqueViews: allUniqueVisitors.size,
     });
-  } catch (error: any) {
+  } catch (error: unknown) {
     return NextResponse.json(
-      { error: error?.message || 'Failed to fetch views' },
+      { error: errorMessage(error, 'Failed to fetch views') },
       { status: 500 }
     );
   }

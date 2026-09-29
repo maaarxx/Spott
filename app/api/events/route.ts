@@ -1,5 +1,8 @@
 import { NextResponse } from 'next/server';
 import { createClient, createAdminClient, getAuthenticatedRole } from '@/lib/supabase-server';
+import { DEFAULT_EVENTS } from '@/lib/default-events';
+import { errorMessage } from '@/lib/error-message';
+
 
 // Server-side in-memory event cache for active dev session & offline resilience
 declare global {
@@ -130,8 +133,8 @@ export async function POST(request: Request) {
 
     const result = await Promise.race([postPromise, timeoutPromise]);
     return NextResponse.json(result);
-  } catch (err: any) {
-    return NextResponse.json({ success: true, note: "Cached locally and on server", error: err.message }, { status: 200 });
+  } catch (err: unknown) {
+    return NextResponse.json({ success: true, note: "Cached locally and on server", error: errorMessage(err) }, { status: 200 });
   }
 }
 
@@ -139,6 +142,32 @@ export async function GET(request: Request) {
   try {
     const supabase = createAdminClient();
     const { searchParams } = new URL(request.url);
+    const requestedScope = searchParams.get('scope') || 'public';
+    const includeDashboardEvents = requestedScope === 'admin' || requestedScope === 'organizer';
+    const account = includeDashboardEvents ? await getAuthenticatedRole() : null;
+    if (requestedScope === 'admin' && (!account || account.role !== 'admin')) {
+      return NextResponse.json({ error: 'Administrator access required' }, { status: 403 });
+    }
+    if (requestedScope === 'organizer' && (!account || account.role !== 'organizer')) {
+      return NextResponse.json({ error: 'Organizer access required' }, { status: 403 });
+    }
+    if (!['public', 'admin', 'organizer'].includes(requestedScope)) {
+      return NextResponse.json({ error: 'Invalid event scope' }, { status: 400 });
+    }
+    let requestedOrganizerName = "";
+    if (requestedScope === 'organizer' && account) {
+      const { data: organizer } = await supabase
+        .from('organizers')
+        .select('organization_name')
+        .eq('user_id', account.userId)
+        .maybeSingle();
+      requestedOrganizerName = organizer?.organization_name || "";
+    }
+    // The scheduled job is the primary lifecycle worker; run it on reads too
+    // so archives remain current if pg_cron is not enabled in this project.
+    try {
+      await supabase.rpc('archive_expired_events');
+    } catch {}
     const search = searchParams.get('search') || searchParams.get('q');
     const category = searchParams.get('category');
     const city = searchParams.get('city');
@@ -151,10 +180,15 @@ export async function GET(request: Request) {
         description,
         start_datetime,
         end_datetime,
+        created_at,
+        archived_at,
+        capacity,
+        require_approval,
         price,
         status,
         is_still_happening_confirmed_at,
-        organizers (
+        organizers!inner (
+          user_id,
           organization_name,
           verification_status
         ),
@@ -172,8 +206,16 @@ export async function GET(request: Request) {
           )
         )
       `)
-      .eq('status', 'active')
       .order('start_datetime', { ascending: true });
+
+    if (includeDashboardEvents) {
+      query = query.in('status', ['active', 'draft', 'flagged', 'archived', 'cancelled', 'past', 'completed', 'done']);
+      if (requestedScope === 'organizer' && account) {
+        query = query.eq('organizers.user_id', account.userId);
+      }
+    } else {
+      query = query.eq('status', 'active');
+    }
 
     if (search) {
       query = query.ilike('title', `%${search}%`);
@@ -191,12 +233,12 @@ export async function GET(request: Request) {
     const { data, error } = await Promise.race([query, timeoutPromise]);
 
     if (error || !data) {
-      return NextResponse.json(filterDefaultEvents(search, category, city));
+      return NextResponse.json(includeDashboardEvents ? [] : filterDefaultEvents(search, category, city));
     }
 
     // Get registration counts
     const eventIds = (data || []).map((e: any) => e.event_id);
-    let regCounts: Record<string, number> = {};
+    const regCounts: Record<string, number> = {};
     try {
       const { data: regData } = await supabase
         .from('registrations')
@@ -211,7 +253,7 @@ export async function GET(request: Request) {
     }
 
     // Flatten the response for easier frontend usage
-    let formattedData = (data || []).map((event: any) => {
+    const formattedData = (data || []).map((event: any) => {
       let desc = event.description || '';
       let coverImage: string | null = null;
       let capacity = event.capacity ? Number(event.capacity) : 100;
@@ -232,6 +274,11 @@ export async function GET(request: Request) {
         description: desc,
         date: event.start_datetime,
         endDate: event.end_datetime,
+        createdAt: event.created_at,
+        archivedAt: event.archived_at,
+        archiveExpiresAt: event.archived_at
+          ? new Date(new Date(event.archived_at).getTime() + 30 * 24 * 60 * 60 * 1000).toISOString()
+          : null,
         price: parseFloat(event.price) || 0,
         status: event.status,
         organizer: event.organizers?.organization_name || 'Unknown',
@@ -250,6 +297,7 @@ export async function GET(request: Request) {
         registrations: regCounts[event.event_id] || 0,
         confirmedAt: event.is_still_happening_confirmed_at,
         capacity,
+        requireApproval: event.require_approval,
         coverImage,
         image: coverImage,
       };
@@ -257,6 +305,8 @@ export async function GET(request: Request) {
 
     // Merge with in-memory server events
     const serverEvents = (globalThis.__spott_server_events || [])
+      .filter((event) => includeDashboardEvents || event.status === 'active')
+      .filter((event) => requestedScope !== 'organizer' || (requestedOrganizerName && event.organizer?.toLowerCase() === requestedOrganizerName.toLowerCase()))
       .filter((se) => !formattedData.some((fd: any) => fd.id === se.id))
       .map((se) => ({
         ...se,
@@ -272,8 +322,8 @@ export async function GET(request: Request) {
     }
 
     return NextResponse.json(combined);
-  } catch (err: any) {
-    console.warn("API route caught exception, using default events fallback:", err.message);
+  } catch (err: unknown) {
+    console.warn("API route caught exception, using default events fallback:", errorMessage(err));
     const { searchParams } = new URL(request.url);
     const search = searchParams.get('search') || searchParams.get('q');
     const category = searchParams.get('category');
@@ -283,7 +333,6 @@ export async function GET(request: Request) {
 }
 
 function filterDefaultEvents(search: string | null, category: string | null, city: string | null) {
-  const { DEFAULT_EVENTS } = require('@/lib/default-events');
   const serverEvents = globalThis.__spott_server_events || [];
   let result = [...serverEvents, ...DEFAULT_EVENTS];
   if (search) {
