@@ -85,11 +85,19 @@ function OrganizerNavContent({ children }: { children: React.ReactNode }) {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [userDropdownOpen, setUserDropdownOpen] = useState(false);
   const [currentUser, setCurrentUser2] = useState<SpottAccount | null>(null);
+  const [authorized, setAuthorized] = useState(false);
   const [verState, setVerState] = useState<VerificationState | null>(null);
 
   useEffect(() => {
-    setCurrentUser2(getCurrentUser());
-    const onAuthChange = () => setCurrentUser2(getCurrentUser());
+    const syncAuth = () => {
+      const user = getCurrentUser();
+      setCurrentUser2(user);
+      const allowed = user?.role === "organizer";
+      setAuthorized(allowed);
+      if (!allowed) router.replace("/login?redirect=%2Forganizer");
+    };
+    syncAuth();
+    const onAuthChange = () => syncAuth();
     window.addEventListener("spott_auth_changed", onAuthChange);
 
     setVerState(getVerificationState());
@@ -100,7 +108,7 @@ function OrganizerNavContent({ children }: { children: React.ReactNode }) {
       window.removeEventListener("spott_auth_changed", onAuthChange);
       window.removeEventListener("spott_verification_updated", onVerChange);
     };
-  }, []);
+  }, [router]);
 
   const displayName = currentUser?.name || "Organizer";
   const displayOrg = currentUser?.organization || "Spott Organizer";
@@ -119,6 +127,10 @@ function OrganizerNavContent({ children }: { children: React.ReactNode }) {
     }
     return false;
   };
+
+  if (!authorized) {
+    return <div className="p-8 text-center text-sm font-bold text-gray-500">Checking organizer access…</div>;
+  }
 
   return (
     <div className="min-h-screen bg-[#faf8f3] flex flex-col">

@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { createClient } from '@/lib/supabase-server';
+import { createClient, getAuthenticatedRole } from '@/lib/supabase-server';
 
 export async function POST(
   request: Request,
@@ -7,16 +7,15 @@ export async function POST(
 ) {
   try {
     const { id } = await params;
+    const account = await getAuthenticatedRole();
+    if (!account) return NextResponse.json({ success: false, message: 'Sign in to save events.' }, { status: 401 });
     const supabase = await createClient();
-
-    // Demo user - in production, get from auth session
-    const userId = '11111111-1111-1111-1111-111111111111';
 
     // Check if already saved
     const { data: existing } = await supabase
       .from('saved_events')
       .select('*')
-      .eq('user_id', userId)
+      .eq('user_id', account.userId)
       .eq('event_id', id)
       .maybeSingle();
 
@@ -25,7 +24,7 @@ export async function POST(
       const { error } = await supabase
         .from('saved_events')
         .delete()
-        .eq('user_id', userId)
+        .eq('user_id', account.userId)
         .eq('event_id', id);
 
       if (error) throw error;
@@ -34,7 +33,7 @@ export async function POST(
       // Save event
       const { error } = await supabase
         .from('saved_events')
-        .insert([{ user_id: userId, event_id: id }]);
+        .insert([{ user_id: account.userId, event_id: id }]);
 
       if (error) throw error;
       return NextResponse.json({ success: true, saved: true, message: 'Event saved to your plan.' });

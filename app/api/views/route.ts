@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { createAdminClient } from '@/lib/supabase-server';
+import { createAdminClient, getAuthenticatedRole } from '@/lib/supabase-server';
 
 // Server-side in-memory cache to support 24-hr dedupe resilience and fast stats
 interface StoredViewRecord {
@@ -38,10 +38,6 @@ export async function POST(request: Request) {
     const body = await request.json().catch(() => ({}));
     const {
       listing_id,
-      visitor_id: bodyVisitorId,
-      user_id,
-      user_organization,
-      organizer: claimedOrganizer,
     } = body;
 
     if (!listing_id) {
@@ -57,12 +53,11 @@ export async function POST(request: Request) {
     const cookieMatch = cookiesHeader.match(/spott_visitor_id=([^;]+)/);
     const cookieVisitorId = cookieMatch ? decodeURIComponent(cookieMatch[1]) : null;
 
-    const effectiveVisitorId =
-      user_id || bodyVisitorId || cookieVisitorId || 'anon-visitor';
+    const account = await getAuthenticatedRole();
+    const effectiveVisitorId = account?.userId || cookieVisitorId || 'anon-visitor';
 
     // 2. Listing Owner Exclusion
     // Fetch event owner to verify
-    let listingOwnerName = claimedOrganizer || '';
     let listingOwnerId = '';
 
     const supabase = createAdminClient();
@@ -72,36 +67,20 @@ export async function POST(request: Request) {
         .select(`
           event_id,
           organizer_id,
-          organizers (
-            organization_name
-          )
+          organizers (user_id)
         `)
         .eq('event_id', listing_id)
         .maybeSingle();
 
       if (eventData) {
         listingOwnerId = eventData.organizer_id || '';
-        const org: any = Array.isArray(eventData.organizers)
-          ? eventData.organizers[0]
-          : eventData.organizers;
-        if (org?.organization_name) {
-          listingOwnerName = org.organization_name;
-        }
+        const org = Array.isArray(eventData.organizers) ? eventData.organizers[0] : eventData.organizers;
+        listingOwnerId = org?.user_id || '';
       }
     } catch {}
 
     // Check if the visitor is the owner
-    const visitorIdentity = (user_organization || user_id || '').toLowerCase().trim();
-    const ownerNameMatch =
-      listingOwnerName &&
-      visitorIdentity &&
-      (visitorIdentity === listingOwnerName.toLowerCase().trim() ||
-        listingOwnerName.toLowerCase().includes(visitorIdentity) ||
-        visitorIdentity.includes(listingOwnerName.toLowerCase()));
-    const ownerIdMatch =
-      listingOwnerId && user_id && user_id.trim() === listingOwnerId.trim();
-
-    if (ownerNameMatch || ownerIdMatch) {
+    if (account?.userId && listingOwnerId && account.userId === listingOwnerId) {
       return NextResponse.json(
         { counted: false, reason: 'owner_view_excluded' },
         { status: 200 }
@@ -204,6 +183,8 @@ export async function POST(request: Request) {
 
 export async function GET(request: Request) {
   try {
+    const account = await getAuthenticatedRole();
+    if (!account) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     const { searchParams } = new URL(request.url);
     const listingIdParam = searchParams.get('listing_id');
     const listingIdsParam = searchParams.get('listing_ids');
@@ -216,18 +197,34 @@ export async function GET(request: Request) {
       listingIdsParam.split(',').forEach((id) => targetListingIds.add(id.trim()));
     }
 
+    const supabase = createAdminClient();
+    let allowedListingIds = targetListingIds;
+    if (account.role === 'organizer') {
+      const { data: ownedEvents, error: ownershipError } = await supabase
+        .from('events')
+        .select('event_id, organizers!inner(user_id)')
+        .eq('organizers.user_id', account.userId);
+      if (ownershipError) return NextResponse.json({ error: 'Unable to verify event ownership' }, { status: 500 });
+      const ownedIds = new Set((ownedEvents || []).map((event) => event.event_id));
+      if (Array.from(targetListingIds).some((id) => !ownedIds.has(id))) {
+        return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
+      }
+      allowedListingIds = targetListingIds.size > 0 ? targetListingIds : ownedIds;
+    } else if (account.role !== 'admin') {
+      return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
+    }
+
     const viewsMap: Record<string, number> = {};
     const uniqueVisitorsMap: Record<string, Set<string>> = {};
 
     // 1. Check database views
-    const supabase = createAdminClient();
     try {
       let query = supabase
         .from('listing_views')
         .select('listing_id, visitor_id');
 
-      if (targetListingIds.size > 0) {
-        query = query.in('listing_id', Array.from(targetListingIds));
+      if (account.role === 'organizer' || allowedListingIds.size > 0) {
+        query = query.in('listing_id', Array.from(allowedListingIds));
       }
 
       const { data: dbViews, error } = await query;
@@ -244,7 +241,7 @@ export async function GET(request: Request) {
 
     // 2. Merge in-memory server views
     (globalThis.__spott_server_views || []).forEach((row) => {
-      if (targetListingIds.size === 0 || targetListingIds.has(row.listing_id)) {
+      if (account.role === 'admin' && allowedListingIds.size === 0 || allowedListingIds.has(row.listing_id)) {
         viewsMap[row.listing_id] = (viewsMap[row.listing_id] || 0) + 1;
         if (!uniqueVisitorsMap[row.listing_id]) {
           uniqueVisitorsMap[row.listing_id] = new Set();

@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { createClient } from '@/lib/supabase-server';
+import { createClient, getAuthenticatedRole } from '@/lib/supabase-server';
 
 export async function POST(
   request: Request,
@@ -7,6 +7,8 @@ export async function POST(
 ) {
   try {
     const { id } = await params;
+    const account = await getAuthenticatedRole();
+    if (!account) return NextResponse.json({ success: false, message: 'Sign in to submit a report.' }, { status: 401 });
     const supabase = await createClient();
     const body = await request.json();
     const reason = (body.reason || '').trim();
@@ -18,12 +20,9 @@ export async function POST(
       );
     }
 
-    // Demo user - in production, get from auth session
-    const userId = '11111111-1111-1111-1111-111111111111';
-
     const { error } = await supabase
       .from('reports')
-      .insert([{ event_id: id, reported_by: userId, reason }]);
+      .insert([{ event_id: id, reported_by: account.userId, reason }]);
 
     if (error) throw error;
 

@@ -1,28 +1,34 @@
 import { NextResponse } from 'next/server';
-import { createAdminClient } from '@/lib/supabase-server';
+import { createAdminClient, getAuthenticatedRole } from '@/lib/supabase-server';
 
 export async function GET() {
   try {
+    const account = await getAuthenticatedRole();
+    if (account?.role !== 'admin') return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
     const supabase = createAdminClient();
     const { data, error } = await supabase
       .from('users')
       .select('user_id, name, email, role, created_at')
       .order('created_at', { ascending: false });
 
-    if (error) {
-      return NextResponse.json({ users: [] });
-    }
+    if (error) return NextResponse.json({ error: 'Unable to load users' }, { status: 500 });
 
     return NextResponse.json({ users: data || [] });
   } catch {
-    return NextResponse.json({ users: [] });
+    return NextResponse.json({ error: 'Unable to load users' }, { status: 500 });
   }
 }
 
 export async function POST(request: Request) {
   try {
+    const account = await getAuthenticatedRole();
+    if (account?.role !== 'admin') return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
     const body = await request.json();
     const { name, email, role } = body;
+
+    if (role !== undefined && !['user', 'organizer', 'admin'].includes(role)) {
+      return NextResponse.json({ error: 'Invalid role' }, { status: 400 });
+    }
 
     if (!email) {
       return NextResponse.json({ error: 'Email is required' }, { status: 400 });

@@ -133,7 +133,12 @@ export default function LoginPage() {
         redirectUrl = search.get("redirect");
       }
       if (redirectUrl && account.role === "user") {
-        router.push(redirectUrl);
+        const redirectTarget = new URL(redirectUrl, window.location.origin);
+        if (redirectTarget.origin === window.location.origin) {
+          router.push(`${redirectTarget.pathname}${redirectTarget.search}${redirectTarget.hash}`);
+        } else {
+          router.push(account.destination);
+        }
       } else {
         router.push(account.destination);
       }

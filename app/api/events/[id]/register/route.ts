@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { createClient } from '@/lib/supabase-server';
+import { createClient, getAuthenticatedRole } from '@/lib/supabase-server';
 
 export async function POST(
   request: Request,
@@ -7,15 +7,14 @@ export async function POST(
 ) {
   try {
     const { id } = await params;
+    const account = await getAuthenticatedRole();
+    if (!account) return NextResponse.json({ success: false, message: 'Sign in to RSVP.' }, { status: 401 });
     const supabase = await createClient();
-
-    // Demo user - in production, get from auth session
-    const userId = '11111111-1111-1111-1111-111111111111';
 
     const { error } = await supabase
       .from('registrations')
       .upsert(
-        { user_id: userId, event_id: id, status: 'registered' },
+        { user_id: account.userId, event_id: id, status: 'registered' },
         { onConflict: 'user_id,event_id' }
       );
 

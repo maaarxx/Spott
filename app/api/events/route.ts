@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { createClient, createAdminClient } from '@/lib/supabase-server';
+import { createClient, createAdminClient, getAuthenticatedRole } from '@/lib/supabase-server';
 
 // Server-side in-memory event cache for active dev session & offline resilience
 declare global {
@@ -11,15 +11,50 @@ if (!globalThis.__spott_server_events) {
 
 export async function POST(request: Request) {
   try {
+    const account = await getAuthenticatedRole();
+    if (!account || !['organizer', 'admin'].includes(account.role)) {
+      return NextResponse.json({ error: 'Organizer access required' }, { status: 403 });
+    }
     const body = await request.json();
     const { title, description, category, date, time, location, price } = body;
+    const numericPrice = Number(price);
+    const eventDate = new Date(`${date}T${time}`);
+    if (
+      typeof title !== 'string' || !title.trim() || title.trim().length > 160 ||
+      typeof description !== 'string' || !description.trim() ||
+      typeof category !== 'string' || !category.trim() ||
+      typeof location !== 'string' || !location.trim() || location.trim().length > 300 ||
+      !Number.isFinite(eventDate.getTime()) || !Number.isFinite(numericPrice) || numericPrice < 0 ||
+      (body.capacity !== undefined && (!Number.isInteger(Number(body.capacity)) || Number(body.capacity) < 1))
+    ) {
+      return NextResponse.json({ error: 'Invalid event details' }, { status: 400 });
+    }
+
+    const userClient = await createClient();
+    let organizerId: string | null = null;
+    if (account.role === 'admin') {
+      organizerId = typeof body.organizer_id === 'string' ? body.organizer_id : null;
+    } else {
+      const { data: organizer, error: organizerError } = await userClient
+        .from('organizers')
+        .select('organizer_id, verification_status')
+        .eq('user_id', account.userId)
+        .maybeSingle();
+      if (organizerError || !organizer || organizer.verification_status !== 'verified') {
+        return NextResponse.json({ error: 'A verified organizer account is required' }, { status: 403 });
+      }
+      organizerId = organizer.organizer_id;
+    }
+    if (!organizerId) {
+      return NextResponse.json({ error: 'Organizer account is required' }, { status: 400 });
+    }
 
     const newServerEvent = {
       id: body.id || `event-${Date.now()}`,
       title,
       description,
       date: `${date} ${time}:00`,
-      price: parseFloat(price) || 0,
+      price: numericPrice,
       status: "active",
       organizer: body.organizer || "Metro Creative Group",
       verified: true,
@@ -30,7 +65,7 @@ export async function POST(request: Request) {
       categories: [category || "School Events"],
       registrations: 0,
       confirmedAt: new Date().toISOString(),
-      capacity: body.capacity ? Number(body.capacity) : 100,
+      capacity: body.capacity !== undefined ? Number(body.capacity) : 100,
       coverImage: body.coverImage || null,
       image: body.coverImage || null,
     };
@@ -46,8 +81,7 @@ export async function POST(request: Request) {
     );
 
     const postPromise = (async () => {
-      const supabase = await createClient();
-      const organizer_id = '44444444-4444-4444-4444-444444444444';
+      const supabase = userClient;
       const start_datetime = `${date} ${time}:00`;
 
       const { data: locationData, error: locError } = await supabase
@@ -67,7 +101,7 @@ export async function POST(request: Request) {
       const { data: eventData, error: eventError } = await supabase
         .from('events')
         .insert([{
-          organizer_id,
+          organizer_id: organizerId,
           location_id: locationData.location_id,
           title,
           description,

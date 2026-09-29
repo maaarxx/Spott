@@ -1,17 +1,16 @@
 import { NextResponse } from 'next/server';
-import { createClient } from '@/lib/supabase-server';
+import { createClient, getAuthenticatedRole } from '@/lib/supabase-server';
 
 export async function GET() {
   try {
+    const account = await getAuthenticatedRole();
+    if (!account) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     const supabase = await createClient();
-
-    // Demo user - in production, get from auth session
-    const userId = '11111111-1111-1111-1111-111111111111';
 
     const { data, error } = await supabase
       .from('notifications')
       .select('*')
-      .eq('user_id', userId)
+      .eq('user_id', account.userId)
       .order('created_at', { ascending: false });
 
     if (error) throw error;

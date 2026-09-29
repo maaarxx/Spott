@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { createClient } from '@/lib/supabase-server';
+import { createClient, getAuthenticatedRole } from '@/lib/supabase-server';
 
 export async function POST(
   request: Request,
@@ -7,6 +7,8 @@ export async function POST(
 ) {
   try {
     const { id } = await params;
+    const account = await getAuthenticatedRole();
+    if (!account) return NextResponse.json({ success: false, message: 'Sign in to confirm an event.' }, { status: 401 });
     const supabase = await createClient();
 
     const { error } = await supabase

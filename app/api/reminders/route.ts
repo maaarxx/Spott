@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { createAdminClient } from '@/lib/supabase-server';
+import { createAdminClient, getAuthenticatedRole } from '@/lib/supabase-server';
 
 // Server-side in-memory cache for event reminders resilience
 interface StoredReminder {
@@ -25,7 +25,13 @@ export async function GET(request: Request) {
   try {
     const { searchParams } = new URL(request.url);
     const eventId = searchParams.get('event_id');
-    const userId = searchParams.get('user_id');
+    const account = await getAuthenticatedRole();
+    if (!account) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    const requestedUserId = searchParams.get('user_id');
+    if (requestedUserId && requestedUserId !== account.userId && account.role !== 'admin') {
+      return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
+    }
+    const userId = account.role === 'admin' && requestedUserId ? requestedUserId : account.userId;
 
     const supabase = createAdminClient();
     try {
@@ -52,8 +58,11 @@ export async function GET(request: Request) {
 
 export async function POST(request: Request) {
   try {
+    const account = await getAuthenticatedRole();
+    if (!account) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     const body = await request.json().catch(() => ({}));
-    const { user_id, event_id, event_title, remind_at, offset_label } = body;
+    const { event_id, event_title, remind_at, offset_label } = body;
+    const user_id = account.userId;
 
     if (!user_id || !event_id || !remind_at || !offset_label) {
       return NextResponse.json({ error: 'Missing required reminder fields' }, { status: 400 });
@@ -111,8 +120,11 @@ export async function POST(request: Request) {
 
 export async function DELETE(request: Request) {
   try {
+    const account = await getAuthenticatedRole();
+    if (!account) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     const body = await request.json().catch(() => ({}));
-    const { event_id, user_id, offset_label } = body;
+    const { event_id, offset_label } = body;
+    const user_id = account.userId;
 
     if (!event_id || !user_id) {
       return NextResponse.json({ error: 'event_id and user_id are required' }, { status: 400 });
