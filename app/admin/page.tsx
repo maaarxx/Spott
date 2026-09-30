@@ -435,6 +435,11 @@ function AdminContent() {
     syncUsers();
     syncUsersFromApi().then(() => syncUsers());
     const unsubUsers = subscribeToUsers(syncUsers);
+    const refreshRemoteUsers = () => {
+      void syncUsersFromApi().then(syncUsers);
+    };
+    const remoteUsersInterval = setInterval(refreshRemoteUsers, 5000);
+    window.addEventListener('focus', refreshRemoteUsers);
 
     // Real-time Pending Organizers sync
     const syncPendingOrgs = async () => {
@@ -508,6 +513,8 @@ function AdminContent() {
     return () => {
       unsubscribeEvents();
       unsubUsers();
+      clearInterval(remoteUsersInterval);
+      window.removeEventListener('focus', refreshRemoteUsers);
       unsubPendingOrgs();
       unsubModeration();
       unsubReports();
