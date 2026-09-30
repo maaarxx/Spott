@@ -16,6 +16,7 @@ import {
   SpottAccount,
 } from "@/lib/auth-store";
 import { createClient as createSupabaseBrowserClient } from "@/lib/supabase-browser";
+import { fetchWithSupabaseSession } from "@/lib/audit-log-client";
 
 function findAccount(email: string, password: string): SpottAccount | null {
   const emailLower = email.trim().toLowerCase();
@@ -108,6 +109,10 @@ export default function LoginPage() {
             email: result.account.email, name: result.account.name, role: result.account.role,
             destination: result.account.role === 'admin' ? '/admin' : result.account.role === 'organizer' ? '/organizer' : '/',
           };
+          await fetchWithSupabaseSession('/api/audit-events', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ action: 'auth.login' }),
+          }).catch(() => {});
           executeLogin(account);
           return;
         }
@@ -155,6 +160,12 @@ export default function LoginPage() {
           options: { data: { name: signupName.trim(), role: signupRole } },
         });
         if (error) throw error;
+        if (data.session) {
+          await fetchWithSupabaseSession('/api/audit-events', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ action: 'auth.signup' }),
+          }).catch(() => {});
+        }
         const account: SpottAccount = {
           email: signupEmail.trim().toLowerCase(), password: signupPassword, name: signupName.trim(),
           role: signupRole, destination: signupRole === 'organizer' ? '/organizer' : '/',

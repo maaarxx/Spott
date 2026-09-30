@@ -1,6 +1,7 @@
 "use client";
 
 import { createClient as createSupabaseBrowserClient } from '@/lib/supabase-browser';
+import { fetchWithSupabaseSession } from '@/lib/audit-log-client';
 
 export type RoleType = "user" | "organizer" | "admin";
 
@@ -96,6 +97,20 @@ export async function logout() {
   if (typeof window === "undefined") return;
   try {
     const supabase = createSupabaseBrowserClient();
+    const controller = new AbortController();
+    const auditTimeout = window.setTimeout(() => controller.abort(), 1500);
+    try {
+      await fetchWithSupabaseSession('/api/audit-events', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'auth.logout' }),
+        signal: controller.signal,
+      });
+    } catch {
+      // A logging failure should never prevent the user from signing out.
+    } finally {
+      window.clearTimeout(auditTimeout);
+    }
     const { error } = await supabase.auth.signOut();
     if (error) console.error('Supabase sign-out failed:', error.message);
   } catch (error) {
