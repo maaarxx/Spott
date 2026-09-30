@@ -55,10 +55,12 @@ import {
   setApprovalStatus,
   getRealTimeDate,
   get30DaysExpiryDate,
+  saveVerificationState,
   VerificationState,
   VerificationDocument,
 } from "@/lib/verification-store";
 import PdfViewerModal from "@/components/PdfViewerModal";
+import { fetchWithSupabaseSession } from "@/lib/audit-log-client";
 import { addNotification, removeNotificationsForEvent } from "@/lib/notifications-store";
 import { getStoredEvents, saveStoredEvent, saveStoredEvents, deleteStoredEvent, subscribeToEvents } from "@/lib/events-store";
 import { getCurrentUser } from "@/lib/auth-store";
@@ -398,6 +400,29 @@ function OrganizerContent() {
     setVerState(getVerificationState(orgName));
     setVerificationHydrated(true);
 
+    const syncRemoteVerification = async () => {
+      try {
+        const response = await fetchWithSupabaseSession('/api/verification', { cache: 'no-store' });
+        if (!response.ok) return;
+        const payload = await response.json();
+        const remoteStatus = payload.verification?.verification_status;
+        const status = remoteStatus === 'verified' ? 'approved' : remoteStatus === 'rejected' ? 'rejected' : 'pending';
+        const local = getVerificationState(orgName);
+        if (local.status !== status) {
+          const updated = { ...local, status } as VerificationState;
+          if (status === 'approved' || status === 'rejected') {
+            updated.decidedAt ||= getRealTimeDate();
+            updated.retentionDays ||= 30;
+            updated.expiresDate ||= get30DaysExpiryDate();
+          }
+          saveVerificationState(updated, orgName);
+          setVerState(updated);
+        }
+      } catch { /* Keep the current status if the server is temporarily unavailable. */ }
+    };
+    void syncRemoteVerification();
+    const verificationInterval = window.setInterval(syncRemoteVerification, 15000);
+
     const handleUpdate = () => {
       const u = getCurrentUser();
       const current = u?.organization || u?.name || "Metro Creative Group";
@@ -409,12 +434,26 @@ function OrganizerContent() {
     return () => {
       window.removeEventListener("spott_verification_updated", handleUpdate);
       window.removeEventListener("spott_auth_changed", handleUpdate);
+      window.clearInterval(verificationInterval);
     };
   }, []);
 
   const showAlert = (msg: string) => {
     setAlertNotice(msg);
     setTimeout(() => setAlertNotice(null), 3500);
+  };
+
+  const persistVerificationStatus = (status: 'pending' | 'verified' | 'rejected') => {
+    void fetchWithSupabaseSession('/api/verification', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ organizationName: currentOrgName, status }),
+    }).then(async (response) => {
+      if (!response.ok) {
+        const payload = await response.json().catch(() => ({}));
+        showAlert(payload.error || 'Could not sync verification status across devices.');
+      }
+    }).catch(() => showAlert('Could not sync verification status across devices.'));
   };
 
   const handleConfirmExpedite = () => {
@@ -433,6 +472,7 @@ function OrganizerContent() {
     setTimeout(() => {
       const updated = addVerificationDocument(uploadDocTitle, uploadDocType);
       setVerState(updated);
+      persistVerificationStatus('pending');
       setIsUploading(false);
       setUploadModalOpen(false);
       setUploadDocTitle("");
@@ -941,6 +981,7 @@ function OrganizerContent() {
                     onClick={() => {
                       const updated = setApprovalStatus("pending");
                       setVerState(updated);
+                      persistVerificationStatus('pending');
                       setUploadModalOpen(true);
                     }}
                     className="px-4 py-2 rounded-xl bg-[#ff6b35] text-white text-xs font-bold hover:bg-[#e0531f] transition-all cursor-pointer flex items-center gap-1.5 shadow-xs"
@@ -1548,6 +1589,7 @@ function OrganizerContent() {
                   onClick={() => {
                     const updated = setApprovalStatus("pending");
                     setVerState(updated);
+                    persistVerificationStatus('pending');
                     setUploadModalOpen(true);
                   }}
                   className="px-3.5 py-1.5 bg-[#ff6b35] hover:bg-[#e0531f] text-white text-xs font-bold rounded-lg transition-colors cursor-pointer shrink-0 shadow-2xs flex items-center gap-1"

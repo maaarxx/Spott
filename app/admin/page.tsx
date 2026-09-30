@@ -47,11 +47,12 @@ import {
   resetVerificationState,
   getRealTimeDate,
   get30DaysExpiryDate,
+  saveVerificationState,
   VerificationState,
   VerificationDocument,
 } from "@/lib/verification-store";
 import PdfViewerModal from "@/components/PdfViewerModal";
-import { fetchAuditApi } from "@/lib/audit-log-client";
+import { fetchWithSupabaseSession } from "@/lib/audit-log-client";
 import { addNotification, removeNotificationsForEvent } from "@/lib/notifications-store";
 import { getStoredEvents, deleteStoredEvent, saveStoredEvent, saveStoredEvents, subscribeToEvents } from "@/lib/events-store";
 import {
@@ -407,6 +408,42 @@ function AdminContent() {
       });
     };
 
+    const syncRemoteVerificationStatuses = async () => {
+      try {
+        const response = await fetchWithSupabaseSession('/api/verification?scope=all');
+        if (!response.ok) return;
+        const payload = await response.json();
+        const rows = Array.isArray(payload.verifications) ? payload.verifications : [];
+        const metro = rows.find((row: { organization_name?: string }) => row.organization_name?.toLowerCase().includes('metro creative'));
+        if (metro) {
+          const status = metro.verification_status === 'verified' ? 'approved' : metro.verification_status === 'rejected' ? 'rejected' : 'pending';
+          const local = getVerificationState('Metro Creative Group');
+          if (local.status !== status) {
+            const updated = { ...local, status } as VerificationState;
+            if (status !== 'pending') {
+              updated.decidedAt ||= getRealTimeDate();
+              updated.retentionDays ||= 30;
+              updated.expiresDate ||= get30DaysExpiryDate();
+            }
+            saveVerificationState(updated, 'Metro Creative Group');
+            setVerState(updated);
+          }
+        }
+        setVerifications((current) => {
+          const merged = [...current];
+          for (const row of rows as Array<{ organizer_id: string; organization_name: string; verification_status?: string | null }>) {
+            if (!row.organization_name) continue;
+            if (!['verified', 'rejected', 'pending'].includes(row.verification_status || '')) continue;
+            const status = row.verification_status === 'verified' ? 'approved' : row.verification_status === 'rejected' ? 'rejected' : 'pending';
+            const index = merged.findIndex((entry) => entry.organizer.toLowerCase() === row.organization_name.toLowerCase());
+            if (index >= 0) merged[index] = { ...merged[index], status };
+            else merged.push({ id: `db-${row.organizer_id}`, organizer: row.organization_name, submitted: formatDate(0), category: 'Student Organization', status, documents: [] });
+          }
+          return merged;
+        });
+      } catch { /* Keep the last successfully loaded server statuses. */ }
+    };
+
     const syncAdminEvents = async () => {
       const stored = getStoredEvents();
       setEventsList(mapToAdminEvents(stored));
@@ -427,6 +464,7 @@ function AdminContent() {
     };
 
     syncVerifications();
+    void syncRemoteVerificationStatuses();
     syncAdminEvents();
 
     // Real-time Users sync
@@ -440,6 +478,7 @@ function AdminContent() {
       void syncUsersFromApi().then(syncUsers);
     };
     const remoteUsersInterval = setInterval(refreshRemoteUsers, 5000);
+    const remoteVerificationInterval = setInterval(syncRemoteVerificationStatuses, 10000);
     window.addEventListener('focus', refreshRemoteUsers);
 
     // Real-time Pending Organizers sync
@@ -456,7 +495,7 @@ function AdminContent() {
     };
     const syncAuditLogs = async () => {
       try {
-        const response = await fetchAuditApi('/api/admin/audit-logs?limit=100');
+        const response = await fetchWithSupabaseSession('/api/admin/audit-logs?limit=100');
         const payload = await response.json();
         if (!response.ok) {
           setAuditLogsError(payload.code === 'AUTHENTICATION_REQUIRED'
@@ -515,6 +554,7 @@ function AdminContent() {
       unsubscribeEvents();
       unsubUsers();
       clearInterval(remoteUsersInterval);
+      clearInterval(remoteVerificationInterval);
       window.removeEventListener('focus', refreshRemoteUsers);
       unsubPendingOrgs();
       unsubModeration();
@@ -566,10 +606,10 @@ function AdminContent() {
   };
 
   const recordAdminAction = (entry: { action: string; targetType: string; targetId?: string; summary: string }) => {
-    void fetchAuditApi('/api/admin/audit-logs', {
+    void fetchWithSupabaseSession('/api/admin/audit-logs', {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(entry),
     }).then((response) => {
-      if (response.ok) fetchAuditApi('/api/admin/audit-logs?limit=100').then((r) => r.json()).then((data) => setAuditLogs(data.logs || [])).catch(() => {});
+      if (response.ok) fetchWithSupabaseSession('/api/admin/audit-logs?limit=100').then((r) => r.json()).then((data) => setAuditLogs(data.logs || [])).catch(() => {});
     }).catch(() => {});
   };
 
@@ -739,6 +779,18 @@ function AdminContent() {
   const todayStr = formatDate(0);
   const expiresStr = formatDate(30);
 
+  const persistAdminVerificationStatus = (name: string, status: 'pending' | 'approved' | 'rejected') => {
+    void fetchWithSupabaseSession('/api/verification', {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ organizationName: name, status: status === 'approved' ? 'verified' : status }),
+    }).then(async (response) => {
+      if (!response.ok) {
+        const payload = await response.json().catch(() => ({}));
+        showNotice(payload.error || 'Verification update did not sync to the server.');
+      }
+    }).catch(() => showNotice('Verification update did not sync to the server.'));
+  };
+
   const handleApproveVerification = (id: string, name: string) => {
     setVerifications((prev) =>
       prev.map((v) =>
@@ -755,6 +807,7 @@ function AdminContent() {
       )
     );
     setApprovalStatus("approved", undefined, name);
+    persistAdminVerificationStatus(name, 'approved');
     setVerState(getVerificationState("Metro Creative Group"));
     setSelectedVerification(null);
     recordAdminAction({ action: 'verification.approved', targetType: 'verification', targetId: id, summary: `Approved verification for ${name}.` });
@@ -784,6 +837,7 @@ function AdminContent() {
       )
     );
     setApprovalStatus("rejected", undefined, name);
+    persistAdminVerificationStatus(name, 'rejected');
     setVerState(getVerificationState("Metro Creative Group"));
     setSelectedVerification(null);
     recordAdminAction({ action: 'verification.rejected', targetType: 'verification', targetId: id, summary: `Rejected verification for ${name}.` });
@@ -813,6 +867,7 @@ function AdminContent() {
       )
     );
     setApprovalStatus("pending", undefined, name);
+    persistAdminVerificationStatus(name, 'pending');
     setVerState(getVerificationState("Metro Creative Group"));
     showNotice(`Restored ${name} to Active Verification Queue.`);
   };
@@ -2886,7 +2941,7 @@ function AdminContent() {
               <h1 className="text-2xl sm:text-3xl font-black text-[#171717]">Admin Audit Log</h1>
               <p className="mt-1 text-sm text-[#666666]">Recent account, organizer, and event actions recorded on the server.</p>
             </div>
-            <button type="button" onClick={() => fetchAuditApi('/api/admin/audit-logs?limit=100').then(async (response) => {
+            <button type="button" onClick={() => fetchWithSupabaseSession('/api/admin/audit-logs?limit=100').then(async (response) => {
               const payload = await response.json();
               if (!response.ok) { setAuditLogsError(payload.error || 'Unable to load audit logs.'); return; }
               setAuditLogs(payload.logs || []); setAuditLogsError(null);

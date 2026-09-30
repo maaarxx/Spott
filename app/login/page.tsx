@@ -366,9 +366,12 @@ export default function LoginPage() {
                     authError ? "border-rose-400 bg-rose-50/30" : "border-[#e6e1d8] focus:border-[#ff6b35]"
                   }`}
                   required
-                  placeholder="Minimum 6 characters"
+                  placeholder="6+ characters, 1 number, 1 symbol"
                   autoComplete="new-password"
                 />
+                <p className="mt-1.5 text-xs text-[#777777]">
+                  At least 6 characters, with at least 1 number and 1 symbol (for example, ! or #).
+                </p>
               </div>
               <div>
                 <label className="block text-[11px] font-black uppercase tracking-wider text-[#666666] mb-1.5">

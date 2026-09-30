@@ -1,5 +1,7 @@
 "use client";
 
+import { fetchWithSupabaseSession } from "@/lib/audit-log-client";
+
 export interface AdminUser {
   id: string;
   name: string;
@@ -579,7 +581,7 @@ export function subscribeToUsers(callback: () => void): () => void {
 export async function syncUsersFromApi(): Promise<void> {
   if (typeof window === "undefined") return;
   try {
-    const res = await fetch("/api/users");
+    const res = await fetchWithSupabaseSession("/api/users");
     if (!res.ok) return;
     const data = await res.json();
     if (!data.users || !Array.isArray(data.users)) return;

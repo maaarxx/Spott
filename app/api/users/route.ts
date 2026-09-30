@@ -3,9 +3,9 @@ import { createAdminClient, getAuthenticatedRole } from '@/lib/supabase-server';
 import { errorMessage } from '@/lib/error-message';
 import { writeAuditEntry } from '@/lib/audit-log-server';
 
-export async function GET() {
+export async function GET(request: Request) {
   try {
-    const account = await getAuthenticatedRole();
+    const account = await getAuthenticatedRole(request);
     if (!account) return NextResponse.json({ error: 'No Supabase session or account profile was found. Sign in again with your production account.', code: 'AUTHENTICATION_REQUIRED' }, { status: 401 });
     if (account.role !== 'admin') return NextResponse.json({ error: 'Your signed-in account does not have the admin role.', code: 'ADMIN_ROLE_REQUIRED' }, { status: 403 });
     const supabase = createAdminClient();
@@ -25,7 +25,7 @@ export async function GET() {
 
 export async function POST(request: Request) {
   try {
-    const account = await getAuthenticatedRole();
+    const account = await getAuthenticatedRole(request);
     if (!account) return NextResponse.json({ error: 'No Supabase session or account profile was found. Sign in again with your production account.', code: 'AUTHENTICATION_REQUIRED' }, { status: 401 });
     if (account.role !== 'admin') return NextResponse.json({ error: 'Your signed-in account does not have the admin role.', code: 'ADMIN_ROLE_REQUIRED' }, { status: 403 });
     const body = await request.json();
