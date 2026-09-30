@@ -484,7 +484,7 @@ function AdminContent() {
     // Real-time Pending Organizers sync
     const syncPendingOrgs = async () => {
       try {
-        const response = await fetch('/api/pending-organizers');
+        const response = await fetchWithSupabaseSession('/api/pending-organizers');
         if (!response.ok) return;
         const payload = await response.json();
         setPendingOrganizers((payload.organizers || []).map((item: { id: string; name: string; email: string; status: string; submitted_at: string; decided_at?: string }) => ({
@@ -678,11 +678,11 @@ function AdminContent() {
 
   // Pending Organizer Approval Handlers
   const handleApproveOrg = async (org: PendingOrganizer) => {
-    const response = await fetch('/api/pending-organizers', { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: org.id, status: 'approved' }) });
+    const response = await fetchWithSupabaseSession('/api/pending-organizers', { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: org.id, status: 'approved' }) });
     if (!response.ok) { showNotice('Could not approve organizer. Please confirm you are signed in as an administrator.'); return; }
     await syncUsersFromApi();
     setUsersList(getAdminUsers());
-    await fetch('/api/pending-organizers').then((r) => r.json()).then((p) => setPendingOrganizers((p.organizers || []).map((item: { id: string; name: string; email: string; status: string; submitted_at: string; decided_at?: string }) => ({ id: item.id, name: item.name, email: item.email, password: '', status: item.status, submittedAt: item.submitted_at, decidedAt: item.decided_at }))));
+    await fetchWithSupabaseSession('/api/pending-organizers').then((r) => r.json()).then((p) => setPendingOrganizers((p.organizers || []).map((item: { id: string; name: string; email: string; status: string; submitted_at: string; decided_at?: string }) => ({ id: item.id, name: item.name, email: item.email, password: '', status: item.status, submittedAt: item.submitted_at, decidedAt: item.decided_at }))));
     showNotice(`✓ Approved organizer "${org.name}" — they can now log in.`);
     addNotification({
       type: "announcement",
@@ -694,9 +694,9 @@ function AdminContent() {
   };
 
   const handleRejectOrg = async (org: PendingOrganizer) => {
-    const response = await fetch('/api/pending-organizers', { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: org.id, status: 'rejected' }) });
+    const response = await fetchWithSupabaseSession('/api/pending-organizers', { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: org.id, status: 'rejected' }) });
     if (!response.ok) { showNotice('Could not reject organizer application.'); return; }
-    await fetch('/api/pending-organizers').then((r) => r.json()).then((p) => setPendingOrganizers((p.organizers || []).map((item: { id: string; name: string; email: string; status: string; submitted_at: string; decided_at?: string }) => ({ id: item.id, name: item.name, email: item.email, password: '', status: item.status, submittedAt: item.submitted_at, decidedAt: item.decided_at }))));
+    await fetchWithSupabaseSession('/api/pending-organizers').then((r) => r.json()).then((p) => setPendingOrganizers((p.organizers || []).map((item: { id: string; name: string; email: string; status: string; submitted_at: string; decided_at?: string }) => ({ id: item.id, name: item.name, email: item.email, password: '', status: item.status, submittedAt: item.submitted_at, decidedAt: item.decided_at }))));
     showNotice(`✕ Rejected organizer application for "${org.name}".`);
   };
 

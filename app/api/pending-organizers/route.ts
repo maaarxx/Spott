@@ -2,16 +2,16 @@ import { NextResponse } from 'next/server';
 import { createAdminClient, getAuthenticatedRole } from '@/lib/supabase-server';
 import { writeAuditEntry } from '@/lib/audit-log-server';
 
-export async function GET() {
-  const actor = await getAuthenticatedRole();
+export async function GET(request: Request) {
+  const actor = await getAuthenticatedRole(request);
   if (actor?.role !== 'admin') return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
-  const { data, error } = await createAdminClient().from('pending_organizers').select('id,name,email,status,submitted_at,decided_at').order('submitted_at', { ascending: false });
+  const { data, error } = await createAdminClient().from('pending_organizers').select('id,name,email,status,submitted_at,decided_at').neq('status', 'approved').order('submitted_at', { ascending: false });
   if (error) return NextResponse.json({ error: 'Unable to load organizer applications' }, { status: 500 });
   return NextResponse.json({ organizers: data || [] });
 }
 
 export async function PATCH(request: Request) {
-  const actor = await getAuthenticatedRole();
+  const actor = await getAuthenticatedRole(request);
   if (actor?.role !== 'admin') return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
   const body = await request.json();
   if (!body?.id || !['approved', 'rejected'].includes(body.status)) return NextResponse.json({ error: 'Invalid decision' }, { status: 400 });
