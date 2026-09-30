@@ -13,8 +13,9 @@ export async function GET() {
       .order('created_at', { ascending: false });
 
     if (error) return NextResponse.json({ error: 'Unable to load users' }, { status: 500 });
-
-    return NextResponse.json({ users: data || [] });
+    const { data: pending } = await supabase.from('pending_organizers').select('user_id').in('status', ['pending', 'rejected']);
+    const notActiveOrganizerIds = new Set((pending || []).map((row) => row.user_id));
+    return NextResponse.json({ users: (data || []).filter((row) => !notActiveOrganizerIds.has(row.user_id)) });
   } catch {
     return NextResponse.json({ error: 'Unable to load users' }, { status: 500 });
   }

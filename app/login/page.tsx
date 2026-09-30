@@ -15,51 +15,7 @@ import {
   setCurrentUser,
   SpottAccount,
 } from "@/lib/auth-store";
-import {
-  addPendingOrganizer,
-  getPendingOrganizers,
-} from "@/lib/pending-organizers-store";
-import { registerUserInAdmin } from "@/lib/users-store";
-
-// ─── Simple in-memory "registered users" store (persisted in localStorage) ───
-const SIGNUP_STORE_KEY = "spott_signed_up_users";
-
-function getSignedUpUsers(): SpottAccount[] {
-  if (typeof window === "undefined") return [];
-  try {
-    const raw = localStorage.getItem(SIGNUP_STORE_KEY);
-    return raw ? JSON.parse(raw) : [];
-  } catch {
-    return [];
-  }
-}
-
-function saveSignedUpUser(acc: SpottAccount) {
-  if (typeof window === "undefined") return;
-  const nowIso = new Date().toISOString();
-  const existing = getSignedUpUsers();
-  const existingIdx = existing.findIndex((a) => a.email.toLowerCase() === acc.email.toLowerCase());
-  const accWithTimestamp = {
-    ...acc,
-    createdAt: nowIso,
-    joinedAt: nowIso,
-  };
-  if (existingIdx !== -1) {
-    existing[existingIdx] = accWithTimestamp;
-  } else {
-    existing.push(accWithTimestamp);
-  }
-  localStorage.setItem(SIGNUP_STORE_KEY, JSON.stringify(existing));
-
-  // Automatically register into Admin User Management for immediate real-time display
-  registerUserInAdmin({
-    name: acc.name,
-    email: acc.email,
-    role: acc.role,
-    status: "Active",
-    joinedAt: nowIso,
-  });
-}
+import { createClient as createSupabaseBrowserClient } from "@/lib/supabase-browser";
 
 function findAccount(email: string, password: string): SpottAccount | null {
   const emailLower = email.trim().toLowerCase();
@@ -71,22 +27,7 @@ function findAccount(email: string, password: string): SpottAccount | null {
   );
   if (builtIn) return builtIn;
 
-  // Check user-registered accounts
-  const registered = getSignedUpUsers().find(
-    (a) => a.email.toLowerCase() === emailLower && a.password === pwd
-  );
-  return registered || null;
-}
-
-function emailExists(email: string): boolean {
-  const emailLower = email.trim().toLowerCase();
-  const builtIn = Object.values(SPOTT_ACCOUNTS).some(
-    (a) => a.email.toLowerCase() === emailLower
-  );
-  if (builtIn) return true;
-  if (getSignedUpUsers().some((a) => a.email.toLowerCase() === emailLower)) return true;
-  // Also check pending organizers
-  return getPendingOrganizers().some((o) => o.email.toLowerCase() === emailLower);
+  return null;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -123,7 +64,8 @@ export default function LoginPage() {
   };
 
   const executeLogin = (account: SpottAccount) => {
-    setCurrentUser(account);
+    const { password: _password, ...safeAccount } = account;
+    setCurrentUser(safeAccount as SpottAccount);
     setLoading(true);
     setTimeout(() => {
       setLoading(false);
@@ -150,29 +92,38 @@ export default function LoginPage() {
     e.preventDefault();
     clearErrors();
     setLoading(true);
-
-    // Check if email belongs to a pending/rejected organizer first
-    const emailLower = email.trim().toLowerCase();
-    const pendingOrg = getPendingOrganizers().find(
-      (o) => o.email.toLowerCase() === emailLower && o.password === password.trim()
-    );
-    if (pendingOrg) {
-      setLoading(false);
-      if (pendingOrg.status === "pending") {
-        setAuthError("Your organizer account is awaiting admin approval. You'll receive access once approved.");
-      } else if (pendingOrg.status === "rejected") {
-        setAuthError("Your organizer application was not approved. Please contact the administrator.");
+    void (async () => {
+      try {
+        const supabase = createSupabaseBrowserClient();
+        const { error } = await supabase.auth.signInWithPassword({ email: email.trim().toLowerCase(), password });
+        if (!error) {
+          const response = await fetch('/api/account');
+          const result = await response.json();
+          if (!response.ok) throw new Error(result.error || 'Unable to load your account.');
+          if (result.account.role === 'organizer' && result.account.organizerStatus !== 'approved') {
+            await supabase.auth.signOut();
+            throw new Error(result.account.organizerStatus === 'rejected' ? 'Your organizer application was not approved. Please contact the administrator.' : 'Your organizer account is awaiting admin approval.');
+          }
+          const account: SpottAccount = {
+            email: result.account.email, name: result.account.name, role: result.account.role,
+            destination: result.account.role === 'admin' ? '/admin' : result.account.role === 'organizer' ? '/organizer' : '/',
+          };
+          executeLogin(account);
+          return;
+        }
+        // Demo accounts are intentionally limited to localhost. Production access
+        // must use a Supabase Auth session so privileged APIs can verify the role.
+        const demoAccount = findAccount(email, password);
+        if (typeof window !== 'undefined' && ['localhost', '127.0.0.1'].includes(window.location.hostname) && demoAccount) {
+          executeLogin(demoAccount);
+          return;
+        }
+        throw new Error(error.message);
+      } catch (error) {
+        setLoading(false);
+        setAuthError(error instanceof Error ? error.message : 'Unable to sign in.');
       }
-      return;
-    }
-
-    const account = findAccount(email, password);
-    if (account) {
-      executeLogin(account);
-    } else {
-      setLoading(false);
-      setAuthError("Invalid email or password. Please check your credentials and try again.");
-    }
+    })();
   };
 
   // ── Sign Up ──
@@ -184,58 +135,41 @@ export default function LoginPage() {
       setAuthError("Full name is required.");
       return;
     }
-    if (signupPassword.length < 6) {
-      setAuthError("Password must be at least 6 characters.");
+    if (signupPassword.length < 6 || !/[0-9]/.test(signupPassword) || !/[^A-Za-z0-9]/.test(signupPassword)) {
+      setAuthError("Use at least 6 characters, including a number and a symbol (such as ! or #).");
       return;
     }
     if (signupPassword !== signupConfirm) {
       setAuthError("Passwords do not match.");
       return;
     }
-    if (emailExists(signupEmail)) {
-      setAuthError("An account with this email already exists. Please sign in instead.");
-      return;
-    }
-
-    const destination = signupRole === "user" ? "/" : "/organizer";
-    const newAccount: SpottAccount = {
-      email: signupEmail.trim().toLowerCase(),
-      password: signupPassword,
-      name: signupName.trim(),
-      role: signupRole,
-      destination,
-      ...(signupRole === "organizer" ? { organization: signupName.trim() } : {}),
-    };
-
     setLoading(true);
-    setTimeout(() => {
-      if (signupRole === "organizer") {
-        // Save to pending organizers queue — not to signed-up users
-        addPendingOrganizer({
-          name: signupName.trim(),
-          email: signupEmail.trim().toLowerCase(),
-          password: signupPassword,
+    void (async () => {
+      try {
+        const supabase = createSupabaseBrowserClient();
+        const { data, error } = await supabase.auth.signUp({
+          email: signupEmail.trim().toLowerCase(), password: signupPassword,
+          options: { data: { name: signupName.trim(), role: signupRole } },
         });
-        setLoading(false);
-        setNotice(
-          "✓ Organizer account submitted! Your account is pending admin approval. You'll be able to log in once approved."
-        );
-        setSignupName(""); setSignupEmail(""); setSignupPassword(""); setSignupConfirm("");
-        setSignupRole("user");
-      } else {
-        const newAccount: SpottAccount = {
-          email: signupEmail.trim().toLowerCase(),
-          password: signupPassword,
-          name: signupName.trim(),
-          role: signupRole,
-          destination: "/",
+        if (error) throw error;
+        const account: SpottAccount = {
+          email: signupEmail.trim().toLowerCase(), password: signupPassword, name: signupName.trim(),
+          role: signupRole, destination: signupRole === 'organizer' ? '/organizer' : '/',
+          ...(signupRole === 'organizer' ? { organization: signupName.trim() } : {}),
         };
-        saveSignedUpUser(newAccount);
-        setLoading(false);
-        setNotice(`✓ Account created for ${newAccount.name}! Signing you in…`);
-        setTimeout(() => executeLogin(newAccount), 800);
-      }
-    }, 500);
+        if (signupRole === 'organizer') {
+          setNotice(data.session ? 'Organizer application submitted. Please verify your email; admin approval is required before access.' : 'Organizer application submitted. Check your email to confirm the account; admin approval is required before access.');
+        } else if (data.session) {
+          setNotice(`Account created for ${account.name}. Signing you in…`);
+          executeLogin(account);
+        } else {
+          setNotice('Account created. Check your email to confirm your account, then sign in.');
+        }
+        setSignupName(''); setSignupEmail(''); setSignupPassword(''); setSignupConfirm(''); setSignupRole('user');
+      } catch (error) {
+        setAuthError(error instanceof Error ? error.message : 'Unable to create account.');
+      } finally { setLoading(false); }
+    })();
   };
 
   return (

@@ -424,7 +424,17 @@ function AdminContent() {
     const unsubUsers = subscribeToUsers(syncUsers);
 
     // Real-time Pending Organizers sync
-    const syncPendingOrgs = () => setPendingOrganizers(getPendingOrganizers());
+    const syncPendingOrgs = async () => {
+      try {
+        const response = await fetch('/api/pending-organizers');
+        if (!response.ok) return;
+        const payload = await response.json();
+        setPendingOrganizers((payload.organizers || []).map((item: { id: string; name: string; email: string; status: string; submitted_at: string; decided_at?: string }) => ({
+          id: item.id, name: item.name, email: item.email, password: '',
+          status: item.status, submittedAt: item.submitted_at, decidedAt: item.decided_at,
+        })));
+      } catch { /* Keep the last successfully loaded list. */ }
+    };
     syncPendingOrgs();
     const unsubPendingOrgs = subscribeToPendingOrganizers(syncPendingOrgs);
 
@@ -579,32 +589,12 @@ function AdminContent() {
   };
 
   // Pending Organizer Approval Handlers
-  const handleApproveOrg = (org: PendingOrganizer) => {
-    // 1. Mark as approved in pending store
-    approveOrganizer(org.id);
-    // 2. Add to the signed-up users store so they can now log in
-    try {
-      const raw = localStorage.getItem(SIGNUP_STORE_KEY);
-      const existing = raw ? JSON.parse(raw) : [];
-      existing.push({
-        email: org.email,
-        password: org.password,
-        name: org.name,
-        role: "organizer",
-        destination: "/organizer",
-        organization: org.name,
-      });
-      localStorage.setItem(SIGNUP_STORE_KEY, JSON.stringify(existing));
-    } catch {}
-    // 3. Register into Admin store and sync
-    registerUserInAdmin({
-      name: org.name,
-      email: org.email,
-      role: "Organizer",
-      status: "Active",
-    });
-    setPendingOrganizers(getPendingOrganizers());
+  const handleApproveOrg = async (org: PendingOrganizer) => {
+    const response = await fetch('/api/pending-organizers', { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: org.id, status: 'approved' }) });
+    if (!response.ok) { showNotice('Could not approve organizer. Please confirm you are signed in as an administrator.'); return; }
+    await syncUsersFromApi();
     setUsersList(getAdminUsers());
+    await fetch('/api/pending-organizers').then((r) => r.json()).then((p) => setPendingOrganizers((p.organizers || []).map((item: { id: string; name: string; email: string; status: string; submitted_at: string; decided_at?: string }) => ({ id: item.id, name: item.name, email: item.email, password: '', status: item.status, submittedAt: item.submitted_at, decidedAt: item.decided_at }))));
     showNotice(`✓ Approved organizer "${org.name}" — they can now log in.`);
     addNotification({
       type: "announcement",
@@ -615,9 +605,10 @@ function AdminContent() {
     });
   };
 
-  const handleRejectOrg = (org: PendingOrganizer) => {
-    rejectOrganizer(org.id);
-    setPendingOrganizers(getPendingOrganizers());
+  const handleRejectOrg = async (org: PendingOrganizer) => {
+    const response = await fetch('/api/pending-organizers', { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: org.id, status: 'rejected' }) });
+    if (!response.ok) { showNotice('Could not reject organizer application.'); return; }
+    await fetch('/api/pending-organizers').then((r) => r.json()).then((p) => setPendingOrganizers((p.organizers || []).map((item: { id: string; name: string; email: string; status: string; submitted_at: string; decided_at?: string }) => ({ id: item.id, name: item.name, email: item.email, password: '', status: item.status, submittedAt: item.submitted_at, decidedAt: item.decided_at }))));
     showNotice(`✕ Rejected organizer application for "${org.name}".`);
   };
 
