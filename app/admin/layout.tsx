@@ -18,6 +18,7 @@ import {
   ExternalLink,
   Layers,
   Sparkles,
+  History,
 } from "lucide-react";
 import { logout, getCurrentUser, SpottAccount } from "@/lib/auth-store";
 
@@ -72,6 +73,12 @@ const navItems: AdminNavItem[] = [
     href: "/admin?tab=analytics",
     label: "Analytics",
     icon: BarChart,
+  },
+  {
+    id: "audit",
+    href: "/admin?tab=audit",
+    label: "Audit Log",
+    icon: History,
   },
 ];
 

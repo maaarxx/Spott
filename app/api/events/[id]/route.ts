@@ -3,6 +3,7 @@ import { createAdminClient, getAuthenticatedRole } from '@/lib/supabase-server';
 import { DEFAULT_EVENTS } from '@/lib/default-events';
 import type { EventData } from '@/components/EventCard';
 import { errorMessage } from '@/lib/error-message';
+import { writeAuditEntry } from '@/lib/audit-log-server';
 
 type Relation<T> = T | T[] | null | undefined;
 type EventDetailRow = {
@@ -263,6 +264,11 @@ export async function PATCH(
         );
       }
 
+      if (account.role === 'admin') await writeAuditEntry(account, {
+        action: 'event.cancelled', targetType: 'event', targetId: id,
+        summary: `Cancelled event “${currentTitle}”.`, details: { reason: cancelReason },
+      });
+
       // Fetch all attendees who RSVPed to this event
       const notifMessage = `The event "${currentTitle}" scheduled for ${currentDate} has been cancelled by the organizer. Reason: ${cancelReason}`;
 
@@ -322,6 +328,11 @@ export async function PATCH(
         changes.push(`Price: ₱${existingEvent.price || 0} -> ₱${body.price}`);
       }
     }
+
+    if (account.role === 'admin' && changes.length > 0) await writeAuditEntry(account, {
+      action: 'event.updated', targetType: 'event', targetId: id,
+      summary: `Updated event “${newTitle}”.`, details: { changes },
+    });
 
     // Update in-memory server cache
     if (globalThis.__spott_server_events) {
@@ -476,6 +487,11 @@ export async function DELETE(
     if (globalThis.__spott_server_events) {
       globalThis.__spott_server_events = globalThis.__spott_server_events.filter((e) => e.id !== id);
     }
+
+    if (account.role === 'admin') await writeAuditEntry(account, {
+      action: 'event.deleted', targetType: 'event', targetId: id,
+      summary: `Deleted event “${serverEv?.title || id}”.`,
+    });
 
     return NextResponse.json({ success: true, message: 'Event deleted' });
   } catch (error: unknown) {

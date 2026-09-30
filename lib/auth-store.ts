@@ -4,7 +4,7 @@ export type RoleType = "user" | "organizer" | "admin";
 
 export type SpottAccount = {
   email: string;
-  password: string;
+  password?: string;
   name: string;
   role: RoleType;
   organization?: string;

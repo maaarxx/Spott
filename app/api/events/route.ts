@@ -165,8 +165,11 @@ export async function GET(request: Request) {
     const requestedScope = searchParams.get('scope') || 'public';
     const includeDashboardEvents = requestedScope === 'admin' || requestedScope === 'organizer';
     const account = includeDashboardEvents ? await getAuthenticatedRole() : null;
-    if (requestedScope === 'admin' && (!account || account.role !== 'admin')) {
-      return NextResponse.json({ error: 'Administrator access required' }, { status: 403 });
+    if (requestedScope === 'admin' && !account) {
+      return NextResponse.json({ error: 'No Supabase session or account profile was found. Sign in again with your production account.', code: 'AUTHENTICATION_REQUIRED' }, { status: 401 });
+    }
+    if (requestedScope === 'admin' && account?.role !== 'admin') {
+      return NextResponse.json({ error: 'Your signed-in account does not have the admin role.', code: 'ADMIN_ROLE_REQUIRED' }, { status: 403 });
     }
     if (requestedScope === 'organizer' && (!account || account.role !== 'organizer')) {
       return NextResponse.json({ error: 'Organizer access required' }, { status: 403 });

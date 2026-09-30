@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import { createAdminClient, getAuthenticatedRole } from '@/lib/supabase-server';
+import { writeAuditEntry } from '@/lib/audit-log-server';
 
 export async function GET() {
   const actor = await getAuthenticatedRole();
@@ -21,5 +22,10 @@ export async function PATCH(request: Request) {
     const { error: roleError } = await db.from('users').update({ role: 'organizer' }).eq('user_id', application.user_id);
     if (roleError) return NextResponse.json({ error: 'Application saved but role update failed' }, { status: 500 });
   }
+  await writeAuditEntry(actor, {
+    action: body.status === 'approved' ? 'organizer.approved' : 'organizer.rejected',
+    targetType: 'organizer_application', targetId: body.id,
+    summary: `${body.status === 'approved' ? 'Approved' : 'Rejected'} organizer application for ${application.email}.`,
+  });
   return NextResponse.json({ success: true });
 }

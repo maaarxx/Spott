@@ -95,6 +95,17 @@ import type { EventData } from "@/components/EventCard";
 
 type Report = ReportItem;
 
+type AdminAuditLog = {
+  log_id: string;
+  actor_email: string;
+  action: string;
+  target_type: string;
+  target_id: string | null;
+  summary: string;
+  details: Record<string, unknown>;
+  created_at: string;
+};
+
 interface VerificationReq {
   id: string;
   organizer: string;
@@ -166,6 +177,8 @@ function AdminContent() {
   const [hoveredMonth, setHoveredMonth] = useState<MonthlyData | null>(null);
   const [actionNotice, setActionNotice] = useState<string | null>(null);
   const [pendingOrganizers, setPendingOrganizers] = useState<PendingOrganizer[]>([]);
+  const [auditLogs, setAuditLogs] = useState<AdminAuditLog[]>([]);
+  const [auditLogsError, setAuditLogsError] = useState<string | null>(null);
   const [moderationKeywords, setModerationKeywords] = useState<string[]>([]);
   const [newKeywordInput, setNewKeywordInput] = useState("");
   const [moderationSettings, setModerationSettings] = useState<ModerationSettings>({
@@ -435,6 +448,19 @@ function AdminContent() {
         })));
       } catch { /* Keep the last successfully loaded list. */ }
     };
+    const syncAuditLogs = async () => {
+      try {
+        const response = await fetch('/api/admin/audit-logs?limit=100');
+        const payload = await response.json();
+        if (!response.ok) {
+          setAuditLogsError(payload.error || 'Unable to load audit logs.');
+          return;
+        }
+        setAuditLogs(payload.logs || []);
+        setAuditLogsError(null);
+      } catch { setAuditLogsError('Unable to connect to the audit log service.'); }
+    };
+    syncAuditLogs();
     syncPendingOrgs();
     const unsubPendingOrgs = subscribeToPendingOrganizers(syncPendingOrgs);
 
@@ -527,6 +553,14 @@ function AdminContent() {
     setTimeout(() => setActionNotice(null), 3500);
   };
 
+  const recordAdminAction = (entry: { action: string; targetType: string; targetId?: string; summary: string }) => {
+    void fetch('/api/admin/audit-logs', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(entry),
+    }).then((response) => {
+      if (response.ok) fetch('/api/admin/audit-logs?limit=100').then((r) => r.json()).then((data) => setAuditLogs(data.logs || [])).catch(() => {});
+    }).catch(() => {});
+  };
+
   const handleAddKeyword = (e?: React.FormEvent) => {
     if (e) e.preventDefault();
     const kw = newKeywordInput.trim();
@@ -568,6 +602,7 @@ function AdminContent() {
       return next;
     });
     setSelectedUser(null);
+    recordAdminAction({ action: 'user.updated', targetType: 'user', targetId: updated.id, summary: `Updated account details for ${updated.name}.` });
     showNotice(`Successfully updated account settings for ${updated.name}.`);
   };
 
@@ -585,6 +620,7 @@ function AdminContent() {
       });
     }
     setSelectedUser(null);
+    recordAdminAction({ action: 'user.deleted', targetType: 'user', targetId: id, summary: `Removed account for ${name}.` });
     showNotice(`✓ Permanently removed ${name}'s account.`);
   };
 
@@ -625,6 +661,7 @@ function AdminContent() {
     } catch {}
     setEventsList((prev) => prev.map((e) => (e.id === updated.id ? updated : e)));
     setSelectedEvent(null);
+    recordAdminAction({ action: 'event.moderated', targetType: 'event', targetId: updated.id, summary: `Changed “${updated.title}” status to ${updated.status}.` });
     showNotice(`Event "${updated.title}" status updated to ${updated.status}.`);
     addNotification({
       type: "update",
@@ -649,6 +686,7 @@ function AdminContent() {
     removeNotificationsForEvent(id, title);
     setEventsList((prev) => prev.filter((e) => e.id !== id));
     setSelectedEvent(null);
+    recordAdminAction({ action: 'event.removed', targetType: 'event', targetId: id, summary: `Removed event “${title}” from moderation.` });
     showNotice(`Event "${title}" has been taken down and removed.`);
     addNotification({
       type: "cancellation",
@@ -678,6 +716,7 @@ function AdminContent() {
     }
     setReports(getReports());
     setSelectedReport(null);
+    recordAdminAction({ action: 'report.resolved', targetType: 'report', targetId: id, summary: `Resolved report: ${actionNote}` });
     showNotice(`✓ Report resolved: ${actionNote}`);
   };
 
@@ -706,6 +745,7 @@ function AdminContent() {
     setApprovalStatus("approved", undefined, name);
     setVerState(getVerificationState("Metro Creative Group"));
     setSelectedVerification(null);
+    recordAdminAction({ action: 'verification.approved', targetType: 'verification', targetId: id, summary: `Approved verification for ${name}.` });
     showNotice(`✓ Approved verification for ${name}. Record moved to 30-Day Archive History.`);
     addNotification({
       type: "announcement",
@@ -734,6 +774,7 @@ function AdminContent() {
     setApprovalStatus("rejected", undefined, name);
     setVerState(getVerificationState("Metro Creative Group"));
     setSelectedVerification(null);
+    recordAdminAction({ action: 'verification.rejected', targetType: 'verification', targetId: id, summary: `Rejected verification for ${name}.` });
     showNotice(`✕ Declined verification for ${name}. Record moved to 30-Day Archive History.`);
     addNotification({
       type: "cancellation",
@@ -2824,6 +2865,48 @@ function AdminContent() {
             </form>
           </div>
         </div>
+      )}
+
+      {currentTab === "audit" && (
+        <section className="space-y-5">
+          <div className="flex flex-col sm:flex-row sm:items-end sm:justify-between gap-3">
+            <div>
+              <h1 className="text-2xl sm:text-3xl font-black text-[#171717]">Admin Audit Log</h1>
+              <p className="mt-1 text-sm text-[#666666]">Recent account, organizer, and event actions recorded on the server.</p>
+            </div>
+            <button type="button" onClick={() => fetch('/api/admin/audit-logs?limit=100').then(async (response) => {
+              const payload = await response.json();
+              if (!response.ok) { setAuditLogsError(payload.error || 'Unable to load audit logs.'); return; }
+              setAuditLogs(payload.logs || []); setAuditLogsError(null);
+            }).catch(() => setAuditLogsError('Unable to connect to the audit log service.'))}
+              className="rounded-xl border border-[#e6e1d8] bg-white px-4 py-2 text-xs font-bold text-[#171717] hover:border-[#ff6b35]">
+              Refresh logs
+            </button>
+          </div>
+          {auditLogsError && <div className="rounded-xl border border-amber-300 bg-amber-50 p-4 text-sm text-amber-900">{auditLogsError} Check that you’re signed in with a Supabase account whose <code>public.users.role</code> is <code>admin</code>.</div>}
+          <div className="overflow-hidden rounded-2xl border border-[#e6e1d8] bg-white shadow-sm">
+            {auditLogs.length === 0 ? (
+              <div className="p-10 text-center text-sm text-[#777777]">{auditLogsError ? 'Audit entries are unavailable until admin access is configured.' : 'No admin actions have been recorded yet.'}</div>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full min-w-[760px] text-left">
+                  <thead className="bg-[#faf8f3] text-[10px] uppercase tracking-wider text-[#777777]"><tr>
+                    <th className="px-5 py-3">When</th><th className="px-5 py-3">Admin</th><th className="px-5 py-3">Action</th><th className="px-5 py-3">Target</th><th className="px-5 py-3">Details</th>
+                  </tr></thead>
+                  <tbody className="divide-y divide-[#f0ece5]">
+                    {auditLogs.map((entry) => <tr key={entry.log_id}>
+                      <td className="whitespace-nowrap px-5 py-4 text-xs text-[#666666]">{new Date(entry.created_at).toLocaleString()}</td>
+                      <td className="px-5 py-4 text-xs font-semibold text-[#171717]">{entry.actor_email}</td>
+                      <td className="px-5 py-4"><span className="rounded-full bg-[#fff2eb] px-2.5 py-1 text-[10px] font-black text-[#d65325]">{entry.action}</span></td>
+                      <td className="px-5 py-4 text-xs text-[#555555]">{entry.target_type}{entry.target_id ? ` · ${entry.target_id}` : ''}</td>
+                      <td className="px-5 py-4 text-xs text-[#555555]">{entry.summary}</td>
+                    </tr>)}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        </section>
       )}
 
       {/* PDF Viewer Modal */}

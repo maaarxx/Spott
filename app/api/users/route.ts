@@ -1,11 +1,13 @@
 import { NextResponse } from 'next/server';
 import { createAdminClient, getAuthenticatedRole } from '@/lib/supabase-server';
 import { errorMessage } from '@/lib/error-message';
+import { writeAuditEntry } from '@/lib/audit-log-server';
 
 export async function GET() {
   try {
     const account = await getAuthenticatedRole();
-    if (account?.role !== 'admin') return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
+    if (!account) return NextResponse.json({ error: 'No Supabase session or account profile was found. Sign in again with your production account.', code: 'AUTHENTICATION_REQUIRED' }, { status: 401 });
+    if (account.role !== 'admin') return NextResponse.json({ error: 'Your signed-in account does not have the admin role.', code: 'ADMIN_ROLE_REQUIRED' }, { status: 403 });
     const supabase = createAdminClient();
     const { data, error } = await supabase
       .from('users')
@@ -24,7 +26,8 @@ export async function GET() {
 export async function POST(request: Request) {
   try {
     const account = await getAuthenticatedRole();
-    if (account?.role !== 'admin') return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
+    if (!account) return NextResponse.json({ error: 'No Supabase session or account profile was found. Sign in again with your production account.', code: 'AUTHENTICATION_REQUIRED' }, { status: 401 });
+    if (account.role !== 'admin') return NextResponse.json({ error: 'Your signed-in account does not have the admin role.', code: 'ADMIN_ROLE_REQUIRED' }, { status: 403 });
     const body = await request.json();
     const { name, email, role } = body;
 
@@ -56,6 +59,11 @@ export async function POST(request: Request) {
     if (error) {
       return NextResponse.json({ error: error.message }, { status: 500 });
     }
+
+    await writeAuditEntry(account, {
+      action: 'user.upserted', targetType: 'user', targetId: data?.user_id,
+      summary: `Created or updated ${role || 'user'} account for ${data?.email || email}.`,
+    });
 
     return NextResponse.json({ success: true, user: data });
   } catch (error: unknown) {
