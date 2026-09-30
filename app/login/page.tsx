@@ -118,6 +118,9 @@ export default function LoginPage() {
           executeLogin(demoAccount);
           return;
         }
+        if (demoAccount) {
+          throw new Error('These built-in demo credentials only work on localhost. On Vercel, create/sign in with this email through Supabase Auth, then have its public.users row assigned the admin role.');
+        }
         throw new Error(error.message);
       } catch (error) {
         setLoading(false);

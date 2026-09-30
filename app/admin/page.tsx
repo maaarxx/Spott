@@ -2883,7 +2883,7 @@ function AdminContent() {
               Refresh logs
             </button>
           </div>
-          {auditLogsError && <div className="rounded-xl border border-amber-300 bg-amber-50 p-4 text-sm text-amber-900">{auditLogsError} Check that you’re signed in with a Supabase account whose <code>public.users.role</code> is <code>admin</code>.</div>}
+          {auditLogsError && <div className="rounded-xl border border-amber-300 bg-amber-50 p-4 text-sm text-amber-900">{auditLogsError} Check that you’re signed in through Supabase Auth and that your matching <code>public.users.role</code> is <code>admin</code>. Browser-only demo admin sign-ins cannot access server audit data.</div>}
           <div className="overflow-hidden rounded-2xl border border-[#e6e1d8] bg-white shadow-sm">
             {auditLogs.length === 0 ? (
               <div className="p-10 text-center text-sm text-[#777777]">{auditLogsError ? 'Audit entries are unavailable until admin access is configured.' : 'No admin actions have been recorded yet.'}</div>
