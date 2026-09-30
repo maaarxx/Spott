@@ -84,6 +84,14 @@ export function setCurrentUser(account: SpottAccount) {
   } catch {}
 }
 
+export function clearLocalAuthState() {
+  if (typeof window === "undefined") return;
+  try {
+    localStorage.removeItem(STORAGE_KEY_AUTH);
+    window.dispatchEvent(new Event("spott_auth_changed"));
+  } catch {}
+}
+
 export async function logout() {
   if (typeof window === "undefined") return;
   try {

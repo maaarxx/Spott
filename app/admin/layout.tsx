@@ -20,7 +20,7 @@ import {
   Sparkles,
   History,
 } from "lucide-react";
-import { logout, getCurrentUser, SpottAccount } from "@/lib/auth-store";
+import { logout, getCurrentUser, clearLocalAuthState, SpottAccount } from "@/lib/auth-store";
 
 interface AdminNavItem {
   id: string;
@@ -93,17 +93,57 @@ function AdminNavContent({ children }: { children: React.ReactNode }) {
   const [authorized, setAuthorized] = useState(false);
 
   useEffect(() => {
-    const syncAuth = () => {
-      const user = getCurrentUser();
-      setCurrentUser2(user);
-      const allowed = user?.role === "admin";
-      setAuthorized(allowed);
-      if (!allowed) router.replace("/login?redirect=%2Fadmin");
+    let active = true;
+    let redirecting = false;
+    const syncAuth = async () => {
+      if (redirecting) return;
+      const cachedUser = getCurrentUser();
+      if (typeof window !== 'undefined' && ['localhost', '127.0.0.1'].includes(window.location.hostname) && cachedUser?.role === 'admin') {
+        setCurrentUser2(cachedUser);
+        setAuthorized(true);
+        return;
+      }
+      setAuthorized(false);
+      try {
+        const response = await fetch('/api/account', { cache: 'no-store' });
+        const result = await response.json();
+        if (!active) return;
+        if (!response.ok) {
+          redirecting = true;
+          setCurrentUser2(null);
+          await logout();
+          if (active) router.replace('/login?redirect=%2Fadmin');
+          return;
+        }
+        if (result.account?.role !== 'admin') {
+          redirecting = true;
+          clearLocalAuthState();
+          setCurrentUser2(null);
+          router.replace('/');
+          return;
+        }
+        setCurrentUser2({
+          email: result.account.email,
+          name: result.account.name,
+          role: 'admin',
+          destination: '/admin',
+        });
+        setAuthorized(true);
+      } catch {
+        if (!active) return;
+        redirecting = true;
+        setCurrentUser2(null);
+        await logout();
+        if (active) router.replace('/login?redirect=%2Fadmin');
+      }
     };
     syncAuth();
     const onAuthChange = () => syncAuth();
     window.addEventListener("spott_auth_changed", onAuthChange);
-    return () => window.removeEventListener("spott_auth_changed", onAuthChange);
+    return () => {
+      active = false;
+      window.removeEventListener("spott_auth_changed", onAuthChange);
+    };
   }, [router]);
 
   const displayName = currentUser?.name || "Admin";
