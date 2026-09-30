@@ -96,13 +96,10 @@ export default function Navbar() {
 
   const handleSignOut = async () => {
     setDropdownOpen(false);
-    try {
-      await supabase.auth.signOut();
-    } catch {}
-    logout();
+    await logout();
     setUser(null);
     setLocalUser(null);
-    router.push("/login");
+    router.replace("/login");
   };
 
   const displayName =

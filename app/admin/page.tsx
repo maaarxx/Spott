@@ -453,7 +453,11 @@ function AdminContent() {
         const response = await fetch('/api/admin/audit-logs?limit=100');
         const payload = await response.json();
         if (!response.ok) {
-          setAuditLogsError(payload.error || 'Unable to load audit logs.');
+          setAuditLogsError(payload.code === 'AUTHENTICATION_REQUIRED'
+            ? 'You are signed out of the audit service. Sign in again as admin@spott.ph.'
+            : payload.code === 'ADMIN_ROLE_REQUIRED'
+              ? 'This account is not assigned the admin role in Spott.'
+              : payload.error || 'Unable to load audit logs.');
           return;
         }
         setAuditLogs(payload.logs || []);
@@ -2883,7 +2887,7 @@ function AdminContent() {
               Refresh logs
             </button>
           </div>
-          {auditLogsError && <div className="rounded-xl border border-amber-300 bg-amber-50 p-4 text-sm text-amber-900">{auditLogsError} Check that you’re signed in through Supabase Auth and that your matching <code>public.users.role</code> is <code>admin</code>. Browser-only demo admin sign-ins cannot access server audit data.</div>}
+          {auditLogsError && <div className="rounded-xl border border-amber-300 bg-amber-50 p-4 text-sm text-amber-900">{auditLogsError}</div>}
           <div className="overflow-hidden rounded-2xl border border-[#e6e1d8] bg-white shadow-sm">
             {auditLogs.length === 0 ? (
               <div className="p-10 text-center text-sm text-[#777777]">{auditLogsError ? 'Audit entries are unavailable until admin access is configured.' : 'No admin actions have been recorded yet.'}</div>

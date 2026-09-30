@@ -1,5 +1,7 @@
 "use client";
 
+import { createClient as createSupabaseBrowserClient } from '@/lib/supabase-browser';
+
 export type RoleType = "user" | "organizer" | "admin";
 
 export type SpottAccount = {
@@ -82,8 +84,15 @@ export function setCurrentUser(account: SpottAccount) {
   } catch {}
 }
 
-export function logout() {
+export async function logout() {
   if (typeof window === "undefined") return;
+  try {
+    const supabase = createSupabaseBrowserClient();
+    const { error } = await supabase.auth.signOut();
+    if (error) console.error('Supabase sign-out failed:', error.message);
+  } catch (error) {
+    console.error('Supabase sign-out failed:', error);
+  }
   try {
     localStorage.removeItem(STORAGE_KEY_AUTH);
     // Legacy global keys cleared so anonymous visitors never see leftover data

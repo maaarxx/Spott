@@ -161,10 +161,10 @@ function AdminNavContent({ children }: { children: React.ReactNode }) {
 
                 <div className="pt-1">
                   <button
-                    onClick={() => {
+                    onClick={async () => {
                       setUserDropdownOpen(false);
-                      logout();
-                      router.push("/login");
+                      await logout();
+                      router.replace("/login");
                     }}
                     className="w-full flex items-center gap-2 px-4 py-2.5 text-xs font-bold text-rose-600 hover:bg-rose-50 cursor-pointer text-left transition-colors"
                   >
