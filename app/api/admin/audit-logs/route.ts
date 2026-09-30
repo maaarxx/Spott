@@ -2,7 +2,7 @@ import { NextResponse } from 'next/server';
 import { createAdminClient, getAuthenticatedRole } from '@/lib/supabase-server';
 
 export async function GET(request: Request) {
-  const actor = await getAuthenticatedRole();
+  const actor = await getAuthenticatedRole(request);
   if (!actor) return NextResponse.json({ error: 'Your Supabase session is not active. Sign in again.', code: 'AUTHENTICATION_REQUIRED' }, { status: 401 });
   if (actor.role !== 'admin') return NextResponse.json({ error: 'This account does not have admin access.', code: 'ADMIN_ROLE_REQUIRED' }, { status: 403 });
   const { searchParams } = new URL(request.url);
@@ -15,7 +15,7 @@ export async function GET(request: Request) {
 }
 
 export async function POST(request: Request) {
-  const actor = await getAuthenticatedRole();
+  const actor = await getAuthenticatedRole(request);
   if (!actor) return NextResponse.json({ error: 'Your Supabase session is not active. Sign in again.', code: 'AUTHENTICATION_REQUIRED' }, { status: 401 });
   if (actor.role !== 'admin') return NextResponse.json({ error: 'This account does not have admin access.', code: 'ADMIN_ROLE_REQUIRED' }, { status: 403 });
   const body = await request.json().catch(() => null);

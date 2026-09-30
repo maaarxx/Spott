@@ -51,6 +51,7 @@ import {
   VerificationDocument,
 } from "@/lib/verification-store";
 import PdfViewerModal from "@/components/PdfViewerModal";
+import { fetchAuditApi } from "@/lib/audit-log-client";
 import { addNotification, removeNotificationsForEvent } from "@/lib/notifications-store";
 import { getStoredEvents, deleteStoredEvent, saveStoredEvent, saveStoredEvents, subscribeToEvents } from "@/lib/events-store";
 import {
@@ -455,7 +456,7 @@ function AdminContent() {
     };
     const syncAuditLogs = async () => {
       try {
-        const response = await fetch('/api/admin/audit-logs?limit=100');
+        const response = await fetchAuditApi('/api/admin/audit-logs?limit=100');
         const payload = await response.json();
         if (!response.ok) {
           setAuditLogsError(payload.code === 'AUTHENTICATION_REQUIRED'
@@ -565,10 +566,10 @@ function AdminContent() {
   };
 
   const recordAdminAction = (entry: { action: string; targetType: string; targetId?: string; summary: string }) => {
-    void fetch('/api/admin/audit-logs', {
+    void fetchAuditApi('/api/admin/audit-logs', {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(entry),
     }).then((response) => {
-      if (response.ok) fetch('/api/admin/audit-logs?limit=100').then((r) => r.json()).then((data) => setAuditLogs(data.logs || [])).catch(() => {});
+      if (response.ok) fetchAuditApi('/api/admin/audit-logs?limit=100').then((r) => r.json()).then((data) => setAuditLogs(data.logs || [])).catch(() => {});
     }).catch(() => {});
   };
 
@@ -2885,7 +2886,7 @@ function AdminContent() {
               <h1 className="text-2xl sm:text-3xl font-black text-[#171717]">Admin Audit Log</h1>
               <p className="mt-1 text-sm text-[#666666]">Recent account, organizer, and event actions recorded on the server.</p>
             </div>
-            <button type="button" onClick={() => fetch('/api/admin/audit-logs?limit=100').then(async (response) => {
+            <button type="button" onClick={() => fetchAuditApi('/api/admin/audit-logs?limit=100').then(async (response) => {
               const payload = await response.json();
               if (!response.ok) { setAuditLogsError(payload.error || 'Unable to load audit logs.'); return; }
               setAuditLogs(payload.logs || []); setAuditLogsError(null);

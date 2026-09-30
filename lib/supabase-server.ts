@@ -43,15 +43,20 @@ export function createAdminClient() {
 }
 
 /** Resolve a privileged role from the authenticated Supabase session, never client input. */
-export async function getAuthenticatedRole() {
+export async function getAuthenticatedRole(request?: Request) {
   const supabase = await createClient();
-  const { data: { user }, error: authError } = await supabase.auth.getUser();
+  const authorization = request?.headers.get('authorization');
+  const bearerToken = authorization?.match(/^Bearer\s+(.+)$/i)?.[1];
+  // Browser requests send the current access token explicitly as a fallback
+  // for deployments where Supabase SSR cookies are not forwarded consistently.
+  // getUser(token) verifies it with Supabase; it never trusts client role data.
+  const { data: { user }, error: authError } = await supabase.auth.getUser(bearerToken);
   if (authError || !user?.email) return null;
 
-  const { data, error } = await supabase
+  const { data, error } = await createAdminClient()
     .from('users')
     .select('user_id, role')
-    .eq('email', user.email.toLowerCase())
+    .or(`user_id.eq.${user.id},email.eq.${user.email.toLowerCase()}`)
     .maybeSingle();
   if (error || !data) return null;
   return { email: user.email.toLowerCase(), userId: data.user_id as string, role: data.role as string };
