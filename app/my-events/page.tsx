@@ -20,7 +20,7 @@ import Link from "next/link";
 import { format, addDays, isBefore, parseISO, startOfMonth, addMonths, subMonths, getDaysInMonth } from "date-fns";
 import type { EventData } from "@/components/EventCard";
 import { DEFAULT_EVENTS } from "@/lib/default-events";
-import { saveStoredEvents, subscribeToEvents, useStoredEvents } from "@/lib/events-store";
+import { loadPublicEvents, subscribeToEvents, useStoredEvents } from "@/lib/events-store";
 import {
   getCurrentUser,
   SpottAccount,
@@ -123,18 +123,13 @@ export default function MyEventsPage() {
 
   useEffect(() => {
     let active = true;
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 1200);
-    fetch("/api/events", { signal: controller.signal })
-      .then((res) => (res.ok ? res.json() : []))
+    loadPublicEvents()
       .then((apiData: EventData[]) => {
         if (active && Array.isArray(apiData)) {
-          saveStoredEvents(apiData, true);
           setRemoteEvents(apiData);
         }
       })
-      .catch(() => {})
-      .finally(() => clearTimeout(timer));
+      .catch(() => {});
 
     const onStorageChange = () => {
       syncStorage();
@@ -148,7 +143,6 @@ export default function MyEventsPage() {
 
     return () => {
       active = false;
-      controller.abort();
       unsubscribeEvents();
       window.removeEventListener("spott_saved_updated", onStorageChange);
       window.removeEventListener("spott_registered_updated", onStorageChange);

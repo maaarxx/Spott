@@ -22,7 +22,7 @@ import {
 import Link from "next/link";
 import MapView from "@/components/MapView";
 import CancelRsvpModal from "@/components/CancelRsvpModal";
-import { getStoredEvents, saveStoredEvent, saveStoredEvents, subscribeToEvents } from "@/lib/events-store";
+import { getStoredEvents, saveStoredEvent, loadPublicEvents, subscribeToEvents } from "@/lib/events-store";
 import { recordEventView } from "@/lib/views-store";
 import type { EventData } from "@/components/EventCard";
 import { fetchWithSupabaseSession } from "@/lib/audit-log-client";
@@ -151,14 +151,8 @@ export default function EventDetailsPage({
       setAllAvailableEvents(local);
 
       try {
-        const res = await fetch("/api/events");
-        if (res.ok) {
-          const apiData = await res.json();
-          if (Array.isArray(apiData)) {
-            saveStoredEvents(apiData, true);
-            setAllAvailableEvents(apiData);
-          }
-        }
+        const apiData = await loadPublicEvents();
+        setAllAvailableEvents(apiData);
       } catch {}
     };
 

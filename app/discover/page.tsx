@@ -6,7 +6,7 @@ import { Search, SlidersHorizontal, MapPin, X, ChevronDown, Check } from "lucide
 import EventCard, { type EventData } from "@/components/EventCard";
 import MapView from "@/components/MapView";
 import { useStoredEvents } from "@/lib/events-store";
-import { saveStoredEvents } from "@/lib/events-store";
+import { loadPublicEvents } from "@/lib/events-store";
 import { getCurrentUser } from "@/lib/auth-store";
 import { loadSavedEventIds, toggleSavedEvent } from "@/lib/saved-events-client";
 import { getAllCategories, matchesCategory, matchesSearchQuery, matchesDirectText, syncCategoriesFromDatabase } from "@/lib/categories";
@@ -79,13 +79,9 @@ function DiscoverContent() {
 
   useEffect(() => {
     let active = true;
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 1200);
-    fetch("/api/events", { signal: controller.signal })
-      .then((res) => (res.ok ? res.json() : []))
+    loadPublicEvents()
       .then((apiData: EventData[]) => {
         if (!active || !Array.isArray(apiData)) return;
-        saveStoredEvents(apiData, true);
         setRemoteEvents(apiData.map((event) => ({
           ...event,
           categories: Array.isArray(event.categories) ? event.categories : [event.category || "Community"].filter(Boolean),
@@ -93,8 +89,7 @@ function DiscoverContent() {
           longitude: typeof event.longitude === "string" ? parseFloat(event.longitude) : event.longitude,
         })));
       })
-      .catch(() => {})
-      .finally(() => clearTimeout(timer));
+      .catch(() => {});
 
     const syncSaved = () => {
       const user = getCurrentUser();
@@ -113,7 +108,6 @@ function DiscoverContent() {
 
     return () => {
       active = false;
-      controller.abort();
       window.removeEventListener("spott_saved_updated", syncSaved);
       window.removeEventListener("spott_auth_changed", syncSaved);
       window.removeEventListener("storage", syncSaved);

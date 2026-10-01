@@ -279,22 +279,33 @@ export async function GET(request: Request) {
       return NextResponse.json({ error: 'Could not load events from the database.' }, { status: 503 });
     }
 
-    // Get registration counts
+    // Ask Postgres to aggregate RSVP counts instead of transferring every RSVP
+    // row to the server just to count it in JavaScript.
     const dataRows = (data || []) as unknown as EventListRow[];
     const eventIds = dataRows.map((event) => event.event_id);
     const regCounts: Record<string, number> = {};
-    try {
-      const { data: regData } = await supabase
-        .from('registrations')
-        .select('event_id')
-        .in('event_id', eventIds.length > 0 ? eventIds : ['none'])
-        .in('status', ['confirmed', 'registered', 'approved']);
-
-      (regData || []).forEach((registration: { event_id: string }) => {
-        regCounts[registration.event_id] = (regCounts[registration.event_id] || 0) + 1;
+    if (eventIds.length > 0) {
+      const { data: counts, error: countError } = await supabase.rpc('get_event_registration_counts', {
+        p_event_ids: eventIds,
       });
-    } catch {
-      // ignore
+
+      if (!countError && counts) {
+        (counts as Array<{ event_id: string; registration_count: number | string }>).forEach((row) => {
+          regCounts[row.event_id] = Number(row.registration_count) || 0;
+        });
+      } else {
+        // Keep compatibility until the accompanying migration has been pushed.
+        console.warn('Registration count RPC unavailable; using compatibility query.', countError?.message);
+        const { data: regData } = await supabase
+          .from('registrations')
+          .select('event_id')
+          .in('event_id', eventIds)
+          .in('status', ['confirmed', 'registered', 'approved']);
+
+        (regData || []).forEach((registration: { event_id: string }) => {
+          regCounts[registration.event_id] = (regCounts[registration.event_id] || 0) + 1;
+        });
+      }
     }
 
     // Flatten the response for easier frontend usage

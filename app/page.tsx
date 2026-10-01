@@ -21,7 +21,7 @@ import {
 } from "lucide-react";
 import EventCard, { type EventData } from "@/components/EventCard";
 import CategoryPills from "@/components/CategoryPills";
-import { getStoredEvents, subscribeToEvents, saveStoredEvents, useStoredEvents } from "@/lib/events-store";
+import { getStoredEvents, subscribeToEvents, loadPublicEvents, useStoredEvents } from "@/lib/events-store";
 import { getRecommendedFeaturedEvents } from "@/lib/featured-recommendation";
 import { getCurrentUser } from "@/lib/auth-store";
 import { loadSavedEventIds, toggleSavedEvent } from "@/lib/saved-events-client";
@@ -69,11 +69,9 @@ export default function Home() {
 
   useEffect(() => {
     let active = true;
-    fetch("/api/events")
-      .then((res) => (res.ok ? res.json() : []))
+    loadPublicEvents()
       .then((apiData: EventData[]) => {
         if (!active || !Array.isArray(apiData)) return;
-        saveStoredEvents(apiData, true);
         setRemoteEvents(apiData);
       })
       .catch(() => {});

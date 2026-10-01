@@ -20,7 +20,7 @@ import {
   subscribeToOrganizerProfile,
   OrganizerProfile,
 } from "@/lib/organizer-store";
-import { subscribeToEvents, saveStoredEvents } from "@/lib/events-store";
+import { subscribeToEvents, loadPublicEvents } from "@/lib/events-store";
 import { useHydrated } from "@/lib/use-hydrated";
 import type { EventData } from "@/components/EventCard";
 
@@ -34,11 +34,9 @@ export default function OrganizersDirectoryPage() {
 
   useEffect(() => {
     let active = true;
-    fetch("/api/events")
-      .then((res) => (res.ok ? res.json() : []))
+    loadPublicEvents()
       .then((apiData: EventData[]) => {
         if (!active || !Array.isArray(apiData) || apiData.length === 0) return;
-        saveStoredEvents(apiData);
         setOrganizers(getAllOrganizersList(apiData));
       })
       .catch(() => {});

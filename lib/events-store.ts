@@ -6,6 +6,14 @@ import { useSyncExternalStore } from "react";
 const BROADCAST_CHANNEL_NAME = "spott_events_sync";
 let eventSnapshot: EventData[] = [];
 const EMPTY_EVENTS: EventData[] = [];
+const PUBLIC_EVENTS_CACHE_MS = 15_000;
+let publicEventsCache: { events: EventData[]; expiresAt: number } | null = null;
+let publicEventsRequest: Promise<EventData[]> | null = null;
+
+function invalidatePublicEventsCache() {
+  publicEventsCache = null;
+  publicEventsRequest = null;
+}
 
 function normalizeEvent(event: EventData): EventData {
   let lat = typeof event.latitude === "string" ? parseFloat(event.latitude) : event.latitude;
@@ -46,6 +54,7 @@ function normalizeEvent(event: EventData): EventData {
 
 function publishUpdate() {
   if (typeof window === "undefined") return;
+  invalidatePublicEventsCache();
   window.dispatchEvent(new Event("spott_events_updated"));
   try {
     const channel = new BroadcastChannel(BROADCAST_CHANNEL_NAME);
@@ -60,7 +69,10 @@ export function broadcastEventsUpdated() {
 
 export function subscribeToEvents(callback: () => void): () => void {
   if (typeof window === "undefined") return () => {};
-  const handleCustom = () => callback();
+  const handleCustom = () => {
+    invalidatePublicEventsCache();
+    callback();
+  };
   window.addEventListener("spott_events_updated", handleCustom);
   let channel: BroadcastChannel | null = null;
   try {
@@ -71,6 +83,30 @@ export function subscribeToEvents(callback: () => void): () => void {
     window.removeEventListener("spott_events_updated", handleCustom);
     channel?.close();
   };
+}
+
+/** Deduplicate public feed requests and briefly reuse results across tab navigation. */
+export function loadPublicEvents(): Promise<EventData[]> {
+  if (publicEventsCache && publicEventsCache.expiresAt > Date.now()) {
+    return Promise.resolve(publicEventsCache.events);
+  }
+  if (publicEventsRequest) return publicEventsRequest;
+
+  publicEventsRequest = fetch("/api/events")
+    .then(async (response) => {
+      if (!response.ok) throw new Error("Unable to load events.");
+      const payload: unknown = await response.json();
+      if (!Array.isArray(payload)) throw new Error("Invalid events response.");
+      saveStoredEvents(payload as EventData[], true);
+      const events = eventSnapshot;
+      publicEventsCache = { events, expiresAt: Date.now() + PUBLIC_EVENTS_CACHE_MS };
+      return events;
+    })
+    .finally(() => {
+      publicEventsRequest = null;
+    });
+
+  return publicEventsRequest;
 }
 
 /** Current-tab cache only. Supabase API responses are the durable source of truth. */
