@@ -6,5 +6,5 @@ export async function GET(request: Request) {
   if (!account) return NextResponse.json({ error: 'Sign in to load your RSVPs.' }, { status: 401 });
   const { data, error } = await createAdminClient().from('registrations').select('event_id,status,payment_status,registration_date,attendee_name,attendee_email,mobile_number,attendees_count,notes').eq('user_id', account.userId);
   if (error) return NextResponse.json({ error: 'Unable to load RSVPs.' }, { status: 500 });
-  return NextResponse.json({ registrations: data || [] });
+  return NextResponse.json({ registrations: (data || []).filter((row) => String(row.status || '').toLowerCase() !== 'cancelled') });
 }

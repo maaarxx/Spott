@@ -96,8 +96,13 @@ export async function DELETE(request: Request, { params }: { params: Promise<{ i
     if (!account) return NextResponse.json({ error: 'Sign in to cancel your RSVP.' }, { status: 401 });
     const { id } = await params;
     const db = createAdminClient();
-    const { error } = await db.from('registrations').delete().eq('user_id', account.userId).eq('event_id', id);
+    const { data: cancelled, error } = await db.from('registrations')
+      .update({ status: 'cancelled' })
+      .eq('user_id', account.userId).eq('event_id', id)
+      .neq('status', 'cancelled')
+      .select('registration_id').maybeSingle();
     if (error) return NextResponse.json({ error: 'Could not cancel RSVP in the database.' }, { status: 500 });
+    if (!cancelled) return NextResponse.json({ error: 'No active RSVP was found for this event.' }, { status: 404 });
     const { data: activeRows, error: countError } = await db.from('registrations').select('attendees_count').eq('event_id', id).in('status', ['confirmed', 'registered', 'approved']);
     if (countError) return NextResponse.json({ error: 'RSVP cancelled, but its updated count could not be loaded.' }, { status: 500 });
     const confirmedCount = (activeRows || []).reduce((sum, row) => sum + Math.max(1, Number(row.attendees_count) || 1), 0);

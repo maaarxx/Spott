@@ -113,9 +113,10 @@ export default function EventDetailsPage({
             return;
           }
           const status = String(registration.status || '').toLowerCase();
+          const cancelled = status === 'cancelled';
           const pending = status.includes('pending') || status === 'rejected' || status === 'declined';
-          setRsvpd(status !== 'rejected' && status !== 'declined');
-          setAttendeeStatus(pending ? 'Pending' : 'Confirmed');
+          setRsvpd(!cancelled && status !== 'rejected' && status !== 'declined');
+          setAttendeeStatus(cancelled ? null : pending ? 'Pending' : 'Confirmed');
         })
         .catch(() => {
           setRsvpd(false);

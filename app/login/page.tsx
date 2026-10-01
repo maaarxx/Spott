@@ -68,9 +68,9 @@ export default function LoginPage() {
   const fullName = [signupFirstName.trim(), signupMI.trim() ? `${signupMI.trim()}.` : "", signupLastName.trim()]
     .filter(Boolean).join(" ");
   const fieldErrors = {
-    firstName: signupFirstName.length > 100 ? "First name must be 100 characters or fewer." : signupFirstName && !/^[\p{L}\p{M}][\p{L}\p{M} '\u2019-]*$/u.test(signupFirstName) ? "Use letters, spaces, apostrophes, or hyphens only." : "",
+    firstName: signupFirstName.length > 15 ? "First name must be 15 characters or fewer." : signupFirstName && !/^[\p{L}\p{M}][\p{L}\p{M} '\u2019-]*$/u.test(signupFirstName) ? "Use letters, spaces, apostrophes, or hyphens only." : "",
     mi: signupMI && !/^[A-Za-z]$/.test(signupMI) ? "Middle initial must be one letter." : "",
-    lastName: signupLastName.length > 150 ? "Last name must be 150 characters or fewer." : signupLastName && !/^[\p{L}\p{M}][\p{L}\p{M} '\u2019-]*$/u.test(signupLastName) ? "Use letters, spaces, apostrophes, or hyphens only." : "",
+    lastName: signupLastName.length > 15 ? "Last name must be 15 characters or fewer." : signupLastName && !/^[\p{L}\p{M}][\p{L}\p{M} '\u2019-]*$/u.test(signupLastName) ? "Use letters, spaces, apostrophes, or hyphens only." : "",
     username: signupUsername && !/^[a-zA-Z0-9_]{4,20}$/.test(signupUsername) ? "Use 4–20 letters, numbers, or underscores." : "",
     email: signupEmail && (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(signupEmail.trim()) || signupEmail.trim().length > 150) ? "Enter a valid email address (maximum 150 characters)." : "",
     password: signupPassword.length > 20 ? "Password must be 20 characters or fewer." : /\s/.test(signupPassword) ? "Password cannot contain spaces." : signupPassword.length > 0 && signupPassword.length < 8 ? "Password must be at least 8 characters." : signupPassword && [signupFirstName, signupMI, signupLastName, signupUsername].flatMap((part) => part.trim().split(/[\s.'’_-]+/)).filter((part) => part.length >= 2).some((part) => signupPassword.toLowerCase().includes(part.toLowerCase())) ? "Password cannot contain your name or username." : "",
@@ -390,7 +390,7 @@ export default function LoginPage() {
   <div className="grid grid-cols-[1fr_60px_1fr] gap-2">
     <div>
       <label className="block text-[11px] font-black uppercase mb-1.5">First Name <span className="text-rose-600">*</span></label>
-      <input maxLength={100} value={signupFirstName} onChange={(e) => { touch("firstName"); setServerFieldErrors((current) => ({ ...current, firstName: "" })); setSignupFirstName(e.target.value); }} className={`w-full border rounded-xl px-3 py-2.5 text-sm ${((fieldErrors.firstName || serverFieldErrors.firstName) && signupTouched.firstName) ? "border-rose-400 bg-rose-50/30" : "border-[#e6e1d8]"}`} required autoComplete="given-name" />
+      <input maxLength={15} value={signupFirstName} onChange={(e) => { touch("firstName"); setServerFieldErrors((current) => ({ ...current, firstName: "" })); setSignupFirstName(e.target.value); }} className={`w-full border rounded-xl px-3 py-2.5 text-sm ${((fieldErrors.firstName || serverFieldErrors.firstName) && signupTouched.firstName) ? "border-rose-400 bg-rose-50/30" : "border-[#e6e1d8]"}`} required autoComplete="given-name" />
       {signupTouched.firstName && (serverFieldErrors.firstName || fieldErrors.firstName || (!signupFirstName.trim() ? "First name is required." : "")) && <p className="text-rose-600 text-[10px] mt-1">{serverFieldErrors.firstName || fieldErrors.firstName || "First name is required."}</p>}
     </div>
     <div>
@@ -400,7 +400,7 @@ export default function LoginPage() {
     </div>
     <div>
       <label className="block text-[11px] font-black uppercase mb-1.5">Last Name <span className="text-rose-600">*</span></label>
-      <input maxLength={150} value={signupLastName} onChange={(e) => { touch("lastName"); setServerFieldErrors((current) => ({ ...current, lastName: "" })); setSignupLastName(e.target.value); }} className={`w-full border rounded-xl px-3 py-2.5 text-sm ${((fieldErrors.lastName || serverFieldErrors.lastName) && signupTouched.lastName) ? "border-rose-400 bg-rose-50/30" : "border-[#e6e1d8]"}`} required autoComplete="family-name" />
+      <input maxLength={15} value={signupLastName} onChange={(e) => { touch("lastName"); setServerFieldErrors((current) => ({ ...current, lastName: "" })); setSignupLastName(e.target.value); }} className={`w-full border rounded-xl px-3 py-2.5 text-sm ${((fieldErrors.lastName || serverFieldErrors.lastName) && signupTouched.lastName) ? "border-rose-400 bg-rose-50/30" : "border-[#e6e1d8]"}`} required autoComplete="family-name" />
       {signupTouched.lastName && (serverFieldErrors.lastName || fieldErrors.lastName || (!signupLastName.trim() ? "Last name is required." : "")) && <p className="text-rose-600 text-[10px] mt-1">{serverFieldErrors.lastName || fieldErrors.lastName || "Last name is required."}</p>}
     </div>
   </div>
@@ -409,7 +409,6 @@ export default function LoginPage() {
     <input maxLength={20} minLength={4} value={signupUsername} onChange={(e) => { touch("username"); setServerFieldErrors((current) => ({ ...current, username: "" })); setSignupUsername(e.target.value); }} className={`w-full border rounded-xl px-3 py-2.5 text-sm ${((fieldErrors.username || serverFieldErrors.username) && signupTouched.username) ? "border-rose-400 bg-rose-50/30" : "border-[#e6e1d8]"}`} required autoComplete="username" />
     <div className="flex justify-between mt-1">
         {signupTouched.username && (serverFieldErrors.username || fieldErrors.username || (!signupUsername.trim() ? "Username is required." : "")) && <p className="text-rose-600 text-[10px]">{serverFieldErrors.username || fieldErrors.username || "Username is required."}</p>}
-        <small className="text-[10px] text-gray-500 ml-auto">{signupUsername.length}/20</small>
     </div>
   </div>
 </div>
@@ -451,7 +450,7 @@ export default function LoginPage() {
                 {signupTouched.password && (serverFieldErrors.password || fieldErrors.password) && <p role="alert" className="mt-1 text-xs text-rose-700">{serverFieldErrors.password || fieldErrors.password}</p>}
                 <button type="button" aria-label={showSignupPassword ? "Hide password" : "Show password"} onClick={() => setShowSignupPassword((shown) => !shown)} className="mt-1 inline-flex items-center gap-1 text-xs font-semibold text-[#666]">{showSignupPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}{showSignupPassword ? "Hide password" : "Show password"}</button>
                 <p className="mt-1.5 text-xs text-[#777777]">
-                  Letters, numbers, and special characters are allowed; spaces are not. {signupPassword.length}/20
+                  Letters, numbers, and special characters are allowed; spaces are not. Maximum 20 characters.
                 </p>
                 <p className={`mt-1 text-xs font-bold ${passwordStrength === "Neutral" ? "text-gray-500" : passwordStrength === "Strong" ? "text-emerald-700" : passwordStrength === "Medium" ? "text-amber-700" : "text-rose-700"}`}>Strength: {passwordStrength}</p>
                 <ul className="mt-1 grid grid-cols-2 gap-x-2 text-[11px]">{passwordChecks.map((check) => <li key={check.label} className={check.met ? "text-emerald-700" : "text-[#888]"}>{check.met ? "✓" : "○"} {check.label}</li>)}</ul>
