@@ -28,7 +28,7 @@ export async function GET(request: Request) {
       link: string | null;
     }) => ({
       id: n.notification_id,
-      type: n.type,
+      type: n.type === 'cancellation' ? 'announcement' : n.type,
       title: n.title,
       message: n.message || '',
       isRead: n.is_read,
@@ -59,7 +59,8 @@ export async function POST(request: Request) {
     const targetRole = ['all', 'user', 'organizer', 'admin'].includes(body.targetRole) ? body.targetRole : 'all';
     const recipientEmail = typeof body.recipientEmail === 'string' ? body.recipientEmail.trim().toLowerCase() : '';
     const link = typeof body.link === 'string' ? body.link.trim() : '';
-    if (!['reminder', 'update', 'cancellation', 'announcement'].includes(type) || !title || title.length > 200 || message.length > 2000 || link.length > 500) {
+    const dbType = type === 'cancellation' ? 'announcement' : type;
+    if (!['reminder', 'update', 'announcement'].includes(dbType) || !title || title.length > 200 || message.length > 2000 || link.length > 500) {
       return NextResponse.json({ error: 'Invalid notification details.' }, { status: 400 });
     }
 
@@ -94,7 +95,7 @@ export async function POST(request: Request) {
     if (uniqueRecipients.length) {
       const { error } = await db.from('notifications').insert(uniqueRecipients.map((recipient) => ({
         user_id: recipient.user_id,
-        type,
+        type: dbType,
         title,
         message,
         is_read: false,

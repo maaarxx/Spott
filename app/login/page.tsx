@@ -233,6 +233,10 @@ export default function LoginPage() {
       ? "Password is required."
       : signupPassword.length < 8 || signupPassword.length > 20 || /\s/.test(signupPassword)
         ? "Password must be 8–20 characters with no spaces."
+      : strengthScore < 5
+        ? "Please satisfy all password requirements."
+      : passwordStrength === "Weak"
+        ? "Password is weak. Please choose a stronger one."
       : serverFieldErrors.password || (signupRole === "user" ? fieldErrors.password : "");
     const confirmError = !signupConfirm ? "Confirm password is required." : fieldErrors.confirm;
     const userHasErrors = !signupFirstName.trim() || Boolean(fieldErrors.firstName) || !signupMI.trim() || Boolean(fieldErrors.mi) ||
@@ -544,8 +548,21 @@ export default function LoginPage() {
                 <p className="mt-1.5 text-xs text-[#777777]">
                   Letters, numbers, and special characters are allowed; spaces are not. Maximum 20 characters.
                 </p>
-                <p className={`mt-1 text-xs font-bold ${passwordStrength === "Neutral" ? "text-gray-500" : passwordStrength === "Strong" ? "text-emerald-700" : passwordStrength === "Medium" ? "text-amber-700" : "text-rose-700"}`}>Strength: {passwordStrength}</p>
-                <ul className="mt-1 grid grid-cols-2 gap-x-2 text-[11px]">{passwordChecks.map((check) => <li key={check.label} className={check.met ? "text-emerald-700" : "text-[#888]"}>{check.met ? "✓" : "○"} {check.label}</li>)}</ul>
+                <div className="mt-3 p-3 rounded-xl bg-gray-50 border border-[#e6e1d8]">
+                  <p className={`text-xs font-bold ${passwordStrength === "Neutral" ? "text-gray-500" : passwordStrength === "Strong" ? "text-emerald-700" : passwordStrength === "Medium" ? "text-amber-700" : "text-rose-700"}`}>
+                    Strength: {passwordStrength}
+                  </p>
+                  <ul className="mt-2 grid grid-cols-2 gap-y-1.5 gap-x-2 text-[11px] font-medium">
+                    {passwordChecks.map((check) => (
+                      <li key={check.label} className={`flex items-center gap-1.5 ${check.met ? "text-emerald-700" : "text-[#888]"}`}>
+                        <span className={`w-3.5 h-3.5 rounded-full flex items-center justify-center text-[8px] ${check.met ? "bg-emerald-100 text-emerald-700" : "bg-gray-200 text-transparent"}`}>
+                          ✓
+                        </span>
+                        {check.label}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
               </div>
               <div>
                 <label className="block text-[11px] font-black uppercase tracking-wider text-[#666666] mb-1.5">

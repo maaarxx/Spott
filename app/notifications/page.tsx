@@ -60,7 +60,6 @@ export default function NotificationsPage() {
     { key: "all", label: "All" },
     { key: "update", label: "Updates" },
     { key: "reminder", label: "Reminders" },
-    { key: "cancellation", label: "Cancellations" },
     { key: "announcement", label: "Announcements" },
   ];
 
@@ -206,7 +205,6 @@ export default function NotificationsPage() {
                 <div className="w-10 h-10 rounded-xl bg-white border border-line flex-shrink-0 flex items-center justify-center text-base shadow-xs group-hover:scale-105 transition-transform">
                   {notification.type === "reminder" && <Bell className="w-4 h-4 text-amber-600" />}
                   {notification.type === "update" && <FileEdit className="w-4 h-4 text-blue-600" />}
-                  {notification.type === "cancellation" && <XCircle className="w-4 h-4 text-rose-600" />}
                   {notification.type === "announcement" && <Megaphone className="w-4 h-4 text-[#ff6b35]" />}
                 </div>
 
@@ -219,8 +217,6 @@ export default function NotificationsPage() {
                           ? "bg-blue-50 text-blue-700 border border-blue-200/50"
                           : notification.type === "reminder"
                           ? "bg-amber-50 text-amber-700 border border-amber-200/50"
-                          : notification.type === "cancellation"
-                          ? "bg-rose-50 text-rose-700 border border-rose-200/50"
                           : "bg-[#fff0e8] text-accent border border-accent/20"
                       }`}
                     >

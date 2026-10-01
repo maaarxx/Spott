@@ -37,9 +37,9 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
     // client-supplied attendee count, including requests from older app builds.
     const attendeeCount = 1;
     const notes = String(form.get('notes') || '').trim();
-    if (fullName.length < 2 || fullName.length > 100) return NextResponse.json({ error: 'Enter your name (maximum 100 characters).', field: 'fullName' }, { status: 400 });
+    if (fullName.length < 2 || fullName.length > 25) return NextResponse.json({ error: 'Enter your name (First Name MI Last Name).', field: 'fullName' }, { status: 400 });
     if (!/^09\d{9}$/.test(mobile)) return NextResponse.json({ error: 'Use a valid PH mobile number in 09XXXXXXXXX format.', field: 'mobile' }, { status: 400 });
-    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || email.length > 254) return NextResponse.json({ error: 'Enter a valid email address (maximum 254 characters).', field: 'email' }, { status: 400 });
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || email.length > 25) return NextResponse.json({ error: 'Enter a valid email address.', field: 'email' }, { status: 400 });
     if (notes.length > 1000) return NextResponse.json({ error: 'Notes must be 1,000 characters or fewer.', field: 'notes' }, { status: 400 });
     const db = createAdminClient();
     const { data: event, error: eventError } = await db.from('events').select('price,capacity,require_approval,organizer_id,title').eq('event_id', id).maybeSingle();

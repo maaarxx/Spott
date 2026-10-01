@@ -262,7 +262,7 @@ export async function PATCH(
         if (attendees && attendees.length > 0) {
           const notifs = (attendees as unknown as { user_id: string }[]).map((attendee) => ({
             user_id: attendee.user_id,
-            type: 'cancellation',
+            type: 'announcement',
             title: `Event Cancelled: "${currentTitle}"`,
             message: notifMessage,
             related_event_id: id,
@@ -277,7 +277,7 @@ export async function PATCH(
         status: 'cancelled',
         message: 'Event cancelled and attendees notified.',
         notification: {
-          type: 'cancellation',
+          type: 'announcement',
           title: `Event Cancelled: "${currentTitle}"`,
           message: notifMessage,
           link: `/events/${id}`,

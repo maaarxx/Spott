@@ -2,12 +2,12 @@
 
 import { fetchWithSupabaseSession } from "./audit-log-client";
 
-export type NotificationType = "all" | "reminder" | "update" | "cancellation" | "announcement";
+export type NotificationType = "all" | "reminder" | "update" | "announcement";
 export type TargetRole = "all" | "user" | "organizer" | "admin";
 
 export type NotificationItem = {
   id: string;
-  type: "reminder" | "update" | "cancellation" | "announcement";
+  type: "reminder" | "update" | "announcement";
   title: string;
   message: string;
   targetRole: TargetRole;
@@ -37,7 +37,7 @@ export function getNotifications(role: TargetRole = 'all'): NotificationItem[] {
 }
 
 export async function addNotification(data: {
-  type: "reminder" | "update" | "cancellation" | "announcement";
+  type: "reminder" | "update" | "announcement";
   title: string;
   message: string;
   targetRole?: TargetRole;

@@ -350,39 +350,53 @@ function OrganizerContent() {
     const orgEvents = filterForOrg(stored);
     setEvents(mapToOrganizerEvents(orgEvents));
 
-    // Sync deduplicated view stats from server
-    const eventIds = orgEvents.map((e) => e.id);
-    if (eventIds.length > 0) {
-      try {
-        fetch(`/api/views?listing_ids=${encodeURIComponent(eventIds.join(","))}`)
-          .then((r) => r.json())
-          .then((data) => {
-            if (data?.viewsMap) {
-              setEvents((prev) =>
-                prev.map((e) => ({
-                  ...e,
-                  views: data.viewsMap[e.id] ?? 0,
-                  uniqueViews: data.uniqueViewsMap?.[e.id] ?? 0,
-                }))
-              );
-            }
-          })
-          .catch(() => {});
-      } catch {}
-    }
-
-    try {
-      const res = await fetch("/api/events?scope=organizer");
-      if (res.ok) {
-        const apiData = await res.json();
+    fetch("/api/events?scope=organizer")
+      .then(r => r.ok ? r.json() : null)
+      .then(apiData => {
+        let latestEvents = orgEvents;
         if (Array.isArray(apiData)) {
-          // This loader is subscribed to event updates. Do not rebroadcast its
-          // own fetch result or it will continually reload the same endpoints.
           saveStoredEvents(apiData, false);
-          setEvents(mapToOrganizerEvents(filterForOrg(apiData)));
+          latestEvents = filterForOrg(apiData);
+          setEvents(mapToOrganizerEvents(latestEvents));
         }
-      }
-    } catch {}
+        const eventIds = latestEvents.map((e) => e.id);
+        if (eventIds.length > 0) {
+          fetch(`/api/views?listing_ids=${encodeURIComponent(eventIds.join(","))}`)
+            .then((r) => r.json())
+            .then((data) => {
+              if (data?.viewsMap) {
+                setEvents((prev) =>
+                  prev.map((e) => ({
+                    ...e,
+                    views: data.viewsMap[e.id] ?? 0,
+                    uniqueViews: data.uniqueViewsMap?.[e.id] ?? 0,
+                  }))
+                );
+              }
+            })
+            .catch(() => {});
+        }
+      })
+      .catch(() => {
+        // Fallback: if events fetch fails, still try to fetch views for stored events
+        const eventIds = orgEvents.map((e) => e.id);
+        if (eventIds.length > 0) {
+          fetch(`/api/views?listing_ids=${encodeURIComponent(eventIds.join(","))}`)
+            .then((r) => r.json())
+            .then((data) => {
+              if (data?.viewsMap) {
+                setEvents((prev) =>
+                  prev.map((e) => ({
+                    ...e,
+                    views: data.viewsMap[e.id] ?? 0,
+                    uniqueViews: data.uniqueViewsMap?.[e.id] ?? 0,
+                  }))
+                );
+              }
+            })
+            .catch(() => {});
+        }
+      });
   };
 
   useEffect(() => {
@@ -589,7 +603,6 @@ function OrganizerContent() {
     for (const registration of monthlyRegistrations) {
       const registeredAt = new Date(registration.registration_date || "");
       if (!Number.isFinite(registeredAt.getTime()) || registeredAt < start || registeredAt >= end) continue;
-      total += 1;
       const normalizedStatus = String(registration.status || "").toLowerCase();
       const displayStatus = ["confirmed", "registered", "approved"].includes(normalizedStatus)
         ? "Confirmed"
@@ -597,10 +610,14 @@ function OrganizerContent() {
           ? "Declined"
           : "Pending";
       statusCounts[displayStatus] += 1;
-      const bucket = Math.min(weeks.length - 1, Math.floor((registeredAt.getDate() - 1) / 7));
-      weeks[bucket].count += 1;
-      const attendeeKey = String(registration.attendee_email || registration.attendee_name || registration.user_id || "unknown").trim().toLowerCase();
-      attendeeVisits.set(attendeeKey, (attendeeVisits.get(attendeeKey) || 0) + 1);
+      
+      if (displayStatus !== "Declined") {
+        total += 1;
+        const bucket = Math.min(weeks.length - 1, Math.floor((registeredAt.getDate() - 1) / 7));
+        weeks[bucket].count += 1;
+        const attendeeKey = String(registration.attendee_email || registration.attendee_name || registration.user_id || "unknown").trim().toLowerCase();
+        attendeeVisits.set(attendeeKey, (attendeeVisits.get(attendeeKey) || 0) + 1);
+      }
     }
     const uniqueAttendees = attendeeVisits.size;
     const repeatAttendees = Array.from(attendeeVisits.values()).filter((count) => count > 1).length;
@@ -632,7 +649,7 @@ function OrganizerContent() {
   const totalEvents = activeEvents.length;
   const totalRSVPs = activeEvents.reduce((acc, curr) => acc + curr.rsvps + curr.pendingRsvps, 0);
   const totalViews = activeEvents.reduce((acc, curr) => acc + curr.views, 0);
-  const totalUniqueViews = activeEvents.reduce((acc, curr) => acc + (curr.uniqueViews || Math.max(1, Math.round(curr.views * 0.72))), 0);
+  const totalUniqueViews = activeEvents.reduce((acc, curr) => acc + (curr.uniqueViews || (curr.views > 0 ? Math.max(1, Math.round(curr.views * 0.72)) : 0)), 0);
   const regRate = Math.round((totalRSVPs / Math.max(totalViews, 1)) * 100);
 
   const activeCount = events.filter((e) => e.status === "Active").length;

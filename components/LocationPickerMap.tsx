@@ -4,8 +4,8 @@ import { useEffect, useRef } from "react";
 import L from "leaflet";
 
 export type LocationPickerMapProps = {
-  lat: number;
-  lng: number;
+  lat: number | null;
+  lng: number | null;
   onChange: (lat: number, lng: number) => void;
 };
 
@@ -31,8 +31,8 @@ export default function LocationPickerMap({
       mapInstanceRef.current = null;
     }
 
-    const initialLat = lat || 14.5638;
-    const initialLng = lng || 120.9965;
+    const initialLat = lat ?? 14.5638;
+    const initialLng = lng ?? 120.9965;
 
     const map = L.map(mapContainerRef.current, {
       center: [initialLat, initialLng],
@@ -64,7 +64,10 @@ export default function LocationPickerMap({
     const marker = L.marker([initialLat, initialLng], {
       draggable: true,
       icon: pinIcon,
-    }).addTo(map);
+    });
+    if (lat !== null && lng !== null) {
+      marker.addTo(map);
+    }
 
     marker.on("dragend", () => {
       const pos = marker.getLatLng();
@@ -73,6 +76,9 @@ export default function LocationPickerMap({
 
     map.on("click", (e) => {
       marker.setLatLng(e.latlng);
+      if (!map.hasLayer(marker)) {
+        marker.addTo(map);
+      }
       onChangeRef.current(Number(e.latlng.lat.toFixed(6)), Number(e.latlng.lng.toFixed(6)));
     });
 
@@ -90,9 +96,18 @@ export default function LocationPickerMap({
 
   // Update marker & pan if lat/lng changes externally (e.g. preset clicked)
   useEffect(() => {
-    if (mapInstanceRef.current && markerRef.current && lat && lng) {
-      markerRef.current.setLatLng([lat, lng]);
-      mapInstanceRef.current.panTo([lat, lng], { animate: true });
+    if (mapInstanceRef.current && markerRef.current) {
+      if (lat !== null && lng !== null) {
+        markerRef.current.setLatLng([lat, lng]);
+        mapInstanceRef.current.panTo([lat, lng], { animate: true });
+        if (!mapInstanceRef.current.hasLayer(markerRef.current)) {
+          markerRef.current.addTo(mapInstanceRef.current);
+        }
+      } else {
+        if (mapInstanceRef.current.hasLayer(markerRef.current)) {
+          markerRef.current.remove();
+        }
+      }
     }
   }, [lat, lng]);
 

@@ -58,8 +58,8 @@ export default function CreateEventPage() {
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Pinned location coordinates
-  const [pinnedLat, setPinnedLat] = useState<number>(14.5638);
-  const [pinnedLng, setPinnedLng] = useState<number>(120.9965);
+  const [pinnedLat, setPinnedLat] = useState<number | null>(null);
+  const [pinnedLng, setPinnedLng] = useState<number | null>(null);
 
   // Categories list & custom category creation
   const [categoriesList, setCategoriesList] = useState<string[]>(DEFAULT_APP_CATEGORIES);
@@ -245,8 +245,8 @@ export default function CreateEventPage() {
       verified: false,
       location: data.location,
       city: "Manila",
-      latitude: pinnedLat,
-      longitude: pinnedLng,
+      latitude: pinnedLat || 14.5638,
+      longitude: pinnedLng || 120.9965,
       categories: [finalCategory],
       registrations: 0,
       capacity: parsedCapacity,
@@ -269,8 +269,8 @@ export default function CreateEventPage() {
           time: data.time,
           location: data.location,
           city: "Manila",
-          latitude: pinnedLat,
-          longitude: pinnedLng,
+          latitude: pinnedLat || 14.5638,
+          longitude: pinnedLng || 120.9965,
           price: data.isFree ? 0 : data.price,
           capacity: parsedCapacity,
           requireApproval,
@@ -309,8 +309,8 @@ export default function CreateEventPage() {
     setIsCustomCategory(false);
     setCustomCategoryInput("");
     removeCoverImage();
-    setPinnedLat(14.5638);
-    setPinnedLng(120.9965);
+    setPinnedLat(null);
+    setPinnedLng(null);
     try {
       localStorage.removeItem("spott_event_draft");
     } catch {}
@@ -560,9 +560,13 @@ export default function CreateEventPage() {
               <label className="block text-xs sm:text-sm font-bold text-[#171717] mb-1.5 flex flex-wrap items-center justify-between gap-2">
                 <span className="flex items-center gap-2">
                   <span>Location / Venue</span>
-                  {locationWatched?.trim() ? (
+                  {locationWatched?.trim() && pinnedLat !== null && pinnedLng !== null ? (
                     <span className="text-[11px] font-bold text-emerald-700 bg-emerald-50 border border-emerald-300 px-2.5 py-0.5 rounded-full inline-flex items-center gap-1 shadow-2xs">
                       <Check className="w-3 h-3 text-emerald-600" /> Pinned ({pinnedLat.toFixed(4)}, {pinnedLng.toFixed(4)})
+                    </span>
+                  ) : locationWatched?.trim() ? (
+                    <span className="text-[11px] font-bold text-rose-700 bg-rose-50 border border-rose-300 px-2.5 py-0.5 rounded-full inline-flex items-center gap-1 shadow-2xs">
+                      Unrecognized Venue — Please pin on map
                     </span>
                   ) : (
                     <span className="text-[11px] font-semibold text-amber-700 bg-amber-50 border border-amber-200 px-2 py-0.5 rounded-full inline-flex items-center gap-1">

@@ -15,9 +15,9 @@ const LocationPickerMap = dynamic(() => import("./LocationPickerMap"), {
 type LocationPickerProps = {
   locationValue: string;
   onLocationChange?: (val: string) => void;
-  lat: number;
-  lng: number;
-  onCoordinatesChange: (lat: number, lng: number) => void;
+  lat: number | null;
+  lng: number | null;
+  onCoordinatesChange: (lat: number | null, lng: number | null) => void;
 };
 
 // Known Philippine campuses & metropolitan venues for instant zero-latency auto-pinning and proximity matching
@@ -141,6 +141,7 @@ export default function LocationPicker({
     const query = locationValue?.trim() || "";
 
     if (!query) {
+      onCoordsRef.current(null, null);
       return;
     }
 
@@ -186,10 +187,12 @@ export default function LocationPicker({
           const newLat = parseFloat(data[0].lat);
           const newLng = parseFloat(data[0].lon);
           onCoordsRef.current(Number(newLat.toFixed(6)), Number(newLng.toFixed(6)));
+        } else {
+          onCoordsRef.current(null, null);
         }
       } catch (error: unknown) {
         if (!(error instanceof Error) || error.name !== "AbortError") {
-          // Keep current pin if online query fails
+          onCoordsRef.current(null, null);
         }
       }
     }, 450);
