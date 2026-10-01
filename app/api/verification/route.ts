@@ -41,13 +41,20 @@ export async function GET(request: Request) {
     .select('organizer_id,user_id,organization_name,verification_status')
     .eq('user_id', actor.userId).maybeSingle();
   if (error) return NextResponse.json({ error: 'Unable to load verification status.' }, { status: 500 });
-  const isMetro = (data?.organization_name || '').toLowerCase().includes('metro creative') || actor.email === 'mcg@spott.ph';
-  if (!data && isMetro) {
+  const { data: profile } = await db.from('users').select('name').eq('user_id', actor.userId).maybeSingle();
+  // Only the seeded Metro demo account may use the special seed record.
+  // Matching by organization name can leak its verified status to unrelated
+  // organizers whose names happen to contain "Metro Creative".
+  const isMetroDemoAccount = actor.email.toLowerCase() === 'mcg@spott.ph';
+  if (!data && isMetroDemoAccount) {
     const seeded = await ensureMetroVerificationRecord(db);
     if (seeded) return NextResponse.json({ verification: seeded });
   }
   return NextResponse.json({
-    verification: data || { organization_name: 'Metro Creative Group', verification_status: isMetro ? 'verified' : 'unverified' },
+    verification: data || {
+      organization_name: profile?.name || 'Organizer',
+      verification_status: 'unverified',
+    },
   });
 }
 
