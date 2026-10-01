@@ -1,13 +1,43 @@
 import { NextResponse } from 'next/server';
 import { resolveMx } from 'node:dns/promises';
 import { createAdminClient } from '@/lib/supabase-server';
+import { enforceRateLimit, requestIpIdentifier } from '@/lib/rate-limit';
 
 const disposable = new Set(['mailinator.com','tempmail.com','10minutemail.com','guerrillamail.com','yopmail.com','throwawaymail.com','trashmail.com','fakeinbox.com']);
 export async function POST(request: Request) {
   try {
+    const limited = await enforceRateLimit(request, {
+      name: 'signup-check-ip', limit: 30, window: '15 m',
+      identifiers: [requestIpIdentifier(request)],
+    });
+    if (limited) return limited;
     const body = await request.json();
     const { email, username, password, firstName, mi, lastName } = body;
     const normalizedEmail = String(email || '').trim().toLowerCase();
+    if (body.role === 'organizer') {
+      const organizerName = typeof body.organizerName === 'string' ? body.organizerName.trim() : '';
+      if (!organizerName) return NextResponse.json({ error: 'Organizer name is required.' }, { status: 400 });
+      if (organizerName.length > 50 || organizerName.replace(/\s/g, '').length < 25) {
+        return NextResponse.json({ error: 'Organizer name must have at least 25 characters, excluding spaces, and no more than 50 characters total.' }, { status: 400 });
+      }
+      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedEmail) || normalizedEmail.length > 150) {
+        return NextResponse.json({ error: !normalizedEmail ? 'Email is required.' : 'Enter a valid email address (maximum 150 characters).' }, { status: 400 });
+      }
+      if (typeof password !== 'string' || !password) return NextResponse.json({ error: 'Password is required.' }, { status: 400 });
+      if (password.length < 8 || password.length > 20 || /\s/.test(password)) {
+        return NextResponse.json({ error: 'Password must be 8–20 characters with no spaces.' }, { status: 400 });
+      }
+      const db = createAdminClient();
+      const [{ data: emailRow, error: emailLookupError }, { data: authList, error: authListError }] = await Promise.all([
+        db.from('users').select('user_id').ilike('email', normalizedEmail).maybeSingle(),
+        db.auth.admin.listUsers({ page: 1, perPage: 1000 }),
+      ]);
+      if (emailLookupError || authListError) return NextResponse.json({ error: 'Unable to check this email right now.' }, { status: 503 });
+      if (emailRow || authList?.users.some((user) => user.email?.toLowerCase() === normalizedEmail)) {
+        return NextResponse.json({ error: 'Email is already in use.' }, { status: 409 });
+      }
+      return NextResponse.json({ valid: true });
+    }
     if (body.checkEmailOnly === true) {
       if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedEmail) || normalizedEmail.length > 150) {
         return NextResponse.json({ error: 'Enter a valid email address (maximum 150 characters).' }, { status: 400 });
@@ -27,7 +57,8 @@ export async function POST(request: Request) {
     const normalizedLastName = String(lastName || '').trim();
     const validNamePart = /^[\p{L}\p{M}][\p{L}\p{M} '\u2019-]*$/u;
     if (!normalizedFirstName || normalizedFirstName.length > 15 || !validNamePart.test(normalizedFirstName)) return NextResponse.json({ error: 'Enter a valid first name (maximum 15 characters; letters, spaces, apostrophes, and hyphens only).' }, { status: 400 });
-    if (normalizedMi && !/^[A-Za-z]$/.test(normalizedMi)) return NextResponse.json({ error: 'Middle initial must be one alphabetic character.' }, { status: 400 });
+    if (!normalizedMi) return NextResponse.json({ error: 'Middle initial is required.' }, { status: 400 });
+    if (!/^[A-Za-z]$/.test(normalizedMi)) return NextResponse.json({ error: 'Middle initial must be one alphabetic character.' }, { status: 400 });
     if (!normalizedLastName || normalizedLastName.length > 15 || !validNamePart.test(normalizedLastName)) return NextResponse.json({ error: 'Enter a valid last name (maximum 15 characters; letters, spaces, apostrophes, and hyphens only).' }, { status: 400 });
     if (typeof password !== 'string' || password.length < 8 || password.length > 20 || /\s/.test(password)) return NextResponse.json({ error: 'Password must be 8–20 characters with no spaces.' }, { status: 400 });
     const passLower = password.toLowerCase();

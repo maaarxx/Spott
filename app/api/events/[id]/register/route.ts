@@ -1,11 +1,20 @@
 import { NextResponse } from 'next/server';
 import { createAdminClient, getAuthenticatedRole } from '@/lib/supabase-server';
 import { writeAuditEntry } from '@/lib/audit-log-server';
+import { enforceRateLimit, requestIpIdentifier } from '@/lib/rate-limit';
 
 export async function POST(request: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
     const account = await getAuthenticatedRole(request);
     if (!account) return NextResponse.json({ error: 'Sign in to RSVP.' }, { status: 401 });
+    const ipLimited = await enforceRateLimit(request, {
+      name: 'rsvp-ip', limit: 30, window: '1 h', identifiers: [requestIpIdentifier(request)],
+    });
+    if (ipLimited) return ipLimited;
+    const userLimited = await enforceRateLimit(request, {
+      name: 'rsvp-user', limit: 10, window: '1 h', identifiers: [`user:${account.userId}`],
+    });
+    if (userLimited) return userLimited;
     const { id } = await params;
     const form = await request.formData();
     const fullName = String(form.get('fullName') || '').trim();
@@ -94,6 +103,14 @@ export async function DELETE(request: Request, { params }: { params: Promise<{ i
   try {
     const account = await getAuthenticatedRole(request);
     if (!account) return NextResponse.json({ error: 'Sign in to cancel your RSVP.' }, { status: 401 });
+    const ipLimited = await enforceRateLimit(request, {
+      name: 'rsvp-cancel-ip', limit: 30, window: '1 h', identifiers: [requestIpIdentifier(request)],
+    });
+    if (ipLimited) return ipLimited;
+    const userLimited = await enforceRateLimit(request, {
+      name: 'rsvp-cancel-user', limit: 10, window: '1 h', identifiers: [`user:${account.userId}`],
+    });
+    if (userLimited) return userLimited;
     const { id } = await params;
     const db = createAdminClient();
     const { data: cancelled, error } = await db.from('registrations')

@@ -53,6 +53,14 @@ Spott is a local event discovery app for finding concerts, workshops, markets, s
 - Leaflet and Google Maps integrations
 - React Hook Form and Zod are available for form handling and validation
 
+## Shared API rate limits
+
+Rate limiting for signup availability checks, RSVPs, RSVP cancellation, event reports, and event comments uses Upstash Redis so limits are shared across Vercel serverless instances. Install/configure the Upstash Redis integration, copy the values from `.env.example` to `.env.local`, and add `UPSTASH_REDIS_REST_URL` and `UPSTASH_REDIS_REST_TOKEN` to the Vercel project environment for each deployment environment. Redeploy after changing Vercel environment variables.
+
+Current limits are 30 signup checks per IP per 15 minutes; 30 RSVP submissions/cancellations per IP and 10 per account per hour; 10 reports per IP and 5 per account per hour; and 30 comments per IP and 10 per account per 10 minutes. Rejected requests return HTTP 429 and a `Retry-After` header. If the Upstash credentials are absent or the service fails, requests are allowed and a server-side warning is logged; configure the credentials before relying on these limits in production.
+
+Sign-in and sign-up themselves call Supabase Auth directly from the browser, so these API limits do not wrap those Auth requests. Keep Supabase Auth's provider-side rate limits enabled and configure them in the Supabase project settings.
+
 Some demo account and app state flows are stored in browser `localStorage`. Server API operations that access protected Supabase data require Supabase credentials and an authenticated role.
 
 ## Local Development

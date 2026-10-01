@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import { createClient as createSupabaseClient } from '@supabase/supabase-js';
+import { enforceRateLimit, requestIpIdentifier } from '@/lib/rate-limit';
 
 function clientFor(request: Request) {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
@@ -30,10 +31,18 @@ export async function GET(request: Request, { params }: { params: Promise<{ id: 
 export async function POST(request: Request, { params }: { params: Promise<{ id: string }> }) {
   try {
     const { id } = await params;
+    const ipLimited = await enforceRateLimit(request, {
+      name: 'event-comment-ip', limit: 30, window: '10 m', identifiers: [requestIpIdentifier(request)],
+    });
+    if (ipLimited) return ipLimited;
     const { client, token } = clientFor(request);
     if (!token) return NextResponse.json({ error: 'Your Supabase sign-in session is missing. Sign out and sign in again, then retry.' }, { status: 401 });
     const { data: auth, error: authError } = await client.auth.getUser(token);
     if (authError || !auth.user) return NextResponse.json({ error: 'Your sign-in session expired. Sign in again, then retry.' }, { status: 401 });
+    const userLimited = await enforceRateLimit(request, {
+      name: 'event-comment-user', limit: 10, window: '10 m', identifiers: [`user:${auth.user.id}`],
+    });
+    if (userLimited) return userLimited;
     const body = await request.json();
     const content = typeof body.content === 'string' ? body.content.trim() : '';
     if (!content || content.length > 2000) return NextResponse.json({ error: 'Comment must be 1–2,000 characters.' }, { status: 400 });
