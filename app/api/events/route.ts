@@ -310,10 +310,9 @@ export async function GET(request: Request) {
           .in('status', ['confirmed', 'registered', 'approved', 'pending', 'pending verification']);
 
         (regData || []).forEach((registration: { event_id: string; status: string; attendees_count?: number | null }) => {
-          const attendeeCount = Math.max(1, Number(registration.attendees_count) || 1);
           const isPending = ['pending', 'pending verification'].includes(registration.status.toLowerCase());
           const targetCounts = isPending ? pendingRegCounts : regCounts;
-          targetCounts[registration.event_id] = (targetCounts[registration.event_id] || 0) + attendeeCount;
+          targetCounts[registration.event_id] = (targetCounts[registration.event_id] || 0) + 1;
         });
       }
     }

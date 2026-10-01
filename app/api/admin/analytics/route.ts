@@ -22,7 +22,9 @@ export async function GET(request: Request) {
   for (const row of data || []) {
     const date = new Date(row.registration_date);
     const index = Math.min(rsvpsByWeek.length - 1, Math.floor((date.getUTCDate() - 1) / 7));
-    if (index >= 0) rsvpsByWeek[index] += Number(row.attendees_count || 1);
+    // An RSVP record always represents one attendee; legacy attendee counts
+    // may contain multi-person values from the removed quantity field.
+    if (index >= 0) rsvpsByWeek[index] += 1;
   }
   return NextResponse.json({ rsvpsByWeek, totalRsvps: rsvpsByWeek.reduce((sum, count) => sum + count, 0) });
 }

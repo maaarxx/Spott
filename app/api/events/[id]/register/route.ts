@@ -13,7 +13,7 @@ async function getConfirmedAttendeeCount(db: ReturnType<typeof createAdminClient
     .eq('event_id', eventId)
     .in('status', ['confirmed', 'registered', 'approved']);
   if (fallbackError) return null;
-  return (rows || []).reduce((sum, row) => sum + Math.max(1, Number(row.attendees_count) || 1), 0);
+  return (rows || []).length;
 }
 
 export async function POST(request: Request, { params }: { params: Promise<{ id: string }> }) {

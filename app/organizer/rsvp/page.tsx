@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useMemo, useEffect, Suspense } from "react";
+import { useState, useMemo, useEffect, useRef, Suspense } from "react";
 import { useSearchParams } from "next/navigation";
 import {
   Download,
@@ -45,6 +45,8 @@ function RsvpManagementContent() {
 
   const [availableEvents, setAvailableEvents] = useState<{ id: string; title: string; capacity?: number | null; requireApproval?: boolean | null }[]>([]);
   const [selectedEventKey, setSelectedEventKey] = useState<string>("");
+  const selectedEventKeyRef = useRef("");
+  const attendeeRequestId = useRef(0);
   const [attendees, setAttendees] = useState<Attendee[]>([]);
   const [searchQuery, setSearchQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState<string>("All");
@@ -58,6 +60,7 @@ function RsvpManagementContent() {
       if (!active) return;
       if (!response.ok) {
         setAvailableEvents([]);
+        selectedEventKeyRef.current = "";
         setSelectedEventKey("");
         setAttendees([]);
         return;
@@ -70,11 +73,14 @@ function RsvpManagementContent() {
         requireApproval: event.requireApproval,
       })) : [];
       setAvailableEvents(list);
+      const currentSelection = selectedEventKeyRef.current;
       const nextSelectedEventKey = urlEventId && list.some((e) => e.id === urlEventId)
         ? urlEventId
-        : list.some((e) => e.id === selectedEventKey) ? selectedEventKey : list[0]?.id || "";
-      setSelectedEventKey(nextSelectedEventKey);
-      await loadAttendeesForEvent(nextSelectedEventKey);
+        : list.some((e) => e.id === currentSelection) ? currentSelection : list[0]?.id || "";
+      if (nextSelectedEventKey !== currentSelection) {
+        selectedEventKeyRef.current = nextSelectedEventKey;
+        setSelectedEventKey(nextSelectedEventKey);
+      }
     };
     void loadEvents().catch(() => { if (active) { setAvailableEvents([]); setAttendees([]); } });
     const unsubscribeEvents = subscribeToEvents(() => { void loadEvents(); });
@@ -84,23 +90,27 @@ function RsvpManagementContent() {
       unsubscribeEvents();
       window.removeEventListener("spott_auth_changed", loadEvents);
     };
-  }, [urlEventId, selectedEventKey]);
+  }, [urlEventId]);
 
-  async function loadAttendeesForEvent(eventKey: string) {
+  async function loadAttendeesForEvent(eventKey: string, clearWhileSwitching = false) {
+    const requestId = ++attendeeRequestId.current;
     if (!eventKey) {
       setAttendees([]);
       return;
     }
-    setAttendees([]);
+    if (clearWhileSwitching) setAttendees([]);
     try {
       const response = await fetchWithSupabaseSession(`/api/organizer/events/${eventKey}/attendees`);
+      if (requestId !== attendeeRequestId.current) return;
       if (!response.ok) return;
       const body = await response.json();
+      if (requestId !== attendeeRequestId.current) return;
       if (!Array.isArray(body.attendees)) return;
       const remote: Attendee[] = body.attendees.map((row: Record<string, unknown>) => {
         const profile = row.users as { name?: string; email?: string } | null;
         const rawStatus = String(row.status || '').toLowerCase();
-        const attendeesCount = Number(row.attendees_count || 1);
+        // Each registration belongs to one account and reserves one seat.
+        const attendeesCount = 1;
         const amount = row.payment_amount == null
           ? Number((body.event?.price || 0) as number) * attendeesCount
           : Number(row.payment_amount);
@@ -108,14 +118,19 @@ function RsvpManagementContent() {
       });
       setAttendees(remote);
     } catch {
-      setAttendees([]);
+      // Retain the last successful list if a refresh fails temporarily.
     }
   }
 
+  useEffect(() => {
+    if (selectedEventKey) void loadAttendeesForEvent(selectedEventKey, true);
+    else setAttendees([]);
+  }, [selectedEventKey]);
+
   // Switch event handler
   const handleEventChange = (key: string) => {
+    selectedEventKeyRef.current = key;
     setSelectedEventKey(key);
-    void loadAttendeesForEvent(key);
   };
 
   useEffect(() => {
