@@ -215,17 +215,9 @@ function OrganizerNavContent({ children }: { children: React.ReactNode }) {
             <h2 className="text-sm font-black text-[#171717] tracking-tight">Spott Organizer</h2>
           </div>
 
-          {/* Navigation Items: Only currently active tab is highlighted */}
+          {/* Navigation Items: Keep verification accessible for every organizer. */}
           <nav className="space-y-1.5 flex-1">
-            {navItems
-              .filter((item) => {
-                // If verified, hide the verification tab. It only returns if rejected or removed/reset by admin!
-                if (item.id === "verification") {
-                  return verState?.status !== "approved";
-                }
-                return true;
-              })
-              .map((item) => {
+            {navItems.map((item) => {
                 const active = isItemActive(item);
                 const Icon = item.icon;
 
