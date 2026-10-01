@@ -214,6 +214,24 @@ export function getAdminUsers(): AdminUser[] {
       }
     } catch {}
 
+    // Metro Creative Group is the active verified demo organizer. A stale
+    // local tombstone must not hide its account from the admin list.
+    const metroAccount = INITIAL_ADMIN_USERS.find((user) => user.email.toLowerCase() === "mcg@spott.ph");
+    if (metroAccount) {
+      const removedMetroId = deletedIds.delete(metroAccount.id);
+      const removedMetroEmail = deletedEmails.delete(metroAccount.email.toLowerCase());
+      const removedMetroName = deletedNames.delete(metroAccount.name.toLowerCase());
+      const removedMetroSlugEmail = deletedEmails.delete("metrocreativegroup@spott.ph");
+      const removedMetroTombstone = removedMetroId || removedMetroEmail || removedMetroName || removedMetroSlugEmail;
+      if (removedMetroTombstone) {
+        localStorage.setItem(DELETED_USERS_KEY, JSON.stringify({
+          ids: [...deletedIds],
+          emails: [...deletedEmails],
+          names: [...deletedNames],
+        }));
+      }
+    }
+
     for (const initU of INITIAL_ADMIN_USERS) {
       // Don't re-add if an admin explicitly deleted this seed user
       if (
