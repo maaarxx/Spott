@@ -652,14 +652,14 @@ function AdminContent() {
     recordAdminAction({ action: 'event.removed', targetType: 'event', targetId: id, summary: `Removed event “${title}” from moderation.` });
     showNotice(`Event "${title}" has been taken down and removed.`);
     addNotification({
-      type: "cancellation",
+      type: "announcement",
       title: `Event Taken Down: "${title}"`,
       message: `An administrator has taken down "${title}" following platform review.`,
       targetRole: "organizer",
       link: "/organizer",
     });
     addNotification({
-      type: "cancellation",
+      type: "announcement",
       title: `Event Cancelled: "${title}"`,
       message: `The event "${title}" was removed or cancelled.`,
       targetRole: "user",
@@ -769,7 +769,7 @@ function AdminContent() {
     recordAdminAction({ action: 'verification.rejected', targetType: 'verification', targetId: id, summary: `Rejected verification for ${name}.` });
     showNotice(`✕ Declined verification for ${name}. Record moved to 30-Day Archive History.`);
     addNotification({
-      type: "cancellation",
+      type: "announcement",
       title: `Accreditation Application Declined`,
       message: `Application was declined. Record preserved in 30-day compliance archive until ${expiresStr}. You can submit updated credentials anytime.`,
       targetRole: "organizer",
