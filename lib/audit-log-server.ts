@@ -1,6 +1,6 @@
 import { createAdminClient } from '@/lib/supabase-server';
 
-export type AuditActor = { userId: string; email: string; role: string };
+export type AuditActor = { userId: string | null; email: string; role: string };
 export type AuditEntry = {
   action: string;
   targetType: string;

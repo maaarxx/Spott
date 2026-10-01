@@ -93,7 +93,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
     }
     await writeAuditEntry(account, {
       action: 'rsvp.created_or_updated', targetType: 'event', targetId: id,
-      summary: `Submitted an RSVP for event ${id}.`,
+      summary: `Submitted an RSVP for “${event.title}”.`,
       details: { registration_status: status, attendee_count: attendeeCount, payment_status: paid ? 'pending verification' : 'not required' },
     });
     return NextResponse.json({ success: true, status, attendeeStatus: attendeeStatus === 'confirmed' ? 'Confirmed' : 'Pending', confirmedCount: updatedConfirmedCount, reference: `SP-${id.slice(0,6).toUpperCase()}-${account.userId.slice(0,6).toUpperCase()}`, amount: Number(event.price) * attendeeCount });
@@ -121,12 +121,14 @@ export async function DELETE(request: Request, { params }: { params: Promise<{ i
       .select('registration_id').maybeSingle();
     if (error) return NextResponse.json({ error: 'Could not cancel RSVP in the database.' }, { status: 500 });
     if (!cancelled) return NextResponse.json({ error: 'No active RSVP was found for this event.' }, { status: 404 });
+    const { data: event } = await db.from('events').select('title').eq('event_id', id).maybeSingle();
     const { data: activeRows, error: countError } = await db.from('registrations').select('attendees_count').eq('event_id', id).in('status', ['confirmed', 'registered', 'approved']);
     if (countError) return NextResponse.json({ error: 'RSVP cancelled, but its updated count could not be loaded.' }, { status: 500 });
     const confirmedCount = (activeRows || []).reduce((sum, row) => sum + Math.max(1, Number(row.attendees_count) || 1), 0);
     await writeAuditEntry(account, {
       action: 'rsvp.cancelled', targetType: 'event', targetId: id,
-      summary: `Cancelled an RSVP for event ${id}.`,
+      summary: `Cancelled an RSVP for “${event?.title || id}”.`,
+      details: { event_id: id },
     });
     return NextResponse.json({ success: true, confirmedCount });
   } catch {

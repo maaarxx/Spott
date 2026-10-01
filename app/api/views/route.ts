@@ -1,5 +1,7 @@
 import { NextResponse } from 'next/server';
 import { createAdminClient, getAuthenticatedRole } from '@/lib/supabase-server';
+import { writeAuditEntry } from '@/lib/audit-log-server';
+import { enforceRateLimit, requestIpIdentifier } from '@/lib/rate-limit';
 
 const BOT_PATTERNS =
   /bot|spider|crawl|slurp|googlebot|bingbot|yandex|baiduspider|duckduckbot|facebookexternalhit|whatsapp|twitterbot|pinterest|discordbot|slackbot|curl|wget|python|postman|insomnia|headless/i;
@@ -11,6 +13,11 @@ function isBotUserAgent(ua: string | null): boolean {
 
 export async function POST(request: Request) {
   try {
+    const limited = await enforceRateLimit(request, {
+      name: 'event-view-ip', limit: 120, window: '1 h',
+      identifiers: [requestIpIdentifier(request)],
+    });
+    if (limited) return limited;
     const userAgent = request.headers.get('user-agent');
     if (isBotUserAgent(userAgent)) {
       return NextResponse.json(
@@ -45,7 +52,7 @@ export async function POST(request: Request) {
     const supabase = createAdminClient();
     const { data: eventData, error: eventError } = await supabase
       .from('events')
-      .select('event_id, organizers (user_id)')
+      .select('event_id, title, organizers (user_id)')
       .eq('event_id', listing_id)
       .maybeSingle();
     if (eventError) return NextResponse.json({ error: 'Unable to verify event.' }, { status: 500 });
@@ -94,6 +101,16 @@ export async function POST(request: Request) {
       viewed_at: nowIso,
     });
     if (insertError) return NextResponse.json({ error: 'Unable to record view.' }, { status: 500 });
+
+    await writeAuditEntry(account
+      ? { userId: account.userId, email: account.email, role: account.role }
+      : { userId: null, email: 'Anonymous visitor', role: 'visitor' }, {
+      action: 'event.viewed',
+      targetType: 'event',
+      targetId: listing_id,
+      summary: `Viewed event “${eventData.title}”.`,
+      details: { visitor_id: effectiveVisitorId, viewed_at: nowIso },
+    });
 
     return NextResponse.json(
       {

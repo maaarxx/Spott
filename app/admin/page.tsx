@@ -78,6 +78,7 @@ type Report = ReportItem;
 
 type AdminAuditLog = {
   log_id: string;
+  actor_user_id: string | null;
   actor_email: string;
   action: string;
   target_type: string;
@@ -356,7 +357,7 @@ function AdminContent() {
     const refreshRemoteUsers = () => {
       void syncUsersFromApi().then(syncUsers);
     };
-    const remoteUsersInterval = setInterval(refreshRemoteUsers, 5000);
+    const remoteUsersInterval = setInterval(refreshRemoteUsers, 30000);
     const remoteVerificationInterval = setInterval(syncRemoteVerificationStatuses, 60000);
     window.addEventListener('focus', refreshRemoteUsers);
 
@@ -420,13 +421,14 @@ function AdminContent() {
     };
     syncReports();
 
-    // Heartbeat to guarantee multi-tab real-time sync even across backgrounded tabs
+    // Poll slowly as a cross-tab fallback; local changes still refresh through events.
     const syncInterval = setInterval(() => {
+      if (document.visibilityState !== 'visible') return;
       syncUsers();
       syncPendingOrgs();
       syncAdminEvents();
       syncReports();
-    }, 1500);
+    }, 30000);
 
     const unsubscribeEvents = subscribeToEvents(syncAdminEvents);
     window.addEventListener("spott_registered_updated", syncAdminEvents);
@@ -2818,7 +2820,7 @@ function AdminContent() {
           <div className="flex flex-col sm:flex-row sm:items-end sm:justify-between gap-3">
             <div>
               <h1 className="text-2xl sm:text-3xl font-black text-[#171717]">Admin Audit Log</h1>
-              <p className="mt-1 text-sm text-[#666666]">Recent account, organizer, and event actions recorded on the server.</p>
+              <p className="mt-1 text-sm text-[#666666]">Recent visitor, user, organizer, and admin activity recorded on the server.</p>
             </div>
             <button type="button" onClick={() => fetchWithSupabaseSession('/api/admin/audit-logs?limit=100').then(async (response) => {
               const payload = await response.json();
@@ -2837,12 +2839,13 @@ function AdminContent() {
               <div className="overflow-x-auto">
                 <table className="w-full min-w-[760px] text-left">
                   <thead className="bg-[#faf8f3] text-[10px] uppercase tracking-wider text-[#777777]"><tr>
-                    <th className="px-5 py-3">When</th><th className="px-5 py-3">Admin</th><th className="px-5 py-3">Action</th><th className="px-5 py-3">Target</th><th className="px-5 py-3">Details</th>
+                    <th className="px-5 py-3">When</th><th className="px-5 py-3">Actor</th><th className="px-5 py-3">Role</th><th className="px-5 py-3">Action</th><th className="px-5 py-3">Target</th><th className="px-5 py-3">Details</th>
                   </tr></thead>
                   <tbody className="divide-y divide-[#f0ece5]">
                     {auditLogs.map((entry) => <tr key={entry.log_id}>
                       <td className="whitespace-nowrap px-5 py-4 text-xs text-[#666666]">{new Date(entry.created_at).toLocaleString()}</td>
                       <td className="px-5 py-4 text-xs font-semibold text-[#171717]">{entry.actor_email}</td>
+                      <td className="px-5 py-4 text-xs capitalize text-[#555555]">{String(entry.details?.actor_role || entry.details?.role || (entry.actor_user_id ? 'account' : 'visitor'))}</td>
                       <td className="px-5 py-4"><span className="rounded-full bg-[#fff2eb] px-2.5 py-1 text-[10px] font-black text-[#d65325]">{entry.action}</span></td>
                       <td className="px-5 py-4 text-xs text-[#555555]">{entry.target_type}{entry.target_id ? ` · ${entry.target_id}` : ''}</td>
                       <td className="px-5 py-4 text-xs text-[#555555]">{entry.summary}</td>

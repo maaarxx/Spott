@@ -457,7 +457,9 @@ function OrganizerContent() {
       } catch { /* Keep the current status if the server is temporarily unavailable. */ }
     };
     void syncRemoteVerification();
-    const verificationInterval = window.setInterval(syncRemoteVerification, 15000);
+    const verificationInterval = window.setInterval(() => {
+      if (document.visibilityState === 'visible') void syncRemoteVerification();
+    }, 60000);
 
     const handleUpdate = () => { void syncRemoteVerification(); };
     window.addEventListener("spott_verification_updated", handleUpdate);

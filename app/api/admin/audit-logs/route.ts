@@ -8,7 +8,7 @@ export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
   const limit = Math.min(200, Math.max(1, Number(searchParams.get('limit')) || 100));
   const { data, error } = await createAdminClient().from('admin_audit_logs')
-    .select('log_id,actor_email,action,target_type,target_id,summary,details,created_at')
+    .select('log_id,actor_user_id,actor_email,action,target_type,target_id,summary,details,created_at')
     .order('created_at', { ascending: false }).limit(limit);
   if (error) return NextResponse.json({ error: 'Unable to load audit logs.' }, { status: 500 });
   return NextResponse.json({ logs: data || [] });

@@ -205,11 +205,8 @@ export async function GET(request: Request) {
     if (!['public', 'admin', 'organizer'].includes(requestedScope)) {
       return NextResponse.json({ error: 'Invalid event scope' }, { status: 400 });
     }
-    // The scheduled job is the primary lifecycle worker; run it on reads too
-    // so archives remain current if pg_cron is not enabled in this project.
-    try {
-      await supabase.rpc('archive_expired_events');
-    } catch {}
+    // Event lifecycle is handled by the scheduled archive job. Keep public
+    // reads side-effect free so every page load does not also run a write RPC.
     const search = searchParams.get('search') || searchParams.get('q');
     const category = searchParams.get('category');
     const city = searchParams.get('city');
