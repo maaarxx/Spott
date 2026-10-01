@@ -600,6 +600,26 @@ export async function syncUsersFromApi(): Promise<void> {
       }
     } catch {}
 
+    // Supabase is authoritative for accounts that still exist there. Clear any
+    // stale local-only deletion marker so a live account (such as Metro's
+    // organizer account) can reappear in the admin list after a browser refresh.
+    let removedStaleDeletion = false;
+    for (const su of data.users) {
+      if (!su?.email) continue;
+      const emailLower = su.email.trim().toLowerCase();
+      const nameLower = (su.name || "").trim().toLowerCase();
+      if (deletedEmails.delete(emailLower)) removedStaleDeletion = true;
+      if (su.user_id && deletedIds.delete(su.user_id)) removedStaleDeletion = true;
+      if (nameLower && deletedNames.delete(nameLower)) removedStaleDeletion = true;
+    }
+    if (removedStaleDeletion) {
+      localStorage.setItem(DELETED_USERS_KEY, JSON.stringify({
+        ids: [...deletedIds],
+        emails: [...deletedEmails],
+        names: [...deletedNames],
+      }));
+    }
+
     const current = getAdminUsers();
     let modified = false;
 
@@ -607,13 +627,6 @@ export async function syncUsersFromApi(): Promise<void> {
       if (!su.email) continue;
       const emailLower = su.email.trim().toLowerCase();
       const nameLower = (su.name || "").trim().toLowerCase();
-
-      // Skip if this user was explicitly deleted by an admin
-      if (
-        deletedEmails.has(emailLower) ||
-        (su.user_id && deletedIds.has(su.user_id)) ||
-        (nameLower && deletedNames.has(nameLower))
-      ) continue;
 
       const existing = current.find((u) => u.email.trim().toLowerCase() === emailLower);
       if (!existing) {
