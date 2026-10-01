@@ -406,8 +406,12 @@ function OrganizerContent() {
         if (!response.ok) return;
         const payload = await response.json();
         const remoteStatus = payload.verification?.verification_status;
-        const status = remoteStatus === 'verified' ? 'approved' : remoteStatus === 'rejected' ? 'rejected' : 'pending';
         const local = getVerificationState(orgName);
+        // A verified server flag without any submitted credentials is stale or
+        // unsupported. Keep the organizer in the submission flow until there is evidence.
+        const status = remoteStatus === 'verified' && local.documents.length > 0
+          ? 'approved'
+          : remoteStatus === 'rejected' ? 'rejected' : 'pending';
         if (local.status !== status) {
           const updated = { ...local, status } as VerificationState;
           if (status === 'approved' || status === 'rejected') {

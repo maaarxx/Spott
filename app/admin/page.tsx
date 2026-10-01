@@ -792,6 +792,11 @@ function AdminContent() {
   };
 
   const handleApproveVerification = (id: string, name: string) => {
+    const request = verifications.find((verification) => verification.id === id);
+    if (!request?.documents?.length) {
+      showNotice(`Cannot approve ${name}: no verification documents were submitted.`);
+      return;
+    }
     setVerifications((prev) =>
       prev.map((v) =>
         v.id === id
