@@ -79,6 +79,18 @@ export default function EventDetailsPage({
   const router = useRouter();
   const [currentUser, setCurrentUser] = useState<SpottAccount | null>(null);
   const [event, setEvent] = useState<EventDetail | null>(initialEvent);
+  const [comments, setComments] = useState<Array<{id:string; user_id:string; content:string; created_at:string; users?: {name?:string}|null; is_owner?:boolean}>>([]);
+  const [commentText, setCommentText] = useState("");
+  const [commentError, setCommentError] = useState("");
+  useEffect(() => { if (!id) return; fetch(`/api/events/${id}/comments`).then((r) => r.json()).then((body) => setComments(body.comments || [])).catch(() => {}); }, [id]);
+  const submitComment = async (e: React.FormEvent) => {
+    e.preventDefault(); setCommentError("");
+    const response = await fetch(`/api/events/${id}/comments`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ content: commentText }) });
+    const body = await response.json();
+    if (!response.ok) { setCommentError(body.error || "Unable to post comment."); return; }
+    setComments((current) => [...current, { ...body.comment, is_owner: true }]); setCommentText("");
+  };
+  const deleteComment = async (commentId: string) => { const response = await fetch(`/api/events/${id}/comments?commentId=${commentId}`, { method: "DELETE" }); if (response.ok) setComments((items) => items.filter((item) => item.id !== commentId)); };
   const [loading, setLoading] = useState(false);
   const [isSaved, setIsSaved] = useState(false);
   const [savedCount, setSavedCount] = useState(0);
@@ -1249,6 +1261,13 @@ export default function EventDetailsPage({
           </div>
         </div>
       </div>
+
+      <section className="mt-10 rounded-2xl border border-line bg-white p-6">
+        <h2 className="text-xl font-black text-ink">Comments</h2>
+        <form onSubmit={submitComment} className="my-4 flex gap-2"><input value={commentText} maxLength={2000} onChange={(e) => setCommentText(e.target.value)} placeholder={currentUser ? "Share a comment…" : "Sign in to join the conversation"} disabled={!currentUser} className="min-w-0 flex-1 rounded-xl border border-line px-4 py-2"/><button disabled={!currentUser || !commentText.trim()} className="rounded-xl bg-dark px-4 py-2 font-bold text-white disabled:opacity-50">Post</button></form>
+        {commentError && <p className="text-sm text-rose-600">{commentError}</p>}
+        <div className="space-y-3">{comments.map((comment) => <article key={comment.id} className="rounded-xl bg-[#faf8f3] p-4"><div className="flex justify-between gap-3"><strong>{comment.users?.name || "Spott user"}</strong><time className="text-xs text-muted">{new Date(comment.created_at).toLocaleString()}</time></div><p className="mb-0 mt-2 whitespace-pre-wrap">{comment.content}</p>{comment.is_owner && <button onClick={() => deleteComment(comment.id)} className="mt-2 text-xs font-bold text-rose-600">Delete</button>}</article>)}</div>
+      </section>
 
       {/* Cancel RSVP Confirmation Modal */}
       <CancelRsvpModal

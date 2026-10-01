@@ -43,6 +43,10 @@ export default function LoginPage() {
 
   // Sign-up fields
   const [signupName, setSignupName] = useState("");
+  const [signupFirst, setSignupFirst] = useState("");
+  const [signupMI, setSignupMI] = useState("");
+  const [signupLast, setSignupLast] = useState("");
+  const [signupUsername, setSignupUsername] = useState("");
   const [signupEmail, setSignupEmail] = useState("");
   const [signupPassword, setSignupPassword] = useState("");
   const [signupConfirm, setSignupConfirm] = useState("");
@@ -139,12 +143,15 @@ export default function LoginPage() {
     e.preventDefault();
     clearErrors();
 
-    if (!signupName.trim()) {
-      setAuthError("Full name is required.");
+    const formattedName = signupRole === "organizer" ? signupName.trim() : `${signupLast.trim()}, ${signupFirst.trim()}${signupMI.trim() ? ` ${signupMI.trim().toUpperCase()}` : ""}`;
+    if (signupRole === "user" && [signupLast, signupFirst].some((name) => name.trim().length < 2 || name.length > 50)) {
+      setAuthError("First and last names must be 2–50 characters.");
       return;
     }
-    if (signupPassword.length < 6 || !/[0-9]/.test(signupPassword) || !/[^A-Za-z0-9]/.test(signupPassword)) {
-      setAuthError("Use at least 6 characters, including a number and a symbol (such as ! or #).");
+    if (signupMI.length > 1 || (signupMI && !/^[A-Za-z]$/.test(signupMI))) { setAuthError("Middle initial must be one letter."); return; }
+    if (signupRole === "user" && !/^[a-zA-Z0-9_]{4,20}$/.test(signupUsername)) { setAuthError("Username must be 4–20 letters, numbers, or underscores."); return; }
+    if (signupPassword.length < 8 || signupPassword.length > 64 || /\s/.test(signupPassword)) {
+      setAuthError("Password must be 8–64 characters with no spaces.");
       return;
     }
     if (signupPassword !== signupConfirm) {
@@ -154,10 +161,15 @@ export default function LoginPage() {
     setLoading(true);
     void (async () => {
       try {
+        if (signupRole === "user") {
+          const checked = await fetch("/api/register-check", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ email: signupEmail, username: signupUsername }) });
+          const checkedBody = await checked.json();
+          if (!checked.ok) throw new Error(checkedBody.error || "Please check your details.");
+        }
         const supabase = createSupabaseBrowserClient();
         const { data, error } = await supabase.auth.signUp({
           email: signupEmail.trim().toLowerCase(), password: signupPassword,
-          options: { data: { name: signupName.trim(), role: signupRole } },
+          options: { data: { name: formattedName, username: signupUsername.trim(), role: signupRole } },
         });
         if (error) throw error;
         if (data.session) {
@@ -167,7 +179,7 @@ export default function LoginPage() {
           }).catch(() => {});
         }
         const account: SpottAccount = {
-          email: signupEmail.trim().toLowerCase(), password: signupPassword, name: signupName.trim(),
+          email: signupEmail.trim().toLowerCase(), password: signupPassword, name: formattedName,
           role: signupRole, destination: signupRole === 'organizer' ? '/organizer' : '/',
           ...(signupRole === 'organizer' ? { organization: signupName.trim() } : {}),
         };
@@ -179,7 +191,7 @@ export default function LoginPage() {
         } else {
           setNotice('Account created. Check your email to confirm your account, then sign in.');
         }
-        setSignupName(''); setSignupEmail(''); setSignupPassword(''); setSignupConfirm(''); setSignupRole('user');
+        setSignupName(''); setSignupFirst(''); setSignupMI(''); setSignupLast(''); setSignupUsername(''); setSignupEmail(''); setSignupPassword(''); setSignupConfirm(''); setSignupRole('user');
       } catch (error) {
         setAuthError(error instanceof Error ? error.message : 'Unable to create account.');
       } finally { setLoading(false); }
@@ -296,12 +308,6 @@ export default function LoginPage() {
                 <span>{loading ? "Signing In…" : "Sign In"}</span>
                 <ArrowRight className="w-4 h-4" />
               </button>
-              <p className="text-center text-xs text-[#888888] mt-1">
-                Don&apos;t have an account?{" "}
-                <button type="button" onClick={() => switchMode("signup")} className="font-black text-[#ff6b35] hover:underline cursor-pointer bg-transparent border-0 p-0">
-                  Sign Up
-                </button>
-              </p>
             </form>
           ) : (
             <form onSubmit={handleSignUp} className="space-y-4">
@@ -333,28 +339,16 @@ export default function LoginPage() {
                 )}
               </div>
 
-              <div>
-                <label className="block text-[11px] font-black uppercase tracking-wider text-[#666666] mb-1.5">
-                  {signupRole === "organizer" ? "Organizer Name" : "Full Name"}
-                </label>
-                <input
-                  type="text"
-                  value={signupName}
-                  onChange={(e) => { setSignupName(e.target.value); setAuthError(null); }}
-                  className={`w-full border rounded-xl px-4 py-3 text-sm font-semibold text-[#171717] focus:outline-none transition-colors ${
-                    authError && !signupName.trim() ? "border-rose-400 bg-rose-50/30" : "border-[#e6e1d8] focus:border-[#ff6b35]"
-                  }`}
-                  required
-                  placeholder={signupRole === "organizer" ? "Your organization or group name" : "Your full name"}
-                  autoComplete="name"
-                />
-              </div>
+              {signupRole === "organizer" ? <div><label className="block text-[11px] font-black uppercase tracking-wider text-[#666666] mb-1.5">Organizer Name</label><input maxLength={50} value={signupName} onChange={(e) => setSignupName(e.target.value)} className="w-full border border-[#e6e1d8] rounded-xl px-4 py-2.5 text-sm" required placeholder="Your organization or group name" /></div> : <>
+                <div className="grid grid-cols-2 gap-2"><div><label className="block text-[11px] font-black uppercase mb-1">Last Name</label><input maxLength={50} minLength={2} value={signupLast} onChange={(e) => setSignupLast(e.target.value)} className="w-full border border-[#e6e1d8] rounded-xl px-3 py-2.5 text-sm" required autoComplete="family-name" /></div><div><label className="block text-[11px] font-black uppercase mb-1">First Name</label><input maxLength={50} minLength={2} value={signupFirst} onChange={(e) => setSignupFirst(e.target.value)} className="w-full border border-[#e6e1d8] rounded-xl px-3 py-2.5 text-sm" required autoComplete="given-name" /></div><div><label className="block text-[11px] font-black uppercase mb-1">Middle Initial (optional)</label><input maxLength={1} value={signupMI} onChange={(e) => setSignupMI(e.target.value.slice(0,1))} className="w-full border border-[#e6e1d8] rounded-xl px-3 py-2.5 text-sm" /></div><div><label className="block text-[11px] font-black uppercase mb-1">Username</label><input maxLength={20} minLength={4} value={signupUsername} onChange={(e) => setSignupUsername(e.target.value)} className="w-full border border-[#e6e1d8] rounded-xl px-3 py-2.5 text-sm" required autoComplete="username" /><small>{signupUsername.length}/20</small></div></div>
+              </>}
               <div>
                 <label className="block text-[11px] font-black uppercase tracking-wider text-[#666666] mb-1.5">
                   Email Address
                 </label>
                 <input
                   type="email"
+                  maxLength={254}
                   value={signupEmail}
                   onChange={(e) => { setSignupEmail(e.target.value); setAuthError(null); }}
                   className={`w-full border rounded-xl px-4 py-3 text-sm font-semibold text-[#171717] focus:outline-none transition-colors ${
@@ -371,17 +365,18 @@ export default function LoginPage() {
                 </label>
                 <input
                   type="password"
+                  minLength={8} maxLength={64}
                   value={signupPassword}
-                  onChange={(e) => { setSignupPassword(e.target.value); setAuthError(null); }}
+                  onChange={(e) => { setSignupPassword(e.target.value.replace(/\s/g, "").slice(0,64)); setAuthError(null); }}
                   className={`w-full border rounded-xl px-4 py-3 text-sm font-semibold text-[#171717] focus:outline-none transition-colors ${
                     authError ? "border-rose-400 bg-rose-50/30" : "border-[#e6e1d8] focus:border-[#ff6b35]"
                   }`}
                   required
-                  placeholder="6+ characters, 1 number, 1 symbol"
+                  placeholder="8–64 characters"
                   autoComplete="new-password"
                 />
                 <p className="mt-1.5 text-xs text-[#777777]">
-                  At least 6 characters, with at least 1 number and 1 symbol (for example, ! or #).
+                  Letters, numbers, and special characters are allowed; spaces are not. {signupPassword.length}/64
                 </p>
               </div>
               <div>
@@ -390,8 +385,9 @@ export default function LoginPage() {
                 </label>
                 <input
                   type="password"
+                  maxLength={64}
                   value={signupConfirm}
-                  onChange={(e) => { setSignupConfirm(e.target.value); setAuthError(null); }}
+                  onChange={(e) => { setSignupConfirm(e.target.value.replace(/\s/g, "").slice(0,64)); setAuthError(null); }}
                   className={`w-full border rounded-xl px-4 py-3 text-sm font-semibold text-[#171717] focus:outline-none transition-colors ${
                     authError && signupPassword !== signupConfirm ? "border-rose-400 bg-rose-50/30" : "border-[#e6e1d8] focus:border-[#ff6b35]"
                   }`}
