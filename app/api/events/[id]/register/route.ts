@@ -43,7 +43,13 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
     const attendeeStatus = paid || requiresApproval || full ? 'pending' : 'confirmed';
     const status = paid ? 'pending verification' : attendeeStatus;
     const { error } = await db.from('registrations').upsert({ user_id: account.userId, event_id: id, status, attendee_name: fullName, attendee_email: email, mobile_number: mobile, attendees_count: attendees, notes, payment_status: paid ? 'pending verification' : 'not required', payment_proof_url: proofPath }, { onConflict: 'user_id,event_id' });
-    if (error) return NextResponse.json({ error: 'Could not save RSVP.' }, { status: 500 });
+    if (error?.code === '23514' && error.message.includes('EVENT_CAPACITY_REACHED')) {
+      return NextResponse.json({ error: 'This event has no remaining confirmed slots. Your RSVP was not saved as confirmed.' }, { status: 409 });
+    }
+    if (error) {
+      console.error('RSVP database write failed', { code: error.code, eventId: id, userId: account.userId });
+      return NextResponse.json({ error: 'Could not save RSVP.' }, { status: 500 });
+    }
     const { count: updatedConfirmedCount, error: updatedCountError } = await db.from('registrations').select('registration_id', { count: 'exact', head: true }).eq('event_id', id).in('status', ['confirmed', 'registered', 'approved']);
     if (updatedCountError) return NextResponse.json({ error: 'RSVP saved, but its updated count could not be loaded.' }, { status: 500 });
     const { data: organizer } = await db.from('organizers').select('user_id').eq('organizer_id', event.organizer_id).maybeSingle();
