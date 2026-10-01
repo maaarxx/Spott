@@ -1,12 +1,12 @@
 import { NextResponse } from 'next/server';
-import { createClient, getAuthenticatedRole } from '@/lib/supabase-server';
+import { createAdminClient, getAuthenticatedRole } from '@/lib/supabase-server';
 import { errorMessage } from '@/lib/error-message';
 
 export async function GET() {
   try {
     const account = await getAuthenticatedRole();
     if (!account) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-    const supabase = await createClient();
+    const supabase = createAdminClient();
 
     const { data, error } = await supabase
       .from('notifications')
