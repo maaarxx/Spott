@@ -11,7 +11,7 @@ export async function GET(request: Request) {
     const supabase = createAdminClient();
     const { data, error } = await supabase
       .from('users')
-      .select('user_id, name, email, role, created_at')
+      .select('user_id, name, display_name, avatar_url, phone, address, first_name, middle_initial, last_name, email, role, created_at')
       .order('created_at', { ascending: false });
 
     if (error) return NextResponse.json({ error: 'Unable to load users' }, { status: 500 });
@@ -20,6 +20,39 @@ export async function GET(request: Request) {
     return NextResponse.json({ users: (data || []).filter((row) => !notActiveOrganizerIds.has(row.user_id)) });
   } catch {
     return NextResponse.json({ error: 'Unable to load users' }, { status: 500 });
+  }
+}
+
+export async function PATCH(request: Request) {
+  try {
+    const account = await getAuthenticatedRole(request);
+    if (account?.role !== 'admin') return NextResponse.json({ error: 'Administrator access required.' }, { status: 403 });
+    const body = await request.json().catch(() => null);
+    const userId = typeof body?.user_id === 'string' ? body.user_id : '';
+    const role = typeof body?.role === 'string' ? body.role : '';
+    if (!userId || !['user', 'organizer', 'admin'].includes(role)) {
+      return NextResponse.json({ error: 'A user ID and valid role are required.' }, { status: 400 });
+    }
+
+    const update: Record<string, string | null> = { role };
+    if (typeof body.name === 'string') update.name = body.name.trim();
+    for (const field of ['first_name', 'middle_initial', 'last_name'] as const) {
+      if (body[field] !== undefined) update[field] = typeof body[field] === 'string' && body[field].trim() ? body[field].trim() : null;
+    }
+
+    const { data, error } = await createAdminClient().from('users').update(update)
+      .eq('user_id', userId)
+      .select('user_id,name,display_name,avatar_url,phone,address,first_name,middle_initial,last_name,email,role,created_at')
+      .maybeSingle();
+    if (error) return NextResponse.json({ error: 'Unable to update user.' }, { status: 500 });
+    if (!data) return NextResponse.json({ error: 'User not found.' }, { status: 404 });
+    await writeAuditEntry(account, {
+      action: 'user.updated', targetType: 'user', targetId: userId,
+      summary: `Updated account details for ${data.name}.`,
+    });
+    return NextResponse.json({ success: true, user: data });
+  } catch (error: unknown) {
+    return NextResponse.json({ error: errorMessage(error, 'Unable to update user.') }, { status: 500 });
   }
 }
 

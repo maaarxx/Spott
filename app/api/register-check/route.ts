@@ -8,8 +8,12 @@ export async function POST(request: Request) {
     const { email, username, password, name } = await request.json();
     const normalizedEmail = String(email || '').trim().toLowerCase();
     const normalizedUsername = String(username || '').trim().toLowerCase();
-    if (typeof name !== 'string' || name.trim().length < 5 || name.trim().length > 50 || !/^([^,]{2,50}),\s*([A-Za-z][A-Za-z '\u2019-]{1,49}?)(?:\s+([A-Za-z]))?\.?$/.test(name.trim())) return NextResponse.json({ error: 'Enter your name as Last name, First name MI (maximum 50 characters).' }, { status: 400 });
-    if (typeof password !== 'string' || password.length < 8 || password.length > 64 || /\s/.test(password)) return NextResponse.json({ error: 'Password must be 8–64 characters with no spaces.' }, { status: 400 });
+    if (typeof name !== 'string' || name.trim().length < 5 || name.trim().length > 100) return NextResponse.json({ error: 'Enter a valid name (maximum 100 characters).' }, { status: 400 });
+    if (typeof password !== 'string' || password.length < 8 || password.length > 20 || /\s/.test(password)) return NextResponse.json({ error: 'Password must be 8–20 characters with no spaces.' }, { status: 400 });
+    const nameLower = name.trim().toLowerCase();
+    const passLower = password.toLowerCase();
+    if (nameLower && passLower.includes(nameLower)) return NextResponse.json({ error: 'Password cannot contain your name.' }, { status: 400 });
+    if (normalizedUsername && passLower.includes(normalizedUsername)) return NextResponse.json({ error: 'Password cannot contain your username.' }, { status: 400 });
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedEmail) || normalizedEmail.length > 254) return NextResponse.json({ error: 'Enter a valid email address (max 254 characters).' }, { status: 400 });
     if (!/^[a-z0-9_]{4,20}$/.test(normalizedUsername)) return NextResponse.json({ error: 'Username must be 4–20 letters, numbers, or underscores.' }, { status: 400 });
     const domain = normalizedEmail.split('@')[1];

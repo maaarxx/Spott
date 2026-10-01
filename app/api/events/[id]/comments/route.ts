@@ -42,7 +42,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
   } catch (error) {
     const message = error instanceof Error ? error.message : '';
     const migration = /event_comments|schema cache/i.test(message);
-    return NextResponse.json({ error: migration ? 'Comments are not enabled yet. Apply the latest Supabase migration.' : 'Unable to post comment. Check that you are signed in and that the event is available.' }, { status: 500 });
+    return NextResponse.json({ error: migration ? 'Comments are not enabled yet. Apply the latest Supabase migrations.' : `Supabase rejected the comment: ${message || 'unknown database error'}` }, { status: 500 });
   }
 }
 

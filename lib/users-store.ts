@@ -10,6 +10,9 @@ export interface AdminUser {
   status: "Active" | "Pending" | "Suspended";
   joined: string;
   joinedAt?: string; // ISO 8601 string for precise real-time dynamic calculations & sorting
+  avatarUrl?: string;
+  phone?: string;
+  address?: string;
 }
 
 export const USERS_STORE_KEY = "spott_admin_users";
@@ -18,6 +21,7 @@ export const USERS_UPDATED_EVENT = "spott_users_updated";
 export const DELETED_USERS_KEY = "spott_deleted_user_ids";
 
 const seedYear = 2026;
+let adminUsersSnapshot: AdminUser[] = [];
 
 // Seed initial users with deterministic ISO dates
 export const INITIAL_ADMIN_USERS: AdminUser[] = [
@@ -187,239 +191,22 @@ export function formatRealTimeJoined(user: { joined?: string; joinedAt?: string 
  * Loads the current list of admin users from localStorage.
  * Automatically synchronizes with SPOTT_ACCOUNTS, event organizers, and newly signed-up accounts.
  */
+/** Current in-memory view of the authoritative users API response. */
 export function getAdminUsers(): AdminUser[] {
-  if (typeof window === "undefined") return INITIAL_ADMIN_USERS;
-  try {
-    const raw = localStorage.getItem(USERS_STORE_KEY);
-    let list: AdminUser[] = raw ? JSON.parse(raw) : [...INITIAL_ADMIN_USERS];
-
-    if (!list || list.length === 0) {
-      list = [...INITIAL_ADMIN_USERS];
-    }
-
-    let updated = false;
-
-    // 1. Ensure all default known accounts exist in the list and have joinedAt
-    // ⚠ SKIP any seed user whose ID or email was explicitly deleted by an admin
-    let deletedIds: Set<string> = new Set();
-    let deletedEmails: Set<string> = new Set();
-    let deletedNames: Set<string> = new Set();
-    try {
-      const delRaw = localStorage.getItem(DELETED_USERS_KEY);
-      if (delRaw) {
-        const delParsed: { ids: string[]; emails: string[]; names?: string[] } = JSON.parse(delRaw);
-        deletedIds = new Set(delParsed.ids || []);
-        deletedEmails = new Set((delParsed.emails || []).map((e) => e.toLowerCase()));
-        deletedNames = new Set((delParsed.names || []).map((n) => n.toLowerCase()));
-      }
-    } catch {}
-
-    // Metro Creative Group is the active verified demo organizer. A stale
-    // local tombstone must not hide its account from the admin list.
-    const metroAccount = INITIAL_ADMIN_USERS.find((user) => user.email.toLowerCase() === "mcg@spott.ph");
-    if (metroAccount) {
-      const removedMetroId = deletedIds.delete(metroAccount.id);
-      const removedMetroEmail = deletedEmails.delete(metroAccount.email.toLowerCase());
-      const removedMetroName = deletedNames.delete(metroAccount.name.toLowerCase());
-      const removedMetroSlugEmail = deletedEmails.delete("metrocreativegroup@spott.ph");
-      const removedMetroTombstone = removedMetroId || removedMetroEmail || removedMetroName || removedMetroSlugEmail;
-      if (removedMetroTombstone) {
-        localStorage.setItem(DELETED_USERS_KEY, JSON.stringify({
-          ids: [...deletedIds],
-          emails: [...deletedEmails],
-          names: [...deletedNames],
-        }));
-      }
-    }
-
-    for (const initU of INITIAL_ADMIN_USERS) {
-      // Don't re-add if an admin explicitly deleted this seed user
-      if (
-        deletedIds.has(initU.id) ||
-        deletedEmails.has(initU.email.toLowerCase()) ||
-        deletedNames.has(initU.name.toLowerCase())
-      ) continue;
-      const existing = list.find(
-        (u) =>
-          u.email.trim().toLowerCase() === initU.email.trim().toLowerCase() ||
-          u.name.trim().toLowerCase() === initU.name.trim().toLowerCase()
-      );
-      if (!existing) {
-        list.push({ ...initU });
-        updated = true;
-      } else if (
-        !existing.joinedAt ||
-        new Date(existing.joinedAt).getTime() !== new Date(initU.joinedAt || "").getTime() ||
-        existing.joined !== initU.joined
-      ) {
-        existing.joinedAt = initU.joinedAt;
-        existing.joined = initU.joined;
-        updated = true;
-      }
-    }
-
-    // 2. Auto-merge newly registered users from SIGNUP_STORE_KEY
-    const signupsRaw = localStorage.getItem(SIGNUP_STORE_KEY);
-    if (signupsRaw) {
-      try {
-        const signups = JSON.parse(signupsRaw);
-        if (Array.isArray(signups)) {
-          for (const s of signups) {
-            if (!s?.email) continue;
-            const sEmail = s.email.trim().toLowerCase();
-            // Skip if this signup was explicitly deleted
-            if (deletedEmails.has(sEmail)) continue;
-            const existing = list.find((u) => u.email.trim().toLowerCase() === sEmail);
-            const signupIso = s.createdAt || s.joinedAt || new Date().toISOString();
-            if (!existing) {
-              const roleFormatted: "Student" | "Organizer" | "Admin" =
-                s.role === "admin" ? "Admin" : s.role === "organizer" ? "Organizer" : "Student";
-              list.push({
-                id: `u-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
-                name: s.name || s.email.split("@")[0],
-                email: s.email,
-                role: roleFormatted,
-                status: "Active",
-                joinedAt: signupIso,
-                joined: new Date(signupIso).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }),
-              });
-              updated = true;
-            } else if (!existing.joinedAt) {
-              existing.joinedAt = signupIso;
-              updated = true;
-            }
-          }
-        }
-      } catch {}
-    }
-
-    // 3. Auto-merge approved organizers from spott_pending_organizers
-    const pendingRaw = localStorage.getItem("spott_pending_organizers");
-    if (pendingRaw) {
-      try {
-        const pendingList = JSON.parse(pendingRaw);
-        if (Array.isArray(pendingList)) {
-          for (const p of pendingList) {
-            if (!p?.email || p.status !== "approved") continue;
-            const pEmail = p.email.trim().toLowerCase();
-            // Skip if this organizer was explicitly deleted
-            if (deletedEmails.has(pEmail)) continue;
-            const existing = list.find((u) => u.email.trim().toLowerCase() === pEmail);
-            const joinIso = p.decidedAt || p.submittedAt || new Date().toISOString();
-            if (!existing) {
-              list.push({
-                id: p.id || `u-${Date.now()}`,
-                name: p.name || p.email.split("@")[0],
-                email: p.email,
-                role: "Organizer",
-                status: "Active",
-                joinedAt: joinIso,
-                joined: new Date(joinIso).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }),
-              });
-              updated = true;
-            } else if (!existing.joinedAt) {
-              existing.joinedAt = joinIso;
-              updated = true;
-            }
-          }
-        }
-      } catch {}
-    }
-
-    // 4. Auto-detect any organizers from published events in directory
-    const eventsRaw = localStorage.getItem("spott_events_directory");
-    if (eventsRaw) {
-      try {
-        const evList = JSON.parse(eventsRaw);
-        if (Array.isArray(evList)) {
-          for (const ev of evList) {
-            const orgName = (ev.organizer || "").trim();
-            if (!orgName) continue;
-            const orgNameLower = orgName.toLowerCase();
-            // Skip if this organizer's name or slug email was explicitly deleted
-            const orgSlug = orgNameLower.replace(/[^a-z0-9]/g, "");
-            if (
-              deletedNames.has(orgNameLower) ||
-              deletedEmails.has(`${orgSlug}@spott.ph`) ||
-              deletedEmails.has(ev.organizerEmail?.trim().toLowerCase() || "")
-            ) continue;
-            const existing = list.find(
-              (u) =>
-                u.name.trim().toLowerCase() === orgNameLower ||
-                (u.email && u.email.toLowerCase().includes(orgSlug))
-            );
-            if (!existing) {
-              const joinIso = ev.confirmedAt || new Date().toISOString();
-              list.push({
-                id: `u-org-${Date.now()}-${Math.random().toString(36).substring(2, 5)}`,
-                name: orgName,
-                email: `${orgSlug}@spott.ph`,
-                role: "Organizer",
-                status: "Active",
-                joinedAt: joinIso,
-                joined: new Date(joinIso).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }),
-              });
-              updated = true;
-            }
-          }
-        }
-      } catch {}
-    }
-
-    // Ensure all items have joinedAt parsed if missing
-    for (const u of list) {
-      if (!u.joinedAt) {
-        const parsed = new Date(u.joined);
-        u.joinedAt = !isNaN(parsed.getTime()) ? parsed.toISOString() : new Date().toISOString();
-        updated = true;
-      }
-    }
-
-    // *** FINAL GATE: strip any user that is in the deleted set ***
-    // This catches anything that slipped through all the intermediate checks above.
-    const beforeFilter = list.length;
-    list = list.filter((u) => {
-      if (deletedIds.has(u.id)) return false;
-      if (deletedEmails.has(u.email.trim().toLowerCase())) return false;
-      if (deletedNames.has(u.name.trim().toLowerCase())) return false;
-      const slugEmail = `${u.name.trim().toLowerCase().replace(/[^a-z0-9]/g, "")}@spott.ph`;
-      if (deletedEmails.has(slugEmail)) return false;
-      return true;
-    });
-    if (list.length !== beforeFilter) updated = true;
-
-    // Sort by joinedAt descending (newest joined first)
-    list.sort((a, b) => {
-      const tA = a.joinedAt ? new Date(a.joinedAt).getTime() : 0;
-      const tB = b.joinedAt ? new Date(b.joinedAt).getTime() : 0;
-      return tB - tA;
-    });
-
-    if (updated || !raw) {
-      localStorage.setItem(USERS_STORE_KEY, JSON.stringify(list));
-    }
-
-    return list;
-  } catch {
-    return INITIAL_ADMIN_USERS;
-  }
+  return adminUsersSnapshot;
 }
 
 /**
- * Saves the admin users list to localStorage and broadcasts update locally and across tabs.
+ * Updates the short-lived in-memory view and broadcasts within this browser.
  */
 export function saveAdminUsers(list: AdminUser[]) {
   if (typeof window === "undefined") return;
+  adminUsersSnapshot = list;
+  window.dispatchEvent(new Event(USERS_UPDATED_EVENT));
   try {
-    localStorage.setItem(USERS_STORE_KEY, JSON.stringify(list));
-    // Local window notification
-    window.dispatchEvent(new Event(USERS_UPDATED_EVENT));
-    // Cross-tab broadcast
-    try {
-      const channel = new BroadcastChannel("spott_users_channel");
-      channel.postMessage({ type: USERS_UPDATED_EVENT, timestamp: Date.now() });
-      channel.close();
-    } catch {}
+    const channel = new BroadcastChannel("spott_users_channel");
+    channel.postMessage({ type: USERS_UPDATED_EVENT, timestamp: Date.now() });
+    channel.close();
   } catch {}
 }
 
@@ -428,6 +215,7 @@ export function saveAdminUsers(list: AdminUser[]) {
  * Records all three identifiers in the deleted-set so getAdminUsers() never re-adds them
  * from INITIAL_ADMIN_USERS, signup store, pending organizers, or events directory.
  */
+/** Permanently deletes an account through the authenticated users API. */
 export async function deleteAdminUser(user: { id: string; email: string; name?: string }): Promise<boolean> {
   if (typeof window === "undefined") return false;
   try {
@@ -436,61 +224,13 @@ export async function deleteAdminUser(user: { id: string; email: string; name?: 
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ user_id: user.id, email: user.email }),
     });
-    // A stale local row may outlive a profile already removed from Supabase.
-    // Treat 404 as success so the browser tombstone can clear that old row.
-    if (!response.ok && response.status !== 404) return false;
-
-    // 1. Add to deleted set (ids + emails + names)
-    const delRaw = localStorage.getItem(DELETED_USERS_KEY);
-    const del: { ids: string[]; emails: string[]; names: string[] } = delRaw
-      ? JSON.parse(delRaw)
-      : { ids: [], emails: [], names: [] };
-    if (!del.ids) del.ids = [];
-    if (!del.emails) del.emails = [];
-    if (!del.names) del.names = [];
-
-    if (!del.ids.includes(user.id)) del.ids.push(user.id);
-    const emailLower = user.email.trim().toLowerCase();
-    if (!del.emails.includes(emailLower)) del.emails.push(emailLower);
-    if (user.name) {
-      const nameLower = user.name.trim().toLowerCase();
-      if (!del.names.includes(nameLower)) del.names.push(nameLower);
-      // Also store the slug (used for auto-generated emails like "cityartssociety@spott.ph")
-      const slugEmail = `${nameLower.replace(/[^a-z0-9]/g, "")}@spott.ph`;
-      if (!del.emails.includes(slugEmail)) del.emails.push(slugEmail);
-    }
-    localStorage.setItem(DELETED_USERS_KEY, JSON.stringify(del));
-
-    // 2. Remove from the main users list
-    const current = getAdminUsers();
-    const nameLower = user.name?.trim().toLowerCase() || "";
-    const next = current.filter(
-      (u) =>
-        u.id !== user.id &&
-        u.email.trim().toLowerCase() !== emailLower &&
-        (nameLower ? u.name.trim().toLowerCase() !== nameLower : true)
-    );
-    saveAdminUsers(next);
-
-    // 3. Also remove from signup store so they can't re-appear via that path
-    try {
-      const signupsRaw = localStorage.getItem(SIGNUP_STORE_KEY);
-      if (signupsRaw) {
-        const signups = JSON.parse(signupsRaw);
-        if (Array.isArray(signups)) {
-          const filtered = signups.filter((signup: unknown) => {
-            if (!signup || typeof signup !== "object") return true;
-            const email = (signup as { email?: unknown }).email;
-            return typeof email !== "string" || email.trim().toLowerCase() !== emailLower;
-          });
-          localStorage.setItem(SIGNUP_STORE_KEY, JSON.stringify(filtered));
-        }
-      }
-    } catch {}
+    if (!response.ok) return false;
+    saveAdminUsers(adminUsersSnapshot.filter((current) => current.id !== user.id && current.email.toLowerCase() !== user.email.toLowerCase()));
     return true;
-  } catch { return false; }
+  } catch {
+    return false;
+  }
 }
-
 /**
  * Registers or updates a user in the Admin user list.
  * Can be called whenever an account is created in signup or approved.
@@ -613,69 +353,22 @@ export async function syncUsersFromApi(): Promise<void> {
     if (!res.ok) return;
     const data = await res.json();
     if (!data.users || !Array.isArray(data.users)) return;
-
-    // Load deleted set so we never re-add explicitly deleted users from API
-    let deletedIds: Set<string> = new Set();
-    let deletedEmails: Set<string> = new Set();
-    let deletedNames: Set<string> = new Set();
-    try {
-      const delRaw = localStorage.getItem(DELETED_USERS_KEY);
-      if (delRaw) {
-        const delParsed: { ids: string[]; emails: string[]; names?: string[] } = JSON.parse(delRaw);
-        deletedIds = new Set(delParsed.ids || []);
-        deletedEmails = new Set((delParsed.emails || []).map((e) => e.toLowerCase()));
-        deletedNames = new Set((delParsed.names || []).map((n) => n.toLowerCase()));
-      }
-    } catch {}
-
-    // Supabase is authoritative for accounts that still exist there. Clear any
-    // stale local-only deletion marker so a live account (such as Metro's
-    // organizer account) can reappear in the admin list after a browser refresh.
-    let removedStaleDeletion = false;
-    for (const su of data.users) {
-      if (!su?.email) continue;
-      const emailLower = su.email.trim().toLowerCase();
-      const nameLower = (su.name || "").trim().toLowerCase();
-      if (deletedEmails.delete(emailLower)) removedStaleDeletion = true;
-      if (su.user_id && deletedIds.delete(su.user_id)) removedStaleDeletion = true;
-      if (nameLower && deletedNames.delete(nameLower)) removedStaleDeletion = true;
-    }
-    if (removedStaleDeletion) {
-      localStorage.setItem(DELETED_USERS_KEY, JSON.stringify({
-        ids: [...deletedIds],
-        emails: [...deletedEmails],
-        names: [...deletedNames],
-      }));
-    }
-
-    const current = getAdminUsers();
-    let modified = false;
-
-    for (const su of data.users) {
-      if (!su.email) continue;
-      const emailLower = su.email.trim().toLowerCase();
-      const nameLower = (su.name || "").trim().toLowerCase();
-
-      const existing = current.find((u) => u.email.trim().toLowerCase() === emailLower);
-      if (!existing) {
-        const roleFormatted: "Student" | "Organizer" | "Admin" =
-          su.role === "admin" ? "Admin" : su.role === "organizer" ? "Organizer" : "Student";
-        const joinIso = su.created_at || new Date().toISOString();
-        current.push({
-          id: su.user_id || `u-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
-          name: su.name || su.email.split("@")[0],
-          email: su.email,
-          role: roleFormatted,
-          status: "Active",
-          joinedAt: joinIso,
-          joined: new Date(joinIso).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }),
-        });
-        modified = true;
-      }
-    }
-
-    if (modified) {
-      saveAdminUsers(current);
-    }
+    const users: AdminUser[] = data.users.filter((user: { user_id?: string; email?: string }) => user.user_id && user.email).map((user: { user_id: string; name?: string; display_name?: string; avatar_url?: string | null; phone?: string | null; address?: string | null; email: string; role?: string; created_at?: string }) => {
+      const role: AdminUser['role'] = user.role === 'admin' ? 'Admin' : user.role === 'organizer' ? 'Organizer' : 'Student';
+      const joinedAt = user.created_at || new Date().toISOString();
+      return {
+        id: user.user_id,
+        name: user.display_name || user.name || user.email.split('@')[0],
+        email: user.email,
+        avatarUrl: user.avatar_url || undefined,
+        phone: user.phone || undefined,
+        address: user.address || undefined,
+        role,
+        status: 'Active' as const,
+        joinedAt,
+        joined: new Date(joinedAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }),
+      };
+    });
+    saveAdminUsers(users);
   } catch {}
 }

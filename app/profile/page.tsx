@@ -17,10 +17,12 @@ import {
   Mail,
   Shield,
 } from "lucide-react";
-import { getCurrentUser, SpottAccount } from "@/lib/auth-store";
+import { getCurrentUser, setCurrentUser, SpottAccount } from "@/lib/auth-store";
 import { useHydrated } from "@/lib/use-hydrated";
+import { fetchWithSupabaseSession } from "@/lib/audit-log-client";
 import {
   getUserProfile,
+  loadUserProfileFromDatabase,
   saveUserProfile,
   UserProfile,
   getInitials,
@@ -43,6 +45,8 @@ export default function ProfilePage() {
   const [address, setAddress] = useState(profile?.address || "");
   const [bio, setBio] = useState(profile?.bio || "");
   const [avatarPreview, setAvatarPreview] = useState<string>(profile?.avatarUrl || "");
+  const [avatarFile, setAvatarFile] = useState<File | null>(null);
+  const [avatarRemoved, setAvatarRemoved] = useState(false);
 
   // UI state
   const [saving, setSaving] = useState(false);
@@ -52,7 +56,21 @@ export default function ProfilePage() {
   useEffect(() => {
     if (!user) {
       router.replace("/login");
+      return;
     }
+    let active = true;
+    void loadUserProfileFromDatabase(user.email).then((loaded) => {
+      if (!active) return;
+      setProfile(loaded);
+      setDisplayName(loaded.displayName || user.name);
+      setPhone(loaded.phone || "");
+      setAddress(loaded.address || "");
+      setBio(loaded.bio || "");
+      setAvatarPreview(loaded.avatarUrl || "");
+    }).catch((error) => {
+      if (active) setSaveMsg({ type: "error", text: error instanceof Error ? error.message : "Unable to load your profile." });
+    });
+    return () => { active = false; };
   }, [router, user]);
 
   if (!mounted) return null;
@@ -65,6 +83,8 @@ export default function ProfilePage() {
       return;
     }
     setAvatarError("");
+    setAvatarFile(file);
+    setAvatarRemoved(false);
     const reader = new FileReader();
     reader.onload = (ev) => {
       const result = ev.target?.result as string;
@@ -75,6 +95,8 @@ export default function ProfilePage() {
 
   const handleRemoveAvatar = () => {
     setAvatarPreview("");
+    setAvatarFile(null);
+    setAvatarRemoved(true);
     if (fileInputRef.current) fileInputRef.current.value = "";
   };
 
@@ -85,20 +107,27 @@ export default function ProfilePage() {
     setSaveMsg(null);
 
     try {
-      const updated: UserProfile = {
-        email: user.email,
-        displayName: displayName.trim() || user.name,
-        avatarUrl: avatarPreview || undefined,
-        phone: phone.trim() || undefined,
-        address: address.trim() || undefined,
-        bio: bio.trim() || undefined,
-      };
+      const form = new FormData();
+      form.set("display_name", displayName.trim() || user.name);
+      form.set("phone", phone.trim());
+      form.set("address", address.trim());
+      form.set("bio", bio.trim());
+      form.set("avatar_action", avatarRemoved ? "remove" : "keep");
+      if (avatarFile) form.set("avatar", avatarFile);
+      const response = await fetchWithSupabaseSession("/api/profile", { method: "PATCH", body: form });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok || !payload.profile) throw new Error(payload.error || "Failed to save. Please try again.");
+      const updated = payload.profile as UserProfile;
       saveUserProfile(updated);
       setProfile(updated);
+      setCurrentUser({ ...user, displayName: updated.displayName || user.name });
+      setAvatarPreview(updated.avatarUrl || "");
+      setAvatarFile(null);
+      setAvatarRemoved(false);
       setSaveMsg({ type: "success", text: "Profile saved successfully!" });
       setTimeout(() => setSaveMsg(null), 3000);
-    } catch {
-      setSaveMsg({ type: "error", text: "Failed to save. Please try again." });
+    } catch (error) {
+      setSaveMsg({ type: "error", text: error instanceof Error ? error.message : "Failed to save. Please try again." });
     } finally {
       setSaving(false);
     }

@@ -20,27 +20,22 @@ import Link from "next/link";
 import { format, addDays, isBefore, parseISO, startOfMonth, addMonths, subMonths, getDaysInMonth } from "date-fns";
 import type { EventData } from "@/components/EventCard";
 import { DEFAULT_EVENTS } from "@/lib/default-events";
-import { getStoredEvents, subscribeToEvents, useStoredEvents } from "@/lib/events-store";
-import { addNotification } from "@/lib/notifications-store";
+import { saveStoredEvents, subscribeToEvents, useStoredEvents } from "@/lib/events-store";
 import {
   getCurrentUser,
-  getUserSavedEvents,
-  saveUserSavedEvents,
-  getUserRegisteredEvents,
-  saveUserRegisteredEvents,
-  getUserReminders,
-  saveUserReminders,
   SpottAccount,
 } from "@/lib/auth-store";
 import {
+  loadUserReminders,
+  getAllReminders,
   setEventReminder,
   removeEventReminder,
-  getUserRemindersForEvent,
   hasUserReminder,
 } from "@/lib/reminders-store";
 import CancelRsvpModal from "@/components/CancelRsvpModal";
 import { useHydrated } from "@/lib/use-hydrated";
-import { parseGuestLists } from "@/lib/guest-list";
+import { fetchWithSupabaseSession } from "@/lib/audit-log-client";
+import { loadSavedEventIds, toggleSavedEvent } from "@/lib/saved-events-client";
 
 type Tab = "saved" | "registered" | "upcoming" | "past";
 
@@ -66,20 +61,6 @@ function buildGoogleCalendarUrl(event: EventData): string {
   return `https://calendar.google.com/calendar/render?${params.toString()}`;
 }
 
-function toggleUserReminder(eventId: string, email?: string): boolean {
-  const reminders = getUserReminders(email);
-  const idx = reminders.indexOf(eventId);
-  if (idx === -1) {
-    reminders.push(eventId);
-    saveUserReminders(reminders, email);
-    return true; // added
-  } else {
-    reminders.splice(idx, 1);
-    saveUserReminders(reminders, email);
-    return false; // removed
-  }
-}
-
 // ─── Component ───────────────────────────────────────────────────────────────
 export default function MyEventsPage() {
   const router = useRouter();
@@ -97,17 +78,11 @@ export default function MyEventsPage() {
     });
     return [...merged.values()];
   }, [storedEvents, remoteEvents]);
-  const [savedIds, setSavedIds] = useState<string[]>(() => {
-    const user = getCurrentUser();
-    return user ? getUserSavedEvents(user.email) : [];
-  });
-  const [registeredIds, setRegisteredIds] = useState<string[]>(() => {
-    const user = getCurrentUser();
-    return user ? getUserRegisteredEvents(user.email) : [];
-  });
+  const [savedIds, setSavedIds] = useState<string[]>([]);
+  const [registeredIds, setRegisteredIds] = useState<string[]>([]);
+  const [registrationStatuses, setRegistrationStatuses] = useState<Record<string, string>>({});
   const [reminders, setReminders] = useState<string[]>(() => {
-    const user = getCurrentUser();
-    return user ? getUserReminders(user.email) : [];
+    return [];
   });
   const [toast, setToast] = useState<{ msg: string; type: "success" | "info" } | null>(null);
   const [calendarEventId, setCalendarEventId] = useState<string | null>(null);
@@ -127,9 +102,23 @@ export default function MyEventsPage() {
       return;
     }
 
-    setSavedIds(getUserSavedEvents(user.email));
-    setRegisteredIds(getUserRegisteredEvents(user.email));
-    setReminders(getUserReminders(user.email));
+    void loadSavedEventIds().then(setSavedIds).catch(() => setSavedIds([]));
+    void loadUserReminders()
+      .then((items) => setReminders([...new Set(items.map((reminder) => reminder.eventId))]))
+      .catch(() => setReminders([]));
+    void fetchWithSupabaseSession('/api/my-registrations', { cache: 'no-store' })
+      .then(async (response) => {
+        if (!response.ok) throw new Error('Unable to load registrations');
+        const payload = await response.json();
+        const registrations = Array.isArray(payload.registrations) ? payload.registrations : [];
+        const statuses = Object.fromEntries(registrations.map((row: { event_id: string; status: string }) => [row.event_id, row.status]));
+        setRegistrationStatuses(statuses);
+        setRegisteredIds(Object.keys(statuses));
+      })
+      .catch(() => {
+        setRegistrationStatuses({});
+        setRegisteredIds([]);
+      });
   };
 
   useEffect(() => {
@@ -139,7 +128,10 @@ export default function MyEventsPage() {
     fetch("/api/events", { signal: controller.signal })
       .then((res) => (res.ok ? res.json() : []))
       .then((apiData: EventData[]) => {
-        if (active && Array.isArray(apiData)) setRemoteEvents(apiData);
+        if (active && Array.isArray(apiData)) {
+          saveStoredEvents(apiData, true);
+          setRemoteEvents(apiData);
+        }
       })
       .catch(() => {})
       .finally(() => clearTimeout(timer));
@@ -165,54 +157,28 @@ export default function MyEventsPage() {
     };
   }, []);
 
-  const handleToggleSave = (eventId: string, e?: React.MouseEvent) => {
+  const handleToggleSave = async (eventId: string, e?: React.MouseEvent) => {
     e?.stopPropagation();
     if (!currentUser) return;
-    const current = getUserSavedEvents(currentUser.email);
-    let ids = [...current];
-    if (ids.includes(eventId)) {
-      ids = ids.filter((id) => id !== eventId);
-      showToast("Event removed from your saved list.", "info");
-    } else {
-      ids.push(eventId);
-      showToast("Event saved!", "success");
-    }
-    saveUserSavedEvents(ids, currentUser.email);
-    setSavedIds(ids);
+    try {
+      const saved = await toggleSavedEvent(eventId);
+      setSavedIds((ids) => saved ? [...new Set([...ids, eventId])] : ids.filter((id) => id !== eventId));
+      showToast(saved ? "Event saved!" : "Event removed from your saved list.", saved ? "success" : "info");
+    } catch (error) { showToast(error instanceof Error ? error.message : "Could not update saved event.", "info"); }
   };
 
-  const handleConfirmCancelRSVP = () => {
+  const handleConfirmCancelRSVP = async () => {
     if (!currentUser || !eventToCancel) return;
     setIsCancellingRsvp(true);
-
     try {
       const eventId = eventToCancel.id;
-      // 1. Remove from registered events
-      const currentRegs = getUserRegisteredEvents(currentUser.email);
-      const regIds = currentRegs.filter((id) => id !== eventId);
-      saveUserRegisteredEvents(regIds, currentUser.email);
-      setRegisteredIds(regIds);
-
-      // 2. Decrement registrations count in directory
-      const storedEvents = getStoredEvents();
-      const foundIndex = storedEvents.findIndex((e) => e.id === eventId);
-      if (foundIndex !== -1) {
-        const currentCount = storedEvents[foundIndex].registrations || 0;
-        storedEvents[foundIndex].registrations = Math.max(0, currentCount - 1);
-        localStorage.setItem("spott_events_directory", JSON.stringify(storedEvents));
-      }
-
-      // 3. Remove from guest list
-      const rawGuests = localStorage.getItem("spott_guest_lists");
-      const guestMap = parseGuestLists(rawGuests);
-      let currentGuestList = guestMap[eventId] || [];
-      currentGuestList = currentGuestList.filter(
-        (a) => a.email?.toLowerCase() !== currentUser.email.toLowerCase() && a.id !== currentUser.email
-      );
-      guestMap[eventId] = currentGuestList;
-      localStorage.setItem("spott_guest_lists", JSON.stringify(guestMap));
-
-      // 4. Update UI & broadcast
+      const response = await fetchWithSupabaseSession(`/api/events/${eventId}/register`, { method: 'DELETE' });
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(result.error || 'Could not cancel RSVP.');
+      const nextStatuses = { ...registrationStatuses };
+      delete nextStatuses[eventId];
+      setRegistrationStatuses(nextStatuses);
+      setRegisteredIds(Object.keys(nextStatuses));
       setIsCancellingRsvp(false);
       setShowCancelModal(false);
       setEventToCancel(null);
@@ -221,10 +187,9 @@ export default function MyEventsPage() {
       window.dispatchEvent(new Event("spott_events_updated"));
 
       showToast("RSVP cancelled. Your slot has been released.", "info");
-    } catch {
+    } catch (error) {
       setIsCancellingRsvp(false);
-      setShowCancelModal(false);
-      setEventToCancel(null);
+      showToast(error instanceof Error ? error.message : 'Could not cancel RSVP.', 'info');
     }
   };
 
@@ -236,13 +201,7 @@ export default function MyEventsPage() {
   const now = new Date();
   const savedEvents = events.filter((e) => savedIds.includes(e.id));
   const userEventIds = new Set(registeredIds);
-  const statusFor = (eventId: string) => {
-    try {
-      const guestMap = parseGuestLists(localStorage.getItem("spott_guest_lists"));
-      const attendee = guestMap[eventId]?.find((item) => item.email?.toLowerCase() === currentUser?.email?.toLowerCase());
-      return String(attendee?.status || "Confirmed").toLowerCase();
-    } catch { return "confirmed"; }
-  };
+  const statusFor = (eventId: string) => String(registrationStatuses[eventId] || '').toLowerCase();
   const userEvents = events.filter((e) => userEventIds.has(e.id));
   const registeredEvents = userEvents.filter((e) => statusFor(e.id).includes("pending"));
   const approvedEvents = userEvents.filter((e) => !statusFor(e.id).includes("pending") && !statusFor(e.id).includes("declin") && !statusFor(e.id).includes("reject"));
@@ -295,7 +254,7 @@ export default function MyEventsPage() {
     const isAlreadySet = hasUserReminder(event.id, label, currentUser.email);
     if (isAlreadySet) {
       await removeEventReminder(event.id, label, currentUser.email);
-      setReminders(getUserReminders(currentUser.email));
+      setReminders([...new Set(getAllReminders().map((reminder) => reminder.eventId))]);
       setReminderPickerOpen(false);
       showToast(`Reminder removed for "${event.title}".`, "info");
       return;
@@ -312,7 +271,7 @@ export default function MyEventsPage() {
     setReminderPickerOpen(false);
 
     if (res.success) {
-      setReminders(getUserReminders(currentUser.email));
+      setReminders([...new Set(getAllReminders().map((reminder) => reminder.eventId))]);
       showToast(`Reminder set for "${event.title}" (${label})!`);
     } else {
       showToast(`⚠️ ${res.error || "Failed to set reminder."}`, "info");
@@ -533,19 +492,8 @@ export default function MyEventsPage() {
                       </button>
                     )}
                     {activeTab === "registered" && (() => {
-                      let isPending = false;
-                      try {
-                        const raw = localStorage.getItem("spott_guest_lists");
-                        if (raw && currentUser?.email) {
-                          const map = parseGuestLists(raw);
-                          const list = map[event.id];
-                          if (Array.isArray(list)) {
-                            const att = list.find((attendee) => attendee.email?.toLowerCase() === currentUser.email.toLowerCase());
-                            if (att?.status === "Pending") isPending = true;
-                          }
-                        }
-                      } catch {}
-
+                      const registrationStatus = statusFor(event.id);
+                      const isPending = registrationStatus.includes("pending");
                       return (
                         <div className="flex items-center gap-1.5">
                           {isPending ? (

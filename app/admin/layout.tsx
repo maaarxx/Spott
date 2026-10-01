@@ -21,6 +21,7 @@ import {
   History,
 } from "lucide-react";
 import { logout, getCurrentUser, clearLocalAuthState, SpottAccount } from "@/lib/auth-store";
+import { fetchWithSupabaseSession } from "@/lib/audit-log-client";
 
 interface AdminNavItem {
   id: string;
@@ -105,7 +106,7 @@ function AdminNavContent({ children }: { children: React.ReactNode }) {
       }
       setAuthorized(false);
       try {
-        const response = await fetch('/api/account', { cache: 'no-store' });
+        const response = await fetchWithSupabaseSession('/api/account', { cache: 'no-store' });
         const result = await response.json();
         if (!active) return;
         if (!response.ok) {

@@ -104,7 +104,7 @@ export default function LoginPage() {
         const supabase = createSupabaseBrowserClient();
         const { error } = await supabase.auth.signInWithPassword({ email: email.trim().toLowerCase(), password });
         if (!error) {
-          const response = await fetch('/api/account');
+          const response = await fetchWithSupabaseSession('/api/account');
           const result = await response.json();
           if (!response.ok) throw new Error(result.error || 'Unable to load your account.');
           if (result.account.role === 'organizer' && result.account.organizerStatus !== 'approved') {
@@ -113,6 +113,7 @@ export default function LoginPage() {
           }
           const account: SpottAccount = {
             email: result.account.email, name: result.account.name, role: result.account.role,
+            ...(result.account.organization ? { organization: result.account.organization } : {}),
             destination: result.account.role === 'admin' ? '/admin' : result.account.role === 'organizer' ? '/organizer' : '/',
           };
           await fetchWithSupabaseSession('/api/audit-events', {

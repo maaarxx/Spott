@@ -1,7 +1,5 @@
 import { NextResponse } from 'next/server';
 import { createAdminClient, getAuthenticatedRole } from '@/lib/supabase-server';
-import { DEFAULT_EVENTS } from '@/lib/default-events';
-import type { EventData } from '@/components/EventCard';
 import { errorMessage } from '@/lib/error-message';
 import { writeAuditEntry } from '@/lib/audit-log-server';
 
@@ -16,18 +14,13 @@ type EventDetailRow = {
   status: string;
   is_still_happening_confirmed_at: string | null;
   capacity?: number | null;
+  require_approval?: boolean | null;
+  cancelled_at?: string | null;
+  cancel_reason?: string | null;
   organizers?: Relation<{ organization_name?: string | null; verification_status?: string | null }>;
   locations?: Relation<{ venue_name?: string | null; address?: string | null; city?: string | null; latitude?: number | string | null; longitude?: number | string | null }>;
   event_category?: Array<{ categories?: Relation<{ category_name?: string | null }> }>;
 };
-
-// Server-side in-memory event cache
-declare global {
-  var __spott_server_events: EventData[] | undefined;
-}
-if (!globalThis.__spott_server_events) {
-  globalThis.__spott_server_events = [];
-}
 
 export async function GET(
   request: Request,
@@ -52,6 +45,10 @@ export async function GET(
         price,
         status,
         is_still_happening_confirmed_at,
+        capacity,
+        require_approval,
+        cancelled_at,
+        cancel_reason,
         organizers (
           organization_name,
           verification_status
@@ -74,22 +71,17 @@ export async function GET(
       .single();
 
     if (error) {
-      // Check in-memory server events
-      const serverEvent = globalThis.__spott_server_events?.find((e) => e.id === id);
-      if (serverEvent?.status === 'active') return NextResponse.json(serverEvent);
-
-      const fallbackEvent = DEFAULT_EVENTS.find((event) => event.id === id);
-      if (fallbackEvent) {
-        return NextResponse.json(fallbackEvent);
-      }
-      return NextResponse.json({ error: 'Event not found' }, { status: 404 });
+      if (error.code === 'PGRST116') return NextResponse.json({ error: 'Event not found' }, { status: 404 });
+      console.error('Failed to load event from Supabase', error.message);
+      return NextResponse.json({ error: 'Could not load event from the database.' }, { status: 503 });
     }
 
     // Get registration count
     const { count } = await supabase
       .from('registrations')
       .select('*', { count: 'exact', head: true })
-      .eq('event_id', id);
+      .eq('event_id', id)
+      .in('status', ['confirmed', 'registered', 'approved']);
 
     const eventData = data as unknown as EventDetailRow;
     const organizer = Array.isArray(eventData.organizers) ? eventData.organizers[0] : eventData.organizers;
@@ -120,8 +112,8 @@ export async function GET(
       endDate: eventData.end_datetime,
       price: Number(eventData.price) || 0,
       status: eventData.status,
-      cancelled_at: null,
-      cancel_reason: null,
+      cancelled_at: eventData.cancelled_at || null,
+      cancel_reason: eventData.cancel_reason || null,
       organizer: organizer?.organization_name || 'Unknown',
       verified: organizer?.verification_status === 'verified',
       location: location?.venue_name
@@ -138,17 +130,14 @@ export async function GET(
       registrations: count || 0,
       confirmedAt: eventData.is_still_happening_confirmed_at,
       capacity,
+      requireApproval: eventData.require_approval ?? false,
       coverImage,
       image: coverImage,
     };
 
     return NextResponse.json(formattedData);
   } catch {
-      const fallbackEvent = DEFAULT_EVENTS.find((event) => event.id === id);
-    if (fallbackEvent) {
-      return NextResponse.json(fallbackEvent);
-    }
-    return NextResponse.json({ error: 'Event not found' }, { status: 404 });
+    return NextResponse.json({ error: 'Could not load event from the database.' }, { status: 503 });
   }
 }
 
@@ -187,14 +176,13 @@ export async function PATCH(
     }
 
     // 1. Load existing event to compare fields
-    let existingEvent: (Partial<EventData> & Pick<EventData, "id">) | undefined =
-      globalThis.__spott_server_events?.find((event) => event.id === id);
-    if (!existingEvent) {
-      try {
-        const { data } = await supabase
+    let existingEvent: { id: string; title?: string; date?: string; price?: number; status?: string; location?: string; locationId?: string | null } | undefined;
+    {
+      const { data, error: existingError } = await supabase
           .from('events')
           .select(`
             event_id,
+            location_id,
             title,
             start_datetime,
             price,
@@ -204,9 +192,12 @@ export async function PATCH(
           .eq('event_id', id)
           .maybeSingle();
 
-        if (data) {
+      if (existingError) return NextResponse.json({ error: 'Unable to load the event before updating it.' }, { status: 500 });
+
+      if (data) {
           const row = data as unknown as {
             event_id: string;
+            location_id: string | null;
             title: string;
             start_datetime: string;
             price: number | string;
@@ -216,14 +207,14 @@ export async function PATCH(
           const loc = Array.isArray(row.locations) ? row.locations[0] : row.locations;
           existingEvent = {
             id: row.event_id,
+            locationId: row.location_id,
             title: row.title,
             date: row.start_datetime,
             price: Number(row.price),
             status: row.status,
             location: loc?.venue_name || loc?.address || '',
           };
-        }
-      } catch {}
+      }
     }
 
     if (!existingEvent) {
@@ -243,26 +234,17 @@ export async function PATCH(
       }
       const nowIso = new Date().toISOString();
 
-      // Update in Supabase
-      try {
-        await supabase
+      const { data: updatedEvent, error: updateError } = await supabase
           .from('events')
           .update({
             status: 'cancelled',
             cancelled_at: nowIso,
             cancel_reason: cancelReason,
           })
-          .eq('event_id', id);
-      } catch {}
-
-      // Update in-memory server cache
-      if (globalThis.__spott_server_events) {
-        globalThis.__spott_server_events = globalThis.__spott_server_events.map((e) =>
-          e.id === id
-            ? { ...e, status: 'cancelled', cancelled_at: nowIso, cancel_reason: cancelReason }
-            : e
-        );
-      }
+          .eq('event_id', id)
+          .select('event_id')
+          .maybeSingle();
+      if (updateError || !updatedEvent) return NextResponse.json({ error: 'Could not cancel event in the database.' }, { status: 500 });
 
       if (account.role === 'admin') await writeAuditEntry(account, {
         action: 'event.cancelled', targetType: 'event', targetId: id,
@@ -311,8 +293,8 @@ export async function PATCH(
 
     const newTitle = body.title !== undefined ? body.title : existingEvent?.title;
     const newDate = body.date !== undefined ? body.date : existingEvent?.date;
-    const newLocation = body.location !== undefined ? body.location : existingEvent?.location;
     const newPrice = body.price !== undefined ? Number(body.price) : Number(existingEvent?.price || 0);
+    const newStatus = body.status !== undefined ? body.status : existingEvent?.status || 'active';
 
     if (existingEvent) {
       if (body.title && body.title.trim() !== existingEvent.title?.trim()) {
@@ -327,6 +309,9 @@ export async function PATCH(
       if (body.price !== undefined && Number(body.price) !== Number(existingEvent.price || 0)) {
         changes.push(`Price: ₱${existingEvent.price || 0} -> ₱${body.price}`);
       }
+      if (body.status !== undefined && body.status !== existingEvent.status) {
+        changes.push(`Status: ${existingEvent.status} -> ${body.status}`);
+      }
     }
 
     if (account.role === 'admin' && changes.length > 0) await writeAuditEntry(account, {
@@ -334,35 +319,30 @@ export async function PATCH(
       summary: `Updated event “${newTitle}”.`, details: { changes },
     });
 
-    // Update in-memory server cache
-    if (globalThis.__spott_server_events) {
-      globalThis.__spott_server_events = globalThis.__spott_server_events.map((e) =>
-        e.id === id
-          ? {
-              ...e,
-              title: newTitle,
-              date: newDate,
-              location: newLocation,
-              price: newPrice,
-              status: body.status || e.status,
-            }
-          : e
-      );
+    if (body.location !== undefined && body.location.trim() !== existingEvent.location?.trim()) {
+      if (!existingEvent.locationId) {
+        return NextResponse.json({ error: 'Event location is missing from the database.' }, { status: 500 });
+      }
+      const { error: locationError } = await supabase.from('locations').update({
+        venue_name: body.location.trim(),
+        address: body.location.trim(),
+      }).eq('location_id', existingEvent.locationId);
+      if (locationError) return NextResponse.json({ error: 'Could not update event location in the database.' }, { status: 500 });
     }
 
-    // Update in Supabase
-    try {
-      await supabase
+    const { data: updatedEvent, error: updateError } = await supabase
         .from('events')
         .update({
           title: newTitle,
           start_datetime: newDate,
           price: newPrice,
-          status: body.status || 'active',
+          status: newStatus,
           updated_at: new Date().toISOString(),
         })
-        .eq('event_id', id);
-    } catch {}
+        .eq('event_id', id)
+        .select('event_id')
+        .maybeSingle();
+    if (updateError || !updatedEvent) return NextResponse.json({ error: 'Could not update event in the database.' }, { status: 500 });
 
     // If changes occurred, notify RSVPed attendees and recompute pending reminders
     let createdNotification = null;
@@ -434,16 +414,20 @@ export async function DELETE(
     // Delete rule: Allow delete ONLY for Draft events or events with 0 RSVPs
     let rsvpCount = 0;
     let eventStatus = '';
+    let existingEventTitle = id;
 
     try {
       const { data: eventData, error: eventError } = await supabase
         .from('events')
-        .select('status')
+        .select('status,title')
         .eq('event_id', id)
         .maybeSingle();
 
       if (eventError) return NextResponse.json({ error: 'Unable to verify event status' }, { status: 500 });
-      if (eventData) eventStatus = eventData.status;
+      if (eventData) {
+        eventStatus = eventData.status;
+        existingEventTitle = eventData.title;
+      }
 
       const { count, error: registrationError } = await supabase
         .from('registrations')
@@ -456,14 +440,7 @@ export async function DELETE(
       return NextResponse.json({ error: 'Unable to verify event deletion rules' }, { status: 500 });
     }
 
-    // Check in-memory if Supabase had no record
-    const serverEv = globalThis.__spott_server_events?.find((e) => e.id === id);
-    if (serverEv) {
-      eventStatus = eventStatus || serverEv.status || "";
-      rsvpCount = Math.max(rsvpCount, serverEv.registrations || 0);
-    }
-
-    if (!eventStatus && !serverEv) {
+    if (!eventStatus) {
       return NextResponse.json({ error: 'Event not found' }, { status: 404 });
     }
     if (eventStatus !== 'draft' && rsvpCount > 0) {
@@ -479,18 +456,13 @@ export async function DELETE(
 
     // Delete from Supabase
     const { error: deleteError } = await supabase.from('events').delete().eq('event_id', id);
-    if (deleteError && !serverEv) {
+    if (deleteError) {
       return NextResponse.json({ error: 'Unable to delete event' }, { status: 500 });
-    }
-
-    // Remove from in-memory
-    if (globalThis.__spott_server_events) {
-      globalThis.__spott_server_events = globalThis.__spott_server_events.filter((e) => e.id !== id);
     }
 
     if (account.role === 'admin') await writeAuditEntry(account, {
       action: 'event.deleted', targetType: 'event', targetId: id,
-      summary: `Deleted event “${serverEv?.title || id}”.`,
+      summary: `Deleted event “${existingEventTitle || id}”.`,
     });
 
     return NextResponse.json({ success: true, message: 'Event deleted' });

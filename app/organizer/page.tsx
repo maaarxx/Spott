@@ -47,12 +47,7 @@ import {
 } from "lucide-react";
 import { useEffect } from "react";
 import {
-  getVerificationState,
   defaultVerificationState,
-  setExpeditedRequest,
-  addVerificationDocument,
-  removeVerificationDocument,
-  setApprovalStatus,
   getRealTimeDate,
   get30DaysExpiryDate,
   saveVerificationState,
@@ -61,24 +56,23 @@ import {
 } from "@/lib/verification-store";
 import PdfViewerModal from "@/components/PdfViewerModal";
 import { fetchWithSupabaseSession } from "@/lib/audit-log-client";
-import { addNotification, removeNotificationsForEvent } from "@/lib/notifications-store";
+import { removeNotificationsForEvent } from "@/lib/notifications-store";
 import { getStoredEvents, saveStoredEvent, saveStoredEvents, deleteStoredEvent, subscribeToEvents } from "@/lib/events-store";
-import { getCurrentUser } from "@/lib/auth-store";
+import { getCurrentUser, refreshCurrentUserFromDatabase } from "@/lib/auth-store";
 import type { EventData } from "@/components/EventCard";
 import {
   getEventViews,
   getEventUniqueViews,
-  getViewsMap,
-  getUniqueViewsMap,
   subscribeToViews,
 } from "@/lib/views-store";
 import {
   getOrganizerProfile,
-  saveOrganizerProfile,
+  loadOrganizerProfileFromDatabase,
+  saveOrganizerProfileToDatabase,
   subscribeToOrganizerProfile,
   OrganizerProfile,
 } from "@/lib/organizer-store";
-import { getAllCategories, matchesCategory } from "@/lib/categories";
+import { getAllCategories, matchesCategory, syncCategoriesFromDatabase } from "@/lib/categories";
 import { recomputeRemindersForEvent } from "@/lib/reminders-store";
 
 export const DEFAULT_FOCUS_PRESETS = [
@@ -130,12 +124,13 @@ export interface OrganizerEvent {
   cancelReason?: string | null;
 }
 
-interface StoredGuestEntry {
-  dateRegistered?: string;
-  registeredAt?: string;
+interface DatabaseRegistration {
+  event_id: string;
+  user_id: string;
+  registration_date?: string | null;
   status?: string;
-  email?: string;
-  name?: string;
+  attendee_email?: string | null;
+  attendee_name?: string | null;
 }
 
 const initialEvents: OrganizerEvent[] = [];
@@ -148,6 +143,7 @@ function OrganizerContent() {
     const now = new Date();
     return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
   });
+  const [monthlyRegistrations, setMonthlyRegistrations] = useState<DatabaseRegistration[]>([]);
 
   const [events, setEvents] = useState<OrganizerEvent[]>([]);
   const [searchQuery, setSearchQuery] = useState("");
@@ -161,6 +157,7 @@ function OrganizerContent() {
   // Verification & Document Store state (SSR-safe baseline)
   const [verState, setVerState] = useState<VerificationState>(defaultVerificationState);
   const [previewDocName, setPreviewDocName] = useState<string | null>(null);
+  const [previewDocUrl, setPreviewDocUrl] = useState<string | null>(null);
   const [verBannerFadingOut, setVerBannerFadingOut] = useState(false);
   const [verBannerHidden, setVerBannerHidden] = useState(false);
   const [verificationHydrated, setVerificationHydrated] = useState(false);
@@ -172,32 +169,48 @@ function OrganizerContent() {
   const [isCustomFocus, setIsCustomFocus] = useState(false);
   const [customFocusText, setCustomFocusText] = useState("");
   const [profileSaved, setProfileSaved] = useState(false);
+  const [profileAvatarFile, setProfileAvatarFile] = useState<File | null>(null);
+  const [profileAvatarRemoved, setProfileAvatarRemoved] = useState(false);
   const [showProfilePreview, setShowProfilePreview] = useState(false);
   const [currentOrgName, setCurrentOrgName] = useState<string>("Metro Creative Group");
 
   useEffect(() => {
+    let active = true;
     const syncProfile = () => {
       const user = getCurrentUser();
       const orgName = user?.organization || user?.name || "Metro Creative Group";
       setCurrentOrgName(orgName);
-      const prof = getOrganizerProfile(orgName);
-      setProfileData(prof);
-      if (prof.category && !DEFAULT_FOCUS_PRESETS.includes(prof.category)) {
-        setIsCustomFocus(true);
-        setCustomFocusText(prof.category);
-      } else {
-        setIsCustomFocus(false);
+      setProfileData(getOrganizerProfile(orgName));
+      void loadOrganizerProfileFromDatabase(orgName).then((prof) => {
+        if (!active) return;
+        setProfileData(prof);
+        setIsCustomFocus(Boolean(prof.category && !DEFAULT_FOCUS_PRESETS.includes(prof.category)));
         setCustomFocusText(prof.category || "");
-      }
+      }).catch(() => {});
     };
     syncProfile();
     const unsub = subscribeToOrganizerProfile(syncProfile);
     window.addEventListener("spott_auth_changed", syncProfile);
     return () => {
+      active = false;
       unsub();
       window.removeEventListener("spott_auth_changed", syncProfile);
     };
   }, []);
+
+  useEffect(() => {
+    let active = true;
+    fetchWithSupabaseSession(`/api/organizer/analytics/rsvps?month=${encodeURIComponent(analyticsMonth)}`, { cache: "no-store" })
+      .then(async (response) => {
+        if (!response.ok) throw new Error("Unable to load RSVP analytics from the database.");
+        const payload = await response.json();
+        if (active) setMonthlyRegistrations(Array.isArray(payload.registrations) ? payload.registrations : []);
+      })
+      .catch(() => {
+        if (active) setMonthlyRegistrations([]);
+      });
+    return () => { active = false; };
+  }, [analyticsMonth]);
 
   const handleAvatarFile = (file: File) => {
     if (!file) return;
@@ -206,6 +219,8 @@ function OrganizerContent() {
       return;
     }
     const reader = new FileReader();
+    setProfileAvatarFile(file);
+    setProfileAvatarRemoved(false);
     reader.onload = () => {
       if (typeof reader.result === "string") {
         setProfileData((prev) => ({ ...prev, avatarUrl: reader.result as string }));
@@ -214,13 +229,21 @@ function OrganizerContent() {
     reader.readAsDataURL(file);
   };
 
-  const handleSaveProfile = (e: React.FormEvent) => {
+  const handleSaveProfile = async (e: React.FormEvent) => {
     e.preventDefault();
-    const saved = saveOrganizerProfile(profileData);
-    setProfileData(saved);
-    setProfileSaved(true);
-    showAlert("Profile changes saved! Public organizer page has been updated.");
-    setTimeout(() => setProfileSaved(false), 3000);
+    try {
+      const saved = await saveOrganizerProfileToDatabase(profileData, profileAvatarFile, profileAvatarRemoved);
+      setProfileData(saved);
+      setCurrentOrgName(saved.name);
+      await refreshCurrentUserFromDatabase();
+      setProfileAvatarFile(null);
+      setProfileAvatarRemoved(false);
+      setProfileSaved(true);
+      showAlert("Profile changes saved! Public organizer page has been updated.");
+      setTimeout(() => setProfileSaved(false), 3000);
+    } catch (error) {
+      showAlert(error instanceof Error ? error.message : "Unable to save organizer profile.");
+    }
   };
 
   useEffect(() => {
@@ -263,6 +286,7 @@ function OrganizerContent() {
   const [uploadModalOpen, setUploadModalOpen] = useState(false);
   const [uploadDocTitle, setUploadDocTitle] = useState("");
   const [uploadDocType, setUploadDocType] = useState("University Co-Curricular Charter");
+  const [uploadDocumentFile, setUploadDocumentFile] = useState<File | null>(null);
   const [isUploading, setIsUploading] = useState(false);
 
   // Expedite modal state
@@ -332,23 +356,11 @@ function OrganizerContent() {
           .then((r) => r.json())
           .then((data) => {
             if (data?.viewsMap) {
-              const curMap = getViewsMap();
-              Object.assign(curMap, data.viewsMap);
-              try {
-                localStorage.setItem("spott_event_views", JSON.stringify(curMap));
-              } catch {}
-              if (data?.uniqueViewsMap) {
-                const curUnique = getUniqueViewsMap();
-                Object.assign(curUnique, data.uniqueViewsMap);
-                try {
-                  localStorage.setItem("spott_event_unique_views", JSON.stringify(curUnique));
-                } catch {}
-              }
               setEvents((prev) =>
                 prev.map((e) => ({
                   ...e,
-                  views: data.viewsMap[e.id] ?? e.views,
-                  uniqueViews: data.uniqueViewsMap?.[e.id] ?? e.uniqueViews,
+                  views: data.viewsMap[e.id] ?? 0,
+                  uniqueViews: data.uniqueViewsMap?.[e.id] ?? 0,
                 }))
               );
             }
@@ -361,8 +373,8 @@ function OrganizerContent() {
       const res = await fetch("/api/events?scope=organizer");
       if (res.ok) {
         const apiData = await res.json();
-        if (Array.isArray(apiData) && apiData.length > 0) {
-          saveStoredEvents(apiData, false);
+        if (Array.isArray(apiData)) {
+          saveStoredEvents(apiData, true);
           const freshStored = getStoredEvents();
           setEvents(mapToOrganizerEvents(filterForOrg(freshStored)));
         }
@@ -380,6 +392,7 @@ function OrganizerContent() {
 
     const syncCats = () => setCategoriesList(getAllCategories());
     syncCats();
+    void syncCategoriesFromDatabase().catch(() => {});
     window.addEventListener("spott_categories_updated", syncCats);
 
     return () => {
@@ -393,46 +406,60 @@ function OrganizerContent() {
   }, []);
 
   useEffect(() => {
-    // Sync with client localStorage upon mount to prevent SSR hydration mismatch
     const user = getCurrentUser();
     const orgName = user?.organization || user?.name || "Metro Creative Group";
     setCurrentOrgName(orgName);
-    setVerState(getVerificationState(orgName));
     setVerificationHydrated(true);
 
     const syncRemoteVerification = async () => {
       try {
-        const response = await fetchWithSupabaseSession('/api/verification', { cache: 'no-store' });
-        if (!response.ok) return;
-        const payload = await response.json();
-        const remoteStatus = payload.verification?.verification_status;
-        const local = getVerificationState(orgName);
-        // A verified server flag without any submitted credentials is stale or
-        // unsupported. Keep the organizer in the submission flow until there is evidence.
-        const status = remoteStatus === 'verified' && local.documents.length > 0
-          ? 'approved'
-          : remoteStatus === 'rejected' ? 'rejected' : 'pending';
-        if (local.status !== status) {
-          const updated = { ...local, status } as VerificationState;
-          if (status === 'approved' || status === 'rejected') {
-            updated.decidedAt ||= getRealTimeDate();
-            updated.retentionDays ||= 30;
-            updated.expiresDate ||= get30DaysExpiryDate();
-          }
-          saveVerificationState(updated, orgName);
-          setVerState(updated);
+        const statusResponse = await fetchWithSupabaseSession('/api/verification', { cache: 'no-store' });
+        if (!statusResponse.ok) return;
+        const statusPayload = await statusResponse.json();
+        const organizerProfile = await loadOrganizerProfileFromDatabase(orgName).catch(() => null);
+        if (organizerProfile) {
+          setProfileData(organizerProfile);
+          setIsCustomFocus(Boolean(organizerProfile.category && !DEFAULT_FOCUS_PRESETS.includes(organizerProfile.category)));
+          setCustomFocusText(organizerProfile.category || "");
         }
+        const documentsResponse = await fetchWithSupabaseSession('/api/verification/documents', { cache: 'no-store' });
+        if (!documentsResponse.ok) return;
+        const documentsPayload = await documentsResponse.json();
+        const remote = statusPayload.verification || {};
+        const status = remote.verification_status === 'verified' ? 'approved'
+          : remote.verification_status === 'rejected' ? 'rejected' : 'pending';
+        const documents: VerificationDocument[] = (documentsPayload.documents || []).map((doc: {
+          id: string; name: string; type: string; sizeBytes: number; uploadedAt: string; url: string;
+        }) => ({
+          id: doc.id,
+          name: doc.name,
+          type: doc.type,
+          size: doc.sizeBytes ? `${(doc.sizeBytes / 1024 / 1024).toFixed(2)} MB` : '',
+          sizeBytes: doc.sizeBytes,
+          uploadedAt: new Date(doc.uploadedAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }),
+          verified: status === 'approved',
+          url: doc.url,
+        }));
+        const nextState: VerificationState = {
+          organizerName: remote.organization_name || orgName,
+          status,
+          isExpedited: Boolean(remote.expedited_at),
+          expediteNote: remote.expedite_note || undefined,
+          expeditedAt: remote.expedited_at ? new Date(remote.expedited_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : undefined,
+          decidedAt: remote.decided_at ? new Date(remote.decided_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : undefined,
+          expiresDate: remote.expires_at ? new Date(remote.expires_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : undefined,
+          decisionReason: remote.decision_reason || undefined,
+          retentionDays: remote.expires_at ? 30 : undefined,
+          documents,
+        };
+        setVerState(nextState);
+        saveVerificationState(nextState, orgName, false);
       } catch { /* Keep the current status if the server is temporarily unavailable. */ }
     };
     void syncRemoteVerification();
     const verificationInterval = window.setInterval(syncRemoteVerification, 15000);
 
-    const handleUpdate = () => {
-      const u = getCurrentUser();
-      const current = u?.organization || u?.name || "Metro Creative Group";
-      setCurrentOrgName(current);
-      setVerState(getVerificationState(current));
-    };
+    const handleUpdate = () => { void syncRemoteVerification(); };
     window.addEventListener("spott_verification_updated", handleUpdate);
     window.addEventListener("spott_auth_changed", handleUpdate);
     return () => {
@@ -447,47 +474,86 @@ function OrganizerContent() {
     setTimeout(() => setAlertNotice(null), 3500);
   };
 
-  const persistVerificationStatus = (status: 'pending' | 'verified' | 'rejected') => {
-    void fetchWithSupabaseSession('/api/verification', {
+  const persistVerificationStatus = async (status: 'pending' | 'verified' | 'rejected', expediteNote?: string) => {
+    try {
+      const response = await fetchWithSupabaseSession('/api/verification', {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ organizationName: currentOrgName, status }),
-    }).then(async (response) => {
+      body: JSON.stringify({ status, expediteNote }),
+      });
       if (!response.ok) {
         const payload = await response.json().catch(() => ({}));
         showAlert(payload.error || 'Could not sync verification status across devices.');
+        return false;
       }
-    }).catch(() => showAlert('Could not sync verification status across devices.'));
+      return true;
+    } catch {
+      showAlert('Could not sync verification status across devices.');
+      return false;
+    }
   };
 
-  const handleConfirmExpedite = () => {
-    const updated = setExpeditedRequest(expediteReason);
+  const handleConfirmExpedite = async () => {
+    const success = await persistVerificationStatus('pending', expediteReason || 'Upcoming major event requiring priority verification.');
+    if (!success) return;
+    const updated = { ...verState, isExpedited: true, expediteNote: expediteReason, expeditedAt: getRealTimeDate() };
     setVerState(updated);
+    saveVerificationState(updated, currentOrgName, false);
     setExpediteModalOpen(false);
     showAlert("⚡ Verification expedited! Priority review request sent to university administrators.");
   };
 
-  const handleConfirmUpload = () => {
-    if (!uploadDocTitle.trim()) {
-      showAlert("Please enter a document title or upload a PDF file.");
+  const handleConfirmUpload = async () => {
+    if (!uploadDocumentFile) {
+      showAlert("Select the PDF file you want to upload.");
       return;
     }
     setIsUploading(true);
-    setTimeout(() => {
-      const updated = addVerificationDocument(uploadDocTitle, uploadDocType);
-      setVerState(updated);
-      persistVerificationStatus('pending');
-      setIsUploading(false);
+    try {
+      const form = new FormData();
+      form.set('file', uploadDocumentFile);
+      form.set('document_type', uploadDocType);
+      form.set('document_name', uploadDocTitle);
+      const response = await fetchWithSupabaseSession('/api/verification/documents', { method: 'POST', body: form });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(payload.error || 'Unable to upload credential.');
+      const uploaded = payload.documents?.[0];
+      if (uploaded) {
+        const updated = {
+          ...verState,
+          status: 'pending' as const,
+          documents: [
+            { id: uploaded.id, name: uploaded.name, type: uploaded.type, sizeBytes: uploaded.sizeBytes, size: `${(uploaded.sizeBytes / 1024 / 1024).toFixed(2)} MB`, uploadedAt: new Date(uploaded.uploadedAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }), verified: false, url: uploaded.url },
+            ...verState.documents,
+          ],
+        };
+        setVerState(updated);
+        saveVerificationState(updated, currentOrgName, false);
+      }
       setUploadModalOpen(false);
       setUploadDocTitle("");
-      showAlert(`✓ Uploaded "${uploadDocTitle}.pdf" successfully to your accreditation files.`);
-    }, 600);
+      setUploadDocumentFile(null);
+      showAlert(`Uploaded "${uploadDocumentFile.name}" to your verification application.`);
+    } catch (error) {
+      showAlert(error instanceof Error ? error.message : 'Unable to upload credential.');
+    } finally {
+      setIsUploading(false);
+    }
   };
 
-  const handleRemoveDoc = (id: string, name: string) => {
-    const updated = removeVerificationDocument(id);
+  const handleRemoveDoc = async (id: string, name: string) => {
+    const response = await fetchWithSupabaseSession('/api/verification/documents', {
+      method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ document_id: id }),
+    });
+    if (!response.ok) {
+      const payload = await response.json().catch(() => ({}));
+      showAlert(payload.error || 'Unable to archive document.');
+      return;
+    }
+    const updated = { ...verState, documents: verState.documents.filter((doc) => doc.id !== id) };
     setVerState(updated);
-    showAlert(`Removed "${name}" from uploaded credentials.`);
+    saveVerificationState(updated, currentOrgName, false);
+    showAlert(`Archived "${name}" from the active verification application.`);
   };
 
   const visibleEvents = activeTab === "archive"
@@ -511,24 +577,22 @@ function OrganizerContent() {
     const statusCounts = { Confirmed: 0, Pending: 0, Declined: 0 };
     const attendeeVisits = new Map<string, number>();
     let total = 0;
-    try {
-      const guestMap: Record<string, StoredGuestEntry[]> = JSON.parse(localStorage.getItem("spott_guest_lists") || "{}");
-      for (const event of events) {
-        const list = Array.isArray(guestMap[event.id]) ? guestMap[event.id] : [];
-        for (const attendee of list) {
-          const registeredAt = new Date(attendee.dateRegistered || attendee.registeredAt || "");
-          if (!Number.isFinite(registeredAt.getTime()) || registeredAt < start || registeredAt >= end) continue;
-          total += 1;
-          if (attendee.status === "Confirmed" || attendee.status === "Pending" || attendee.status === "Declined") {
-            statusCounts[attendee.status] += 1;
-          }
-          const bucket = Math.min(weeks.length - 1, Math.floor((registeredAt.getDate() - 1) / 7));
-          weeks[bucket].count += 1;
-          const attendeeKey = String(attendee.email || attendee.name || "unknown").trim().toLowerCase();
-          attendeeVisits.set(attendeeKey, (attendeeVisits.get(attendeeKey) || 0) + 1);
-        }
-      }
-    } catch {}
+    for (const registration of monthlyRegistrations) {
+      const registeredAt = new Date(registration.registration_date || "");
+      if (!Number.isFinite(registeredAt.getTime()) || registeredAt < start || registeredAt >= end) continue;
+      total += 1;
+      const normalizedStatus = String(registration.status || "").toLowerCase();
+      const displayStatus = ["confirmed", "registered", "approved"].includes(normalizedStatus)
+        ? "Confirmed"
+        : ["rejected", "declined", "cancelled"].includes(normalizedStatus)
+          ? "Declined"
+          : "Pending";
+      statusCounts[displayStatus] += 1;
+      const bucket = Math.min(weeks.length - 1, Math.floor((registeredAt.getDate() - 1) / 7));
+      weeks[bucket].count += 1;
+      const attendeeKey = String(registration.attendee_email || registration.attendee_name || registration.user_id || "unknown").trim().toLowerCase();
+      attendeeVisits.set(attendeeKey, (attendeeVisits.get(attendeeKey) || 0) + 1);
+    }
     const uniqueAttendees = attendeeVisits.size;
     const repeatAttendees = Array.from(attendeeVisits.values()).filter((count) => count > 1).length;
     const maxWeek = Math.max(...weeks.map((week) => week.count), 1);
@@ -541,7 +605,7 @@ function OrganizerContent() {
       start,
       end: new Date(end.getTime() - 1),
     };
-  }, [events, analyticsMonth]);
+  }, [monthlyRegistrations, analyticsMonth]);
 
   const monthlyEventsCreated = events.filter((event) => {
     const createdAt = event.createdAt ? new Date(event.createdAt).getTime() : NaN;
@@ -572,32 +636,31 @@ function OrganizerContent() {
   const [isCancelling, setIsCancelling] = useState(false);
   const [isSavingEdit, setIsSavingEdit] = useState(false);
 
-  const handleDuplicate = (evt: OrganizerEvent) => {
-    const dup: OrganizerEvent = {
-      ...evt,
-      id: `event-${Date.now()}`,
-      name: `${evt.name} (Copy)`,
-      status: "Draft",
-      rsvps: 0,
-      views: 0,
-    };
-    saveStoredEvent({
-      id: dup.id,
-      title: dup.name,
-      description: `Duplicate of ${evt.name}`,
-      date: `${dup.date} ${dup.time}`,
-      price: dup.price,
-      status: "draft",
-      organizer: "Metro Creative Group",
-      verified: true,
-      location: dup.location,
-      city: "Manila",
-      categories: [dup.category],
-      registrations: 0,
-      confirmedAt: null,
-    });
-    setEvents([dup, ...events]);
-    showAlert(`Duplicated "${evt.name}" as new draft.`);
+  const handleDuplicate = async (evt: OrganizerEvent) => {
+    try {
+      const response = await fetchWithSupabaseSession('/api/events', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          title: `${evt.name} (Copy)`,
+          description: `Duplicate of ${evt.name}`,
+          category: evt.category || 'Community',
+          date: evt.date,
+          time: evt.time || '14:00',
+          location: evt.location,
+          city: 'Manila',
+          price: evt.price,
+          capacity: evt.capacity || null,
+          status: 'draft',
+        }),
+      });
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok || typeof result.event_id !== 'string') throw new Error(result.error || 'Could not duplicate event.');
+      await syncEvents();
+      showAlert(`Duplicated "${evt.name}" as a database draft.`);
+    } catch (error) {
+      showAlert(error instanceof Error ? error.message : 'Could not duplicate event.');
+    }
   };
 
   const handleDelete = async (id: string, name: string) => {
@@ -609,14 +672,15 @@ function OrganizerContent() {
 
     if (!confirm(`Are you sure you want to delete "${name}"?`)) return;
 
-    deleteStoredEvent(id);
-    removeNotificationsForEvent(id, name);
-    setEvents((prev) => prev.filter((e) => e.id !== id));
-    showAlert(`Deleted "${name}".`);
-
     try {
-      await fetch(`/api/events/${id}`, { method: "DELETE" });
-    } catch {}
+      const response = await fetchWithSupabaseSession(`/api/events/${id}`, { method: "DELETE" });
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(result.error || `Could not delete "${name}".`);
+      deleteStoredEvent(id);
+      removeNotificationsForEvent(id, name);
+      setEvents((prev) => prev.filter((e) => e.id !== id));
+      showAlert(`Deleted "${name}".`);
+    } catch (error) { showAlert(error instanceof Error ? error.message : `Could not delete "${name}".`); }
   };
 
   const handleConfirmCancelEvent = async () => {
@@ -624,33 +688,8 @@ function OrganizerContent() {
     setIsCancelling(true);
     const reason = cancelReasonInput.trim() || "Event cancelled by organizer.";
 
-    const stored = getStoredEvents();
-    const target = stored.find((e) => e.id === cancellingEvent.id);
-    if (target) {
-      target.status = "cancelled";
-      target.cancelledAt = new Date().toISOString();
-      target.cancelReason = reason;
-      saveStoredEvent(target);
-    }
-
-    setEvents((prev) =>
-      prev.map((e) =>
-        e.id === cancellingEvent.id
-          ? { ...e, status: "Cancelled", cancelReason: reason, cancelledAt: new Date().toISOString() }
-          : e
-      )
-    );
-
-    addNotification({
-      type: "cancellation",
-      title: `Event Cancelled: "${cancellingEvent.name}"`,
-      message: `The event "${cancellingEvent.name}" scheduled for ${cancellingEvent.date} has been cancelled by the organizer. Reason: ${reason}`,
-      targetRole: "user",
-      link: `/events/${cancellingEvent.id}`,
-    });
-
     try {
-      await fetch(`/api/events/${cancellingEvent.id}`, {
+      const response = await fetchWithSupabaseSession(`/api/events/${cancellingEvent.id}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -658,7 +697,17 @@ function OrganizerContent() {
           cancel_reason: reason,
         }),
       });
-    } catch {}
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(result.error || 'Could not cancel event.');
+      const cancelledAt = new Date().toISOString();
+      const stored = getStoredEvents().find((e) => e.id === cancellingEvent.id);
+      if (stored) saveStoredEvent({ ...stored, status: 'cancelled', cancelled_at: cancelledAt, cancel_reason: reason });
+      setEvents((prev) => prev.map((e) => e.id === cancellingEvent.id ? { ...e, status: 'Cancelled', cancelReason: reason, cancelledAt } : e));
+    } catch (error) {
+      showAlert(error instanceof Error ? error.message : 'Could not cancel event.');
+      setIsCancelling(false);
+      return;
+    }
 
     setIsCancelling(false);
     setCancellingEvent(null);
@@ -686,7 +735,6 @@ function OrganizerContent() {
       const newDateStr = `${editingEvent.date} ${editingEvent.time}`;
       if (oldDateStr !== newDateStr) {
         changes.push(`Schedule changed to ${editingEvent.date} at ${editingEvent.time}`);
-        recomputeRemindersForEvent(editingEvent.id, newDateStr);
       }
       if (editingEvent.location.trim() !== (existing.location || "").trim()) {
         changes.push(`Venue changed to "${editingEvent.location}"`);
@@ -714,22 +762,8 @@ function OrganizerContent() {
       confirmedAt: new Date().toISOString(),
     };
 
-    saveStoredEvent(updatedEventData);
-    setEvents((prev) => prev.map((ev) => (ev.id === editingEvent.id ? editingEvent : ev)));
-
-    // If changes occurred and event is active, notify attendees with type 'update'
-    if (changes.length > 0 && editingEvent.status === "Active") {
-      addNotification({
-        type: "update",
-        title: `Event Schedule Updated: "${editingEvent.name}"`,
-        message: `The organizer updated details for "${editingEvent.name}": ${changes.join("; ")}.`,
-        targetRole: "user",
-        link: `/events/${editingEvent.id}`,
-      });
-    }
-
     try {
-      await fetch(`/api/events/${editingEvent.id}`, {
+      const response = await fetchWithSupabaseSession(`/api/events/${editingEvent.id}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -740,31 +774,45 @@ function OrganizerContent() {
           status: editingEvent.status.toLowerCase(),
         }),
       });
-    } catch {}
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(result.error || 'Could not save event changes.');
+      saveStoredEvent(updatedEventData);
+      setEvents((prev) => prev.map((ev) => (ev.id === editingEvent.id ? editingEvent : ev)));
+      if (existing && existing.date !== `${editingEvent.date} ${editingEvent.time}`) {
+        try {
+          await recomputeRemindersForEvent(editingEvent.id, `${editingEvent.date} ${editingEvent.time}`);
+        } catch {
+          showAlert('Event saved, but its reminders could not be rescheduled.');
+        }
+      }
+    } catch (error) {
+      showAlert(error instanceof Error ? error.message : 'Could not save event changes.');
+      setIsSavingEdit(false);
+      return;
+    }
 
     setIsSavingEdit(false);
     setEditingEvent(null);
     showAlert(`✓ Saved details for "${editingEvent.name}".`);
   };
 
-  const handleToggleStatus = (id: string) => {
-    setEvents(
-      events.map((e) => {
-        if (e.id === id) {
-          const newStatus = e.status === "Active" ? "Draft" : "Active";
-          showAlert(`Event "${e.name}" is now ${newStatus}.`);
-          addNotification({
-            type: "update",
-            title: `Event Status: "${e.name}" is now ${newStatus}`,
-            message: `Metro Creative Group set "${e.name}" listing to ${newStatus}.`,
-            targetRole: "user",
-            link: "/",
-          });
-          return { ...e, status: newStatus };
-        }
-        return e;
-      })
-    );
+  const handleToggleStatus = async (id: string) => {
+    const event = events.find((item) => item.id === id);
+    if (!event) return;
+    const newStatus = event.status === "Active" ? "Draft" : "Active";
+    try {
+      const response = await fetchWithSupabaseSession(`/api/events/${id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status: newStatus.toLowerCase() }),
+      });
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(result.error || 'Could not update event status.');
+      const stored = getStoredEvents().find((item) => item.id === id);
+      if (stored) saveStoredEvent({ ...stored, status: newStatus.toLowerCase() });
+      setEvents((current) => current.map((item) => item.id === id ? { ...item, status: newStatus } : item));
+      showAlert(`Event "${event.name}" is now ${newStatus}.`);
+    } catch (error) { showAlert(error instanceof Error ? error.message : 'Could not update event status.'); }
   };
 
   return (
@@ -982,11 +1030,13 @@ function OrganizerContent() {
               <div className="shrink-0 flex items-center gap-2">
                 {verState.status === "rejected" ? (
                   <button
-                    onClick={() => {
-                      const updated = setApprovalStatus("pending");
-                      setVerState(updated);
-                      persistVerificationStatus('pending');
-                      setUploadModalOpen(true);
+                    onClick={async () => {
+                      if (await persistVerificationStatus('pending')) {
+                        const updated = { ...verState, status: 'pending' as const };
+                        setVerState(updated);
+                        saveVerificationState(updated, currentOrgName, false);
+                        setUploadModalOpen(true);
+                      }
                     }}
                     className="px-4 py-2 rounded-xl bg-[#ff6b35] text-white text-xs font-bold hover:bg-[#e0531f] transition-all cursor-pointer flex items-center gap-1.5 shadow-xs"
                   >
@@ -1590,11 +1640,13 @@ function OrganizerContent() {
                 </div>
                 <button
                   type="button"
-                  onClick={() => {
-                    const updated = setApprovalStatus("pending");
-                    setVerState(updated);
-                    persistVerificationStatus('pending');
-                    setUploadModalOpen(true);
+                  onClick={async () => {
+                    if (await persistVerificationStatus('pending')) {
+                      const updated = { ...verState, status: 'pending' as const };
+                      setVerState(updated);
+                      saveVerificationState(updated, currentOrgName, false);
+                      setUploadModalOpen(true);
+                    }
                   }}
                   className="px-3.5 py-1.5 bg-[#ff6b35] hover:bg-[#e0531f] text-white text-xs font-bold rounded-lg transition-colors cursor-pointer shrink-0 shadow-2xs flex items-center gap-1"
                 >
@@ -1649,7 +1701,7 @@ function OrganizerContent() {
                         Uploaded
                       </span>
                       <button
-                        onClick={() => setPreviewDocName(doc.name)}
+                        onClick={() => { setPreviewDocName(doc.name); setPreviewDocUrl(doc.url || null); }}
                         className="px-3 py-1 bg-white border border-[#e6e1d8] hover:border-[#ff6b35] hover:text-[#ff6b35] rounded-lg text-xs font-bold transition-colors cursor-pointer flex items-center gap-1 shadow-2xs"
                       >
                         <Eye className="w-3.5 h-3.5 text-[#ff6b35]" />
@@ -1749,6 +1801,7 @@ function OrganizerContent() {
                           className="hidden"
                           onChange={(e) => {
                             if (e.target.files?.[0]) handleAvatarFile(e.target.files[0]);
+                            e.currentTarget.value = "";
                           }}
                         />
                       </label>
@@ -1756,7 +1809,11 @@ function OrganizerContent() {
                       {profileData.avatarUrl && (
                         <button
                           type="button"
-                          onClick={() => setProfileData((prev) => ({ ...prev, avatarUrl: "" }))}
+                          onClick={() => {
+                            setProfileData((prev) => ({ ...prev, avatarUrl: "" }));
+                            setProfileAvatarFile(null);
+                            setProfileAvatarRemoved(true);
+                          }}
                           className="px-3 py-2 rounded-xl border border-rose-200 text-rose-600 hover:bg-rose-50 text-xs font-bold transition-colors cursor-pointer"
                         >
                           Remove Photo
@@ -2124,7 +2181,7 @@ function OrganizerContent() {
                   className="w-full border border-[#e6e1d8] rounded-xl px-3.5 py-2.5 text-xs focus:outline-none focus:border-[#ff6b35] text-[#171717] font-mono"
                 />
                 <p className="text-[10px] text-[#888888] mt-1">
-                  Format: .pdf documents under 15MB recommended.
+                  Choose a PDF file under 15 MB. It will be stored privately.
                 </p>
               </div>
 
@@ -2137,6 +2194,7 @@ function OrganizerContent() {
                   onChange={(e) => {
                     const file = e.target.files?.[0];
                     if (file) {
+                      setUploadDocumentFile(file);
                       setUploadDocTitle(file.name.replace(/\.[^/.]+$/, ""));
                     }
                   }}
@@ -2588,8 +2646,9 @@ function OrganizerContent() {
       {previewDocName && (
         <PdfViewerModal
           documentName={previewDocName}
+          documentUrl={previewDocUrl}
           organizerName="Metro Creative Group"
-          onClose={() => setPreviewDocName(null)}
+          onClose={() => { setPreviewDocName(null); setPreviewDocUrl(null); }}
         />
       )}
     </div>

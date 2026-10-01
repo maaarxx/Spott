@@ -47,18 +47,11 @@ CREATE INDEX IF NOT EXISTS idx_listing_views_listing
   ON public.listing_views (listing_id);
 
 ALTER TABLE public.listing_views ENABLE ROW LEVEL SECURITY;
-GRANT SELECT, INSERT ON TABLE public.listing_views TO anon, authenticated;
+REVOKE ALL ON TABLE public.listing_views FROM PUBLIC, anon, authenticated;
 GRANT ALL ON TABLE public.listing_views TO service_role;
 
 DROP POLICY IF EXISTS "Allow public insert to listing_views" ON public.listing_views;
-CREATE POLICY "Allow public insert to listing_views"
-  ON public.listing_views FOR INSERT TO anon, authenticated
-  WITH CHECK (true);
-
 DROP POLICY IF EXISTS "Allow public select from listing_views" ON public.listing_views;
-CREATE POLICY "Allow public select from listing_views"
-  ON public.listing_views FOR SELECT TO anon, authenticated
-  USING (true);
 
 CREATE TABLE IF NOT EXISTS public.event_reminders (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -78,21 +71,9 @@ CREATE INDEX IF NOT EXISTS idx_event_reminders_user_event
   ON public.event_reminders (user_id, event_id);
 
 ALTER TABLE public.event_reminders ENABLE ROW LEVEL SECURITY;
-GRANT SELECT, INSERT, UPDATE ON TABLE public.event_reminders TO anon, authenticated;
+REVOKE ALL ON TABLE public.event_reminders FROM PUBLIC, anon, authenticated;
 GRANT ALL ON TABLE public.event_reminders TO service_role;
 
 DROP POLICY IF EXISTS "Allow public insert to event_reminders" ON public.event_reminders;
-CREATE POLICY "Allow public insert to event_reminders"
-  ON public.event_reminders FOR INSERT TO anon, authenticated
-  WITH CHECK (true);
-
 DROP POLICY IF EXISTS "Allow public select from event_reminders" ON public.event_reminders;
-CREATE POLICY "Allow public select from event_reminders"
-  ON public.event_reminders FOR SELECT TO anon, authenticated
-  USING (true);
-
 DROP POLICY IF EXISTS "Allow public update to event_reminders" ON public.event_reminders;
-CREATE POLICY "Allow public update to event_reminders"
-  ON public.event_reminders FOR UPDATE TO anon, authenticated
-  USING (true)
-  WITH CHECK (true);

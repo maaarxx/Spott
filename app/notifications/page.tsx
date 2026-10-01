@@ -3,21 +3,8 @@
 import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { Bell, RefreshCw, CheckCircle2, ArrowRight, Trash2, X, FileEdit, XCircle, Megaphone } from "lucide-react";
-import {
-  getNotifications,
-  markAsRead,
-  markAllAsRead,
-  deleteNotification,
-  clearAllNotifications,
-  cleanupGhostNotifications,
-  syncNotificationsForEvents,
-  NotificationItem,
-  NotificationType,
-} from "@/lib/notifications-store";
-import { getStoredEvents } from "@/lib/events-store";
-import { getCurrentUser } from "@/lib/auth-store";
-import type { EventData } from "@/components/EventCard";
-import { processDueReminders } from "@/lib/reminders-store";
+import { NotificationItem, NotificationType } from "@/lib/notifications-store";
+import { fetchWithSupabaseSession } from "@/lib/audit-log-client";
 
 export default function NotificationsPage() {
   const router = useRouter();
@@ -25,43 +12,22 @@ export default function NotificationsPage() {
   const [notifications, setNotifications] = useState<NotificationItem[]>([]);
   const [loading, setLoading] = useState(false);
 
-  // Silently prune any notifications pointing to deleted/non-existent events in background
-  const silentCleanupOrphans = async () => {
-    const local = getStoredEvents();
-    const validIds = new Set(local.map((e) => e.id));
+  const loadNotifs = async () => {
+    setLoading(true);
     try {
-      const res = await fetch("/api/events");
-      if (res.ok) {
-        const apiData = await res.json();
-        if (Array.isArray(apiData)) {
-          (apiData as EventData[]).forEach((event) => validIds.add(event.id));
-          syncNotificationsForEvents(apiData);
-        }
-      }
-    } catch {}
-    cleanupGhostNotifications(Array.from(validIds));
-    loadNotifs();
-  };
-
-  const loadNotifs = () => {
-    processDueReminders();
-    const user = getCurrentUser();
-    const role = user?.role || "user";
-    const data = getNotifications(role, user?.email);
-    setNotifications(data);
+      const response = await fetchWithSupabaseSession('/api/notifications');
+      const body = await response.json().catch(() => ({}));
+      setNotifications(response.ok && Array.isArray(body.notifications) ? body.notifications : []);
+    } catch {
+      setNotifications([]);
+    } finally {
+      setLoading(false);
+    }
   };
 
   useEffect(() => {
-    loadNotifs();
-    silentCleanupOrphans();
-
-    // Check due reminders every 30 seconds
-    const interval = setInterval(() => {
-      const fired = processDueReminders();
-      if (fired > 0) {
-        loadNotifs();
-      }
-    }, 30000);
+    const initialLoad = window.setTimeout(() => { void loadNotifs(); }, 0);
+    const interval = setInterval(() => { void loadNotifs(); }, 30000);
 
     const handleUpdate = () => {
       loadNotifs();
@@ -72,6 +38,7 @@ export default function NotificationsPage() {
     window.addEventListener("spott_auth_changed", handleUpdate);
 
     return () => {
+      window.clearTimeout(initialLoad);
       clearInterval(interval);
       window.removeEventListener("spott_notifications_updated", handleUpdate);
       window.removeEventListener("spott_reminders_updated", handleUpdate);
@@ -79,9 +46,11 @@ export default function NotificationsPage() {
     };
   }, []);
 
-  const handleItemClick = (notification: NotificationItem) => {
-    const user = getCurrentUser();
-    markAsRead(notification.id, user?.email);
+  const handleItemClick = async (notification: NotificationItem) => {
+    if (!notification.isRead) {
+      const response = await fetchWithSupabaseSession(`/api/notifications/${encodeURIComponent(notification.id)}`, { method: 'PATCH' });
+      if (response.ok) setNotifications((items) => items.map((item) => item.id === notification.id ? { ...item, isRead: true } : item));
+    }
     if (notification.link) {
       router.push(notification.link);
     }
@@ -142,8 +111,8 @@ export default function NotificationsPage() {
         <div className="flex items-center gap-2 flex-wrap">
           <button
             onClick={() => {
-              const user = getCurrentUser();
-              markAllAsRead(user?.role || "user", user?.email);
+              void fetchWithSupabaseSession('/api/notifications', { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ markAllRead: true }) })
+                .then((response) => { if (response.ok) setNotifications((items) => items.map((item) => ({ ...item, isRead: true }))); });
             }}
             className="text-xs font-bold text-ink hover:text-accent border border-line hover:border-accent/40 bg-white px-3.5 py-1.5 rounded-xl transition-all cursor-pointer shadow-xs"
           >
@@ -152,8 +121,8 @@ export default function NotificationsPage() {
           <button
             onClick={() => {
               if (confirm("Are you sure you want to clear all notifications?")) {
-                clearAllNotifications();
-                setNotifications([]);
+                void fetchWithSupabaseSession('/api/notifications', { method: 'DELETE' })
+                  .then((response) => { if (response.ok) setNotifications([]); });
               }
             }}
             className="text-xs font-bold text-rose-600 hover:bg-rose-50 border border-rose-200 bg-white px-3.5 py-1.5 rounded-xl transition-all cursor-pointer shadow-xs inline-flex items-center gap-1"
@@ -289,7 +258,8 @@ export default function NotificationsPage() {
                     type="button"
                     onClick={(e) => {
                       e.stopPropagation();
-                      deleteNotification(notification.id);
+                      void fetchWithSupabaseSession(`/api/notifications/${encodeURIComponent(notification.id)}`, { method: 'DELETE' })
+                        .then((response) => { if (response.ok) setNotifications((items) => items.filter((item) => item.id !== notification.id)); });
                     }}
                     title="Delete notification"
                     className="p-1 rounded-lg text-gray-400 hover:text-rose-600 hover:bg-rose-50 transition-colors cursor-pointer"

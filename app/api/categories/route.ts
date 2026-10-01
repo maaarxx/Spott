@@ -1,10 +1,10 @@
 import { NextResponse } from 'next/server';
-import { createClient } from '@/lib/supabase-server';
+import { createAdminClient } from '@/lib/supabase-server';
 import { errorMessage } from '@/lib/error-message';
 
 export async function GET() {
   try {
-    const supabase = await createClient();
+    const supabase = createAdminClient();
 
     const { data, error } = await supabase
       .from('categories')
@@ -15,14 +15,10 @@ export async function GET() {
 
     return NextResponse.json({ success: true, categories: data });
   } catch (err: unknown) {
-    console.warn("Categories query failed, using fallback:", errorMessage(err));
-    const defaultCategories = [
-      { category_id: "1", category_name: "Music" },
-      { category_id: "2", category_name: "Food" },
-      { category_id: "3", category_name: "Workshop" },
-      { category_id: "4", category_name: "Sports" },
-      { category_id: "5", category_name: "Community" }
-    ];
-    return NextResponse.json({ success: true, categories: defaultCategories });
+    console.error("Failed to load categories from Supabase:", errorMessage(err));
+    return NextResponse.json(
+      { success: false, error: "Could not load categories from the database." },
+      { status: 503 }
+    );
   }
 }

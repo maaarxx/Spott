@@ -20,20 +20,17 @@ import {
 } from "lucide-react";
 import EventCard, { type EventData } from "@/components/EventCard";
 import { getStoredEvents, subscribeToEvents, saveStoredEvents } from "@/lib/events-store";
-import { DEFAULT_EVENTS } from "@/lib/default-events";
-import { getVerificationState } from "@/lib/verification-store";
 import {
   getOrganizerProfile,
+  loadOrganizerProfileFromDatabase,
   subscribeToOrganizerProfile,
   OrganizerProfile,
 } from "@/lib/organizer-store";
 import {
   getCurrentUser,
-  getUserSavedEvents,
-  saveUserSavedEvents,
   SpottAccount,
 } from "@/lib/auth-store";
-import { parseGuestLists } from "@/lib/guest-list";
+import { loadSavedEventIds, toggleSavedEvent } from "@/lib/saved-events-client";
 
 export default function OrganizerProfilePage({
   params,
@@ -56,12 +53,16 @@ export default function OrganizerProfilePage({
   );
 
   useEffect(() => {
+    let active = true;
     const syncProfile = () => {
       setOrganizerProfile(getOrganizerProfile(organizerName));
+      void loadOrganizerProfileFromDatabase(organizerName)
+        .then((profile) => { if (active) setOrganizerProfile(profile); })
+        .catch(() => {});
     };
     syncProfile();
     const unsub = subscribeToOrganizerProfile(syncProfile);
-    return () => unsub();
+    return () => { active = false; unsub(); };
   }, [organizerName]);
 
   const canEditProfile = useMemo(() => {
@@ -79,7 +80,7 @@ export default function OrganizerProfilePage({
       const u = getCurrentUser();
       setCurrentUser(u);
       if (u) {
-        setSavedIds(getUserSavedEvents(u.email));
+        void loadSavedEventIds().then(setSavedIds).catch(() => setSavedIds([]));
       } else {
         setSavedIds([]);
       }
@@ -92,39 +93,18 @@ export default function OrganizerProfilePage({
   // Sync Events
   useEffect(() => {
     const loadEvents = async () => {
-      const stored = getStoredEvents();
-      const combined = [...stored, ...DEFAULT_EVENTS];
-      // Deduplicate by ID
-      const seen = new Set<string>();
-      const deduped: EventData[] = [];
-      for (const ev of combined) {
-        if (!seen.has(ev.id)) {
-          seen.add(ev.id);
-          deduped.push(ev);
-        }
-      }
-      setAllEvents(deduped);
-
       try {
         const res = await fetch("/api/events");
         if (res.ok) {
           const apiData = await res.json();
-          if (Array.isArray(apiData) && apiData.length > 0) {
+          if (Array.isArray(apiData)) {
             saveStoredEvents(apiData);
-            const freshStored = getStoredEvents();
-            const freshCombined = [...freshStored, ...DEFAULT_EVENTS, ...apiData];
-            const s = new Set<string>();
-            const d: EventData[] = [];
-            for (const ev of freshCombined) {
-              if (!s.has(ev.id)) {
-                s.add(ev.id);
-                d.push(ev);
-              }
-            }
-            setAllEvents(d);
+            setAllEvents(apiData);
           }
+        } else {
+          setAllEvents([]);
         }
-      } catch {}
+      } catch { setAllEvents([]); }
     };
 
     loadEvents();
@@ -155,20 +135,7 @@ export default function OrganizerProfilePage({
   }, [allEvents, organizerName]);
 
   // Verification status check
-  const isVerified = useMemo(() => {
-    const target = organizerName.toLowerCase().trim();
-    const isMetro =
-      target.includes("metro creative") ||
-      target.includes("mcg") ||
-      target === "metro creative group";
-
-    // 1. Direct check in verification store
-    const ver = getVerificationState(organizerName);
-    if (ver && ver.status === "approved") return true;
-
-    // 2. Metro Creative Group default verified status
-    return isMetro;
-  }, [organizerName]);
+  const isVerified = useMemo(() => organizerEvents.some((event) => Boolean(event.verified)), [organizerEvents]);
 
   // Accurate attendee calculations
   const stats = useMemo(() => {
@@ -177,15 +144,9 @@ export default function OrganizerProfilePage({
     let pastCount = 0;
     const now = new Date();
 
-    // Check guest list from localStorage
-    const guestMap = typeof window !== "undefined"
-      ? parseGuestLists(localStorage.getItem("spott_guest_lists"))
-      : {};
-
     organizerEvents.forEach((ev) => {
-      const guests = Array.isArray(guestMap[ev.id]) ? guestMap[ev.id].length : 0;
       const baseRegs = ev.registrations || 0;
-      totalAttendees += Math.max(guests, baseRegs);
+      totalAttendees += baseRegs;
 
       try {
         const evDate = new Date(ev.date.replace(" ", "T"));
@@ -240,17 +201,12 @@ export default function OrganizerProfilePage({
   }, [organizerEvents, activeTab, searchQuery]);
 
   // Toggle Save handler for event cards
-  const handleToggleSave = (eventId: string) => {
+  const handleToggleSave = async (eventId: string) => {
     if (!currentUser) return;
-    const current = getUserSavedEvents(currentUser.email);
-    let updated: string[];
-    if (current.includes(eventId)) {
-      updated = current.filter((id) => id !== eventId);
-    } else {
-      updated = [...current, eventId];
-    }
-    saveUserSavedEvents(updated, currentUser.email);
-    setSavedIds(updated);
+    try {
+      const saved = await toggleSavedEvent(eventId);
+      setSavedIds((ids) => saved ? [...new Set([...ids, eventId])] : ids.filter((id) => id !== eventId));
+    } catch (error) { console.error(error); }
   };
 
   // Copy share profile link

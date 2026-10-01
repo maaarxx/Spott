@@ -2,22 +2,6 @@ import { NextResponse } from 'next/server';
 import { createAdminClient, getAuthenticatedRole } from '@/lib/supabase-server';
 import { errorMessage } from '@/lib/error-message';
 
-// Server-side in-memory cache to support 24-hr dedupe resilience and fast stats
-interface StoredViewRecord {
-  id: string;
-  listing_id: string;
-  visitor_id: string;
-  viewed_at: number; // timestamp ms
-}
-
-declare global {
-  var __spott_server_views: StoredViewRecord[] | undefined;
-}
-
-if (!globalThis.__spott_server_views) {
-  globalThis.__spott_server_views = [];
-}
-
 const BOT_PATTERNS =
   /bot|spider|crawl|slurp|googlebot|bingbot|yandex|baiduspider|duckduckbot|facebookexternalhit|whatsapp|twitterbot|pinterest|discordbot|slackbot|curl|wget|python|postman|insomnia|headless/i;
 
@@ -54,31 +38,21 @@ export async function POST(request: Request) {
     const cookieMatch = cookiesHeader.match(/spott_visitor_id=([^;]+)/);
     const cookieVisitorId = cookieMatch ? decodeURIComponent(cookieMatch[1]) : null;
 
-    const account = await getAuthenticatedRole();
+    const account = await getAuthenticatedRole(request);
     const effectiveVisitorId = account?.userId || cookieVisitorId || 'anon-visitor';
 
     // 2. Listing Owner Exclusion
     // Fetch event owner to verify
-    let listingOwnerId = '';
-
     const supabase = createAdminClient();
-    try {
-      const { data: eventData } = await supabase
-        .from('events')
-        .select(`
-          event_id,
-          organizer_id,
-          organizers (user_id)
-        `)
-        .eq('event_id', listing_id)
-        .maybeSingle();
-
-      if (eventData) {
-        listingOwnerId = eventData.organizer_id || '';
-        const org = Array.isArray(eventData.organizers) ? eventData.organizers[0] : eventData.organizers;
-        listingOwnerId = org?.user_id || '';
-      }
-    } catch {}
+    const { data: eventData, error: eventError } = await supabase
+      .from('events')
+      .select('event_id, organizers (user_id)')
+      .eq('event_id', listing_id)
+      .maybeSingle();
+    if (eventError) return NextResponse.json({ error: 'Unable to verify event.' }, { status: 500 });
+    if (!eventData) return NextResponse.json({ error: 'Event not found.' }, { status: 404 });
+    const organizerRows = Array.isArray(eventData.organizers) ? eventData.organizers : [eventData.organizers];
+    const listingOwnerId = organizerRows.find(Boolean)?.user_id || '';
 
     // Check if the visitor is the owner
     if (account?.userId && listingOwnerId && account.userId === listingOwnerId) {
@@ -92,47 +66,22 @@ export async function POST(request: Request) {
     const twentyFourHoursAgoMs = Date.now() - 24 * 60 * 60 * 1000;
     const twentyFourHoursAgoIso = new Date(twentyFourHoursAgoMs).toISOString();
 
-    // Check in-memory store first
-    const memoryRecord = globalThis.__spott_server_views?.find(
-      (v) =>
-        v.listing_id === listing_id &&
-        v.visitor_id === effectiveVisitorId &&
-        v.viewed_at >= twentyFourHoursAgoMs
-    );
+    const { data: recentViews, error: recentViewsError } = await supabase
+      .from('listing_views')
+      .select('id, viewed_at')
+      .eq('listing_id', listing_id)
+      .eq('visitor_id', effectiveVisitorId)
+      .gte('viewed_at', twentyFourHoursAgoIso)
+      .order('viewed_at', { ascending: false })
+      .limit(1);
+    if (recentViewsError) return NextResponse.json({ error: 'Unable to check recent views.' }, { status: 500 });
 
-    if (memoryRecord) {
+    if (recentViews?.length) {
       return NextResponse.json(
         {
           counted: false,
           reason: 'already_viewed_within_24h',
-          last_viewed_at: new Date(memoryRecord.viewed_at).toISOString(),
-        },
-        { status: 200 }
-      );
-    }
-
-    // Check Supabase listing_views table
-    let dbAlreadyViewed = false;
-    try {
-      const { data: recentViews, error } = await supabase
-        .from('listing_views')
-        .select('id, viewed_at')
-        .eq('listing_id', listing_id)
-        .eq('visitor_id', effectiveVisitorId)
-        .gte('viewed_at', twentyFourHoursAgoIso)
-        .order('viewed_at', { ascending: false })
-        .limit(1);
-
-      if (!error && recentViews && recentViews.length > 0) {
-        dbAlreadyViewed = true;
-      }
-    } catch {}
-
-    if (dbAlreadyViewed) {
-      return NextResponse.json(
-        {
-          counted: false,
-          reason: 'already_viewed_within_24h',
+          last_viewed_at: recentViews[0].viewed_at,
         },
         { status: 200 }
       );
@@ -140,29 +89,12 @@ export async function POST(request: Request) {
 
     // 4. Record new view
     const nowIso = new Date().toISOString();
-    const newViewRecord: StoredViewRecord = {
-      id: `view-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
+    const { error: insertError } = await supabase.from('listing_views').insert({
       listing_id,
       visitor_id: effectiveVisitorId,
-      viewed_at: Date.now(),
-    };
-
-    // Save in memory
-    globalThis.__spott_server_views = [
-      newViewRecord,
-      ...(globalThis.__spott_server_views || []).slice(0, 5000), // retain last 5000
-    ];
-
-    // Persist to Supabase listing_views if table exists
-    try {
-      await supabase.from('listing_views').insert([
-        {
-          listing_id,
-          visitor_id: effectiveVisitorId,
-          viewed_at: nowIso,
-        },
-      ]);
-    } catch {}
+      viewed_at: nowIso,
+    });
+    if (insertError) return NextResponse.json({ error: 'Unable to record view.' }, { status: 500 });
 
     return NextResponse.json(
       {
@@ -184,7 +116,7 @@ export async function POST(request: Request) {
 
 export async function GET(request: Request) {
   try {
-    const account = await getAuthenticatedRole();
+    const account = await getAuthenticatedRole(request);
     if (!account) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     const { searchParams } = new URL(request.url);
     const listingIdParam = searchParams.get('listing_id');
@@ -218,37 +150,17 @@ export async function GET(request: Request) {
     const viewsMap: Record<string, number> = {};
     const uniqueVisitorsMap: Record<string, Set<string>> = {};
 
-    // 1. Check database views
-    try {
-      let query = supabase
-        .from('listing_views')
-        .select('listing_id, visitor_id');
+    let query = supabase.from('listing_views').select('listing_id, visitor_id');
+    if (account.role === 'organizer' || allowedListingIds.size > 0) {
+      query = query.in('listing_id', Array.from(allowedListingIds));
+    }
 
-      if (account.role === 'organizer' || allowedListingIds.size > 0) {
-        query = query.in('listing_id', Array.from(allowedListingIds));
-      }
-
-      const { data: dbViews, error } = await query;
-      if (!error && Array.isArray(dbViews)) {
-        dbViews.forEach((row: { listing_id: string; visitor_id?: string | null }) => {
-          viewsMap[row.listing_id] = (viewsMap[row.listing_id] || 0) + 1;
-          if (!uniqueVisitorsMap[row.listing_id]) {
-            uniqueVisitorsMap[row.listing_id] = new Set();
-          }
-          if (row.visitor_id) uniqueVisitorsMap[row.listing_id].add(row.visitor_id);
-        });
-      }
-    } catch {}
-
-    // 2. Merge in-memory server views
-    (globalThis.__spott_server_views || []).forEach((row) => {
-      if (account.role === 'admin' && allowedListingIds.size === 0 || allowedListingIds.has(row.listing_id)) {
-        viewsMap[row.listing_id] = (viewsMap[row.listing_id] || 0) + 1;
-        if (!uniqueVisitorsMap[row.listing_id]) {
-          uniqueVisitorsMap[row.listing_id] = new Set();
-        }
-        uniqueVisitorsMap[row.listing_id].add(row.visitor_id);
-      }
+    const { data: dbViews, error: viewsError } = await query;
+    if (viewsError) return NextResponse.json({ error: 'Unable to load view statistics.' }, { status: 500 });
+    (dbViews || []).forEach((row: { listing_id: string; visitor_id?: string | null }) => {
+      viewsMap[row.listing_id] = (viewsMap[row.listing_id] || 0) + 1;
+      if (!uniqueVisitorsMap[row.listing_id]) uniqueVisitorsMap[row.listing_id] = new Set();
+      if (row.visitor_id) uniqueVisitorsMap[row.listing_id].add(row.visitor_id);
     });
 
     // 3. Format response

@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { createClient, getAuthenticatedRole } from '@/lib/supabase-server';
+import { createAdminClient, getAuthenticatedRole } from '@/lib/supabase-server';
 
 export async function POST(
   request: Request,
@@ -7,13 +7,14 @@ export async function POST(
 ) {
   try {
     const { id } = await params;
-    const account = await getAuthenticatedRole();
+    const account = await getAuthenticatedRole(request);
     if (!account) return NextResponse.json({ success: false, message: 'Sign in to submit a report.' }, { status: 401 });
-    const supabase = await createClient();
+    const supabase = createAdminClient();
     const body = await request.json();
-    const reason = (body.reason || '').trim();
+    const reason = typeof body.reason === 'string' ? body.reason.trim() : '';
+    const details = typeof body.details === 'string' ? body.details.trim() : '';
 
-    if (!reason || reason.length < 5) {
+    if (!details || details.length < 5) {
       return NextResponse.json(
         { success: false, message: 'Event and report reason are required (min 5 characters).' },
         { status: 400 }
@@ -22,7 +23,7 @@ export async function POST(
 
     const { error } = await supabase
       .from('reports')
-      .insert([{ event_id: id, reported_by: account.userId, reason }]);
+      .insert([{ event_id: id, reported_by: account.userId, reason: reason || details, details }]);
 
     if (error) throw error;
 

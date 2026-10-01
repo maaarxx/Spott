@@ -21,6 +21,7 @@ import {
 } from "lucide-react";
 import { logout, getCurrentUser, SpottAccount } from "@/lib/auth-store";
 import { useVerificationState } from "@/lib/verification-store";
+import { fetchWithSupabaseSession } from "@/lib/audit-log-client";
 
 interface NavItem {
   id: string;
@@ -96,18 +97,53 @@ function OrganizerNavContent({ children }: { children: React.ReactNode }) {
   const verState = useVerificationState();
 
   useEffect(() => {
-    const syncAuth = () => {
-      const user = getCurrentUser();
-      setCurrentUser2(user);
-      const allowed = user?.role === "organizer";
-      setAuthorized(allowed);
-      if (!allowed) router.replace("/login?redirect=%2Forganizer");
+    let active = true;
+    let redirecting = false;
+    const syncAuth = async () => {
+      if (redirecting) return;
+      const cachedUser = getCurrentUser();
+      // Local demo credentials are intentionally unavailable in production.
+      if (typeof window !== "undefined" && ["localhost", "127.0.0.1"].includes(window.location.hostname) && cachedUser?.role === "organizer") {
+        setCurrentUser2(cachedUser);
+        setAuthorized(true);
+        return;
+      }
+
+      setAuthorized(false);
+      try {
+        const response = await fetchWithSupabaseSession("/api/account", { cache: "no-store" });
+        const result = await response.json();
+        if (!active) return;
+        if (!response.ok || result.account?.role !== "organizer" || result.account?.organizerStatus !== "approved") {
+          redirecting = true;
+          setCurrentUser2(null);
+          await logout();
+          if (active) router.replace("/login?redirect=%2Forganizer");
+          return;
+        }
+
+        setCurrentUser2({
+          email: result.account.email,
+          name: result.account.name,
+          role: "organizer",
+          organization: result.account.organization || result.account.name,
+          destination: "/organizer",
+        });
+        setAuthorized(true);
+      } catch {
+        if (!active) return;
+        redirecting = true;
+        setCurrentUser2(null);
+        await logout();
+        if (active) router.replace("/login?redirect=%2Forganizer");
+      }
     };
-    syncAuth();
+    void syncAuth();
     const onAuthChange = () => syncAuth();
     window.addEventListener("spott_auth_changed", onAuthChange);
 
     return () => {
+      active = false;
       window.removeEventListener("spott_auth_changed", onAuthChange);
     };
   }, [router]);

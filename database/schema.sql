@@ -1,23 +1,19 @@
--- Enable UUID extension
+-- Fresh-database reference schema only. For an existing Supabase project,
+-- use additive files in supabase/migrations/; never apply this file to an
+-- existing database because its CREATE TABLE statements assume a clean DB.
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
-
--- Drop existing tables to recreate
-DROP TABLE IF EXISTS public.reports CASCADE;
-DROP TABLE IF EXISTS public.notifications CASCADE;
-DROP TABLE IF EXISTS public.saved_events CASCADE;
-DROP TABLE IF EXISTS public.user_interests CASCADE;
-DROP TABLE IF EXISTS public.registrations CASCADE;
-DROP TABLE IF EXISTS public.event_category CASCADE;
-DROP TABLE IF EXISTS public.events CASCADE;
-DROP TABLE IF EXISTS public.categories CASCADE;
-DROP TABLE IF EXISTS public.locations CASCADE;
-DROP TABLE IF EXISTS public.organizers CASCADE;
-DROP TABLE IF EXISTS public.users CASCADE;
 
 -- 1. users
 CREATE TABLE public.users (
   user_id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-  name VARCHAR(100) NOT NULL,
+  name VARCHAR(200) NOT NULL,
+  first_name VARCHAR(100),
+  middle_initial VARCHAR(10),
+  last_name VARCHAR(150),
+  display_name VARCHAR(120),
+  phone VARCHAR(30),
+  address TEXT,
+  bio VARCHAR(300),
   email VARCHAR(150) UNIQUE NOT NULL,
   auth_provider VARCHAR(30) NOT NULL DEFAULT 'local',
   role VARCHAR(20) DEFAULT 'user',
@@ -31,8 +27,34 @@ CREATE TABLE public.organizers (
   user_id UUID NOT NULL REFERENCES public.users(user_id) ON DELETE CASCADE,
   organization_name VARCHAR(150) NOT NULL,
   description TEXT,
-  verification_status VARCHAR(20) DEFAULT 'unverified'
+  verification_status VARCHAR(20) DEFAULT 'unverified',
+  expedite_note TEXT,
+  expedited_at TIMESTAMP WITH TIME ZONE,
+  decided_at TIMESTAMP WITH TIME ZONE,
+  decision_reason TEXT,
+  expires_at TIMESTAMP WITH TIME ZONE,
+  avatar_url TEXT,
+  address TEXT,
+  public_email VARCHAR(254),
+  website TEXT,
+  category VARCHAR(100)
 );
+
+CREATE TABLE public.organizer_verification_documents (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  organizer_id UUID NOT NULL REFERENCES public.organizers(organizer_id) ON DELETE CASCADE,
+  uploaded_by UUID REFERENCES public.users(user_id) ON DELETE SET NULL,
+  file_path TEXT NOT NULL UNIQUE,
+  file_name VARCHAR(255) NOT NULL,
+  document_type VARCHAR(100) NOT NULL,
+  file_size BIGINT NOT NULL CHECK (file_size > 0),
+  content_type VARCHAR(100) NOT NULL DEFAULT 'application/pdf',
+  uploaded_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now(),
+  archived_at TIMESTAMP WITH TIME ZONE
+);
+CREATE INDEX organizer_verification_documents_org_idx
+  ON public.organizer_verification_documents (organizer_id, uploaded_at DESC)
+  WHERE archived_at IS NULL;
 
 -- 3. locations
 CREATE TABLE public.locations (
@@ -86,6 +108,7 @@ CREATE TABLE public.registrations (
   event_id UUID NOT NULL REFERENCES public.events(event_id) ON DELETE CASCADE,
   registration_date TIMESTAMP DEFAULT now(),
   status VARCHAR(20) DEFAULT 'registered',
+  checked_in_at TIMESTAMP WITH TIME ZONE,
   UNIQUE(user_id, event_id)
 );
 
@@ -110,8 +133,11 @@ CREATE TABLE public.reports (
   event_id UUID NOT NULL REFERENCES public.events(event_id) ON DELETE CASCADE,
   reported_by UUID NOT NULL REFERENCES public.users(user_id) ON DELETE CASCADE,
   reason TEXT,
+  details TEXT,
   status VARCHAR(20) DEFAULT 'open',
-  created_at TIMESTAMP DEFAULT now()
+  created_at TIMESTAMP DEFAULT now(),
+  resolution_note TEXT,
+  decided_at TIMESTAMP WITH TIME ZONE
 );
 
 -- 11. notifications
@@ -142,8 +168,10 @@ CREATE TABLE public.event_reminders (
   id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
   user_id VARCHAR(255) NOT NULL,
   event_id VARCHAR(255) NOT NULL,
+  event_title TEXT,
   remind_at TIMESTAMP WITH TIME ZONE NOT NULL,
   offset_label VARCHAR(50) NOT NULL,
+  offset_minutes INTEGER NOT NULL DEFAULT 0,
   sent BOOLEAN DEFAULT false,
   created_at TIMESTAMP WITH TIME ZONE DEFAULT now(),
   CONSTRAINT unq_user_event_reminder UNIQUE (user_id, event_id, offset_label)
@@ -151,6 +179,40 @@ CREATE TABLE public.event_reminders (
 
 CREATE INDEX idx_event_reminders_pending ON public.event_reminders (sent, remind_at);
 CREATE INDEX idx_event_reminders_user_event ON public.event_reminders (user_id, event_id);
+
+CREATE TABLE public.moderation_settings (
+  id SMALLINT PRIMARY KEY DEFAULT 1 CHECK (id = 1),
+  capacity_threshold INTEGER NOT NULL DEFAULT 200 CHECK (capacity_threshold >= 10),
+  sensitivity VARCHAR(20) NOT NULL DEFAULT 'Strict' CHECK (sensitivity IN ('Strict', 'Standard')),
+  auto_flag_large_events BOOLEAN NOT NULL DEFAULT true,
+  legacy_imported BOOLEAN NOT NULL DEFAULT false,
+  updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now()
+);
+
+INSERT INTO public.moderation_settings (id) VALUES (1) ON CONFLICT (id) DO NOTHING;
+
+CREATE TABLE public.moderation_keywords (
+  keyword VARCHAR(100) PRIMARY KEY,
+  active BOOLEAN NOT NULL DEFAULT true,
+  created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now()
+);
+
+INSERT INTO public.moderation_keywords (keyword) VALUES
+  ('unofficial party'), ('off-campus alcohol'), ('unauthorized vendor'),
+  ('scalping'), ('pyrotechnics'), ('hazing')
+ON CONFLICT (keyword) DO NOTHING;
+
+ALTER TABLE public.moderation_settings ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.moderation_keywords ENABLE ROW LEVEL SECURITY;
+REVOKE ALL ON TABLE public.moderation_settings, public.moderation_keywords FROM PUBLIC, anon, authenticated;
+GRANT ALL ON TABLE public.moderation_settings, public.moderation_keywords TO service_role;
+
+INSERT INTO storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
+VALUES ('profile-avatars', 'profile-avatars', true, 2097152, ARRAY['image/jpeg', 'image/png', 'image/webp', 'image/gif'])
+ON CONFLICT (id) DO UPDATE
+SET public = true,
+    file_size_limit = EXCLUDED.file_size_limit,
+    allowed_mime_types = EXCLUDED.allowed_mime_types;
 
 
 

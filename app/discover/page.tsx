@@ -6,8 +6,10 @@ import { Search, SlidersHorizontal, MapPin, X, ChevronDown, Check } from "lucide
 import EventCard, { type EventData } from "@/components/EventCard";
 import MapView from "@/components/MapView";
 import { useStoredEvents } from "@/lib/events-store";
-import { getCurrentUser, getUserSavedEvents, saveUserSavedEvents } from "@/lib/auth-store";
-import { getAllCategories, matchesCategory, matchesSearchQuery, matchesDirectText } from "@/lib/categories";
+import { saveStoredEvents } from "@/lib/events-store";
+import { getCurrentUser } from "@/lib/auth-store";
+import { loadSavedEventIds, toggleSavedEvent } from "@/lib/saved-events-client";
+import { getAllCategories, matchesCategory, matchesSearchQuery, matchesDirectText, syncCategoriesFromDatabase } from "@/lib/categories";
 
 const RADIUS_OPTIONS = [
   { label: "1 kilometer", value: 1 },
@@ -83,6 +85,7 @@ function DiscoverContent() {
       .then((res) => (res.ok ? res.json() : []))
       .then((apiData: EventData[]) => {
         if (!active || !Array.isArray(apiData)) return;
+        saveStoredEvents(apiData, true);
         setRemoteEvents(apiData.map((event) => ({
           ...event,
           categories: Array.isArray(event.categories) ? event.categories : [event.category || "Community"].filter(Boolean),
@@ -99,7 +102,7 @@ function DiscoverContent() {
         setSavedIds([]);
         return;
       }
-      setSavedIds(getUserSavedEvents(user.email));
+      void loadSavedEventIds().then(setSavedIds).catch(() => setSavedIds([]));
     };
 
     syncSaved();
@@ -126,18 +129,23 @@ function DiscoverContent() {
     return () => window.removeEventListener("spott_categories_updated", syncCats);
   }, [events]);
 
-  const handleToggleSave = (eventId: string) => {
+  useEffect(() => {
+    void syncCategoriesFromDatabase().catch(() => {});
+  }, []);
+
+  const handleToggleSave = async (eventId: string) => {
     const user = getCurrentUser();
     if (!user) {
       router.push(`/login?redirect=/events/${eventId}`);
       return;
     }
     const isAlreadySaved = savedIds.includes(eventId);
-    const updated = isAlreadySaved
-      ? savedIds.filter((id) => id !== eventId)
-      : [...savedIds, eventId];
-    setSavedIds(updated);
-    saveUserSavedEvents(updated, user.email);
+    try {
+      const saved = await toggleSavedEvent(eventId);
+      setSavedIds((ids) => saved ? [...new Set([...ids, eventId])] : ids.filter((id) => id !== eventId));
+    } catch (error) {
+      console.error(error);
+    }
   };
 
   // Haversine distance calculator in km

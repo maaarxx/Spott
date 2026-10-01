@@ -9,6 +9,7 @@ export type SpottAccount = {
   email: string;
   password?: string;
   name: string;
+  displayName?: string;
   role: RoleType;
   organization?: string;
   destination: string;
@@ -91,6 +92,40 @@ export function clearLocalAuthState() {
     localStorage.removeItem(STORAGE_KEY_AUTH);
     window.dispatchEvent(new Event("spott_auth_changed"));
   } catch {}
+}
+
+/** Refresh the display cache from the authenticated Supabase profile. The
+ * database and verified Supabase session remain authoritative; local storage
+ * is only a synchronous client cache for existing UI components. */
+export async function refreshCurrentUserFromDatabase(): Promise<SpottAccount | null> {
+  if (typeof window === "undefined") return null;
+  try {
+    const response = await fetchWithSupabaseSession('/api/account', { cache: 'no-store' });
+    if (response.status === 401) {
+      const isLocal = ['localhost', '127.0.0.1'].includes(window.location.hostname);
+      const cached = getCurrentUser();
+      if (!(isLocal && cached && Object.values(SPOTT_ACCOUNTS).some((account) => account.email === cached.email))) {
+        clearLocalAuthState();
+      }
+      return null;
+    }
+    if (!response.ok) return getCurrentUser();
+    const payload = await response.json();
+    const profile = payload.account;
+    if (!profile?.email || !['user', 'organizer', 'admin'].includes(profile.role)) return null;
+    const account: SpottAccount = {
+      email: profile.email,
+      name: profile.name || profile.email.split('@')[0],
+      ...(profile.display_name ? { displayName: profile.display_name } : {}),
+      role: profile.role,
+      destination: profile.role === 'admin' ? '/admin' : profile.role === 'organizer' ? '/organizer' : '/',
+      ...(profile.organization ? { organization: profile.organization } : {}),
+    };
+    setCurrentUser(account);
+    return account;
+  } catch {
+    return getCurrentUser();
+  }
 }
 
 export async function logout() {

@@ -21,13 +21,12 @@ import {
   Trash2,
   Check,
 } from "lucide-react";
-import { addNotification } from "@/lib/notifications-store";
 import { saveStoredEvent } from "@/lib/events-store";
 import LocationPicker from "@/components/LocationPicker";
 import { getCurrentUser } from "@/lib/auth-store";
-import { getVerificationState } from "@/lib/verification-store";
-import { getAllCategories, saveCustomCategory, DEFAULT_APP_CATEGORIES } from "@/lib/categories";
-import { checkEventForModeration } from "@/lib/moderation-store";
+import { getAllCategories, DEFAULT_APP_CATEGORIES, syncCategoriesFromDatabase } from "@/lib/categories";
+import { checkEventForModeration, loadModerationConfig } from "@/lib/moderation-store";
+import { fetchWithSupabaseSession } from "@/lib/audit-log-client";
 
 const eventSchema = z.object({
   title: z.string().min(1, "Event title is required"),
@@ -70,6 +69,7 @@ export default function CreateEventPage() {
   useEffect(() => {
     const sync = () => setCategoriesList(getAllCategories());
     sync();
+    void syncCategoriesFromDatabase().catch(() => {});
     window.addEventListener("spott_categories_updated", sync);
     return () => window.removeEventListener("spott_categories_updated", sync);
   }, []);
@@ -226,7 +226,6 @@ export default function CreateEventPage() {
 
     const user = getCurrentUser();
     const orgName = user?.organization || user?.name || "Metro Creative Group";
-    const isApproved = getVerificationState(orgName).status === "approved";
 
     const parsedCapacity = data.hasCapacityLimit && data.capacity ? Number(data.capacity) : null;
     const requireApproval = Boolean(data.requireApproval);
@@ -235,10 +234,13 @@ export default function CreateEventPage() {
       ? customCategoryInput.trim()
       : data.category;
 
-    if (isCustomCategory && finalCategory) {
-      saveCustomCategory(finalCategory);
+    try {
+      await loadModerationConfig();
+    } catch {
+      setErrorMsg("Unable to load current moderation settings. Please retry before publishing.");
+      setIsSubmitting(false);
+      return;
     }
-
     const modCheck = checkEventForModeration(data.title, data.description, parsedCapacity || 0, 0);
     const eventStatus = modCheck.isKeywordFlagged ? "flagged" : "active";
 
@@ -250,7 +252,7 @@ export default function CreateEventPage() {
       price: data.isFree ? 0 : data.price,
       status: eventStatus,
       organizer: orgName,
-      verified: isApproved,
+      verified: false,
       location: data.location,
       city: "Manila",
       latitude: pinnedLat,
@@ -264,67 +266,41 @@ export default function CreateEventPage() {
       image: coverImage || null,
     };
 
-    // 1. Immediately save to directory and broadcast so event is instantly published
-    saveStoredEvent(newEventObj);
-    setPublishedEventId(newEventObj.id);
-    setSuccess(true);
-
-    if (modCheck.isKeywordFlagged) {
-      addNotification({
-        type: "announcement",
-        title: `⚠️ Listing Intercepted for Review: "${data.title}"`,
-        message: `Event by ${orgName} matched automated listing filter (${modCheck.matchedKeywords.join(", ")}). Admin review pending.`,
-        targetRole: "admin",
-        link: "/admin?tab=events",
-      });
-    }
-
-    if (modCheck.isLargeGathering) {
-      addNotification({
-        type: "announcement",
-        title: `Crowd Review Required: "${data.title}"`,
-        message: `Event by ${orgName} has high capacity (${parsedCapacity} attendees). Verify venue security and crowd safety.`,
-        targetRole: "admin",
-        link: "/admin?tab=events",
-      });
-    }
-
-    addNotification({
-      type: "announcement",
-      title: `New Event: "${data.title}"`,
-      message: `${orgName} published a new event at ${data.location}. Check out details and RSVP!`,
-      targetRole: "user",
-      link: `/events/${newEventObj.id}`,
-    });
-
-    // 2. Fire-and-forget sync to API in background with 2-second timeout (never blocks UI)
+    let persistedEvent = newEventObj;
     try {
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), 2000);
-      fetch("/api/events", {
+      const response = await fetchWithSupabaseSession("/api/events", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        signal: controller.signal,
         body: JSON.stringify({
-          id: newEventObj.id,
           title: data.title,
           description: data.description,
           category: finalCategory,
           date: data.date,
           time: data.time,
           location: data.location,
+          city: "Manila",
           latitude: pinnedLat,
           longitude: pinnedLng,
           price: data.isFree ? 0 : data.price,
           capacity: parsedCapacity,
-          requireApproval: requireApproval,
-          organizer: orgName,
+          requireApproval,
+          status: eventStatus,
           coverImage: coverImage || null,
         }),
-      })
-        .catch(() => {})
-        .finally(() => clearTimeout(timer));
-    } catch {}
+      });
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok || typeof result.event_id !== "string") {
+        throw new Error(result.error || "Could not save the event to the shared database.");
+      }
+      persistedEvent = { ...newEventObj, id: result.event_id };
+      saveStoredEvent(persistedEvent);
+      setPublishedEventId(persistedEvent.id);
+      setSuccess(true);
+    } catch (error) {
+      setErrorMsg(error instanceof Error ? error.message : "Could not save the event. Please try again.");
+      setIsSubmitting(false);
+      return;
+    }
 
     // Reset form fields back to empty/default and clear uploaded cover image
     reset({

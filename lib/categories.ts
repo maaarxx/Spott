@@ -16,7 +16,7 @@ export const DEFAULT_APP_CATEGORIES: string[] = [
   "Networking & Business",
 ];
 
-const STORAGE_KEY_CUSTOM_CATEGORIES = "spott_custom_categories";
+let databaseCategories: string[] = [];
 
 type EventSearchData = {
   title?: string;
@@ -34,30 +34,19 @@ type EventSearchData = {
 };
 
 export function getCustomCategories(): string[] {
-  if (typeof window === "undefined") return [];
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY_CUSTOM_CATEGORIES);
-    if (!raw) return [];
-    const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) ? parsed.filter((c) => typeof c === "string" && c.trim()) : [];
-  } catch {
-    return [];
-  }
+  return databaseCategories;
 }
 
-export function saveCustomCategory(category: string): void {
-  if (typeof window === "undefined" || !category) return;
-  const trimmed = category.trim();
-  if (!trimmed) return;
-
-  try {
-    const current = getCustomCategories();
-    if (!current.some((c) => c.toLowerCase() === trimmed.toLowerCase())) {
-      const updated = [...current, trimmed];
-      localStorage.setItem(STORAGE_KEY_CUSTOM_CATEGORIES, JSON.stringify(updated));
-      window.dispatchEvent(new Event("spott_categories_updated"));
-    }
-  } catch {}
+export async function syncCategoriesFromDatabase(): Promise<string[]> {
+  const response = await fetch('/api/categories', { cache: 'no-store' });
+  if (!response.ok) throw new Error('Unable to load categories from the database.');
+  const payload = await response.json();
+  const rows = Array.isArray(payload.categories) ? payload.categories : [];
+  databaseCategories = rows
+    .map((row: { category_name?: unknown }) => typeof row.category_name === 'string' ? row.category_name.trim() : '')
+    .filter(Boolean);
+  if (typeof window !== 'undefined') window.dispatchEvent(new Event("spott_categories_updated"));
+  return databaseCategories;
 }
 
 /**
@@ -70,7 +59,8 @@ export function getAllCategories(events: { categories?: string[]; category?: str
   const result: string[] = [...DEFAULT_APP_CATEGORIES];
   const seenLower = new Set(result.map((c) => c.toLowerCase()));
 
-  // 1. Add saved custom categories
+  // Database categories are a client cache of the canonical categories table.
+  // Do not read/write custom categories from localStorage.
   const customList = getCustomCategories();
   for (const cat of customList) {
     const trimmed = cat.trim();

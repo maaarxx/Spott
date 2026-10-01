@@ -1,6 +1,5 @@
 import { NextResponse } from 'next/server';
 import { createClient, createAdminClient, getAuthenticatedRole } from '@/lib/supabase-server';
-import { DEFAULT_EVENTS } from '@/lib/default-events';
 import { errorMessage } from '@/lib/error-message';
 import type { EventData } from '@/components/EventCard';
 
@@ -24,17 +23,9 @@ type EventListRow = {
 };
 
 
-// Server-side in-memory event cache for active dev session & offline resilience
-declare global {
-  var __spott_server_events: EventData[] | undefined;
-}
-if (!globalThis.__spott_server_events) {
-  globalThis.__spott_server_events = [];
-}
-
 export async function POST(request: Request) {
   try {
-    const account = await getAuthenticatedRole();
+    const account = await getAuthenticatedRole(request);
     if (!account || !['organizer', 'admin'].includes(account.role)) {
       return NextResponse.json({ error: 'Organizer access required' }, { status: 403 });
     }
@@ -48,7 +39,7 @@ export async function POST(request: Request) {
       typeof category !== 'string' || !category.trim() ||
       typeof location !== 'string' || !location.trim() || location.trim().length > 300 ||
       !Number.isFinite(eventDate.getTime()) || !Number.isFinite(numericPrice) || numericPrice < 0 ||
-      (body.capacity !== undefined && (!Number.isInteger(Number(body.capacity)) || Number(body.capacity) < 1))
+      (body.capacity !== undefined && body.capacity !== null && (!Number.isInteger(Number(body.capacity)) || Number(body.capacity) < 1))
     ) {
       return NextResponse.json({ error: 'Invalid event details' }, { status: 400 });
     }
@@ -72,89 +63,117 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: 'Organizer account is required' }, { status: 400 });
     }
 
-    const newServerEvent = {
-      id: body.id || `event-${Date.now()}`,
-      title,
-      description,
-      date: `${date} ${time}:00`,
-      price: numericPrice,
-      status: "active",
-      organizer: body.organizer || "Metro Creative Group",
-      verified: true,
-      location: location,
-      city: body.city || "Manila",
-      latitude: body.latitude || 14.5638,
-      longitude: body.longitude || 120.9965,
-      categories: [category || "School Events"],
-      registrations: 0,
-      confirmedAt: new Date().toISOString(),
-      capacity: body.capacity !== undefined ? Number(body.capacity) : 100,
-      coverImage: body.coverImage || null,
-      image: body.coverImage || null,
-    };
-
-    // Keep in server memory
-    globalThis.__spott_server_events = [
-      newServerEvent,
-      ...(globalThis.__spott_server_events || []).filter((e) => e.id !== newServerEvent.id),
-    ];
-
-    const timeoutPromise = new Promise((_, reject) =>
-      setTimeout(() => reject(new Error("Database operation timeout")), 1500)
-    );
-
-    const postPromise = (async () => {
-      const supabase = userClient;
-      const start_datetime = `${date} ${time}:00`;
-
-      const { data: locationData, error: locError } = await supabase
+    const db = createAdminClient();
+    let locationId: string | null = null;
+    let eventId: string | null = null;
+    try {
+      const { data: locationData, error: locError } = await db
         .from('locations')
-        .insert([{
+        .insert({
           address: location,
           venue_name: location,
-          city: body.city || 'Manila',
-          latitude: body.latitude || 14.5638,
-          longitude: body.longitude || 120.9965,
-        }])
+          city: typeof body.city === 'string' && body.city.trim() ? body.city.trim() : 'Manila',
+          latitude: Number.isFinite(Number(body.latitude)) ? Number(body.latitude) : 14.5638,
+          longitude: Number.isFinite(Number(body.longitude)) ? Number(body.longitude) : 120.9965,
+        })
         .select('location_id')
         .single();
+      if (locError || !locationData) throw locError || new Error('Unable to save event location');
+      locationId = locationData.location_id;
 
-      if (locError) throw locError;
-
-      const { data: eventData, error: eventError } = await supabase
+      const descriptionWithMetadata = [
+        description.trim(),
+        `<!--spott:${JSON.stringify({
+          coverImage: typeof body.coverImage === 'string' ? body.coverImage : null,
+        })}-->`,
+      ].join('\n\n');
+      const eventStatus = ['active', 'draft', 'flagged'].includes(body.status) ? body.status : 'active';
+      const { data: eventData, error: eventError } = await db
         .from('events')
-        .insert([{
+        .insert({
           organizer_id: organizerId,
-          location_id: locationData.location_id,
-          title,
-          description,
-          start_datetime,
-          price: parseFloat(price) || 0
-        }])
+          location_id: locationId,
+          title: title.trim(),
+          description: descriptionWithMetadata,
+          start_datetime: `${date} ${time}:00`,
+          price: numericPrice,
+          capacity: body.capacity === undefined ? null : Number(body.capacity),
+          require_approval: body.requireApproval === true,
+          status: eventStatus,
+        })
         .select('event_id')
         .single();
+      if (eventError || !eventData) throw eventError || new Error('Unable to save event');
+      eventId = eventData.event_id;
 
-      if (eventError) throw eventError;
-
-      const { data: catData } = await supabase
+      const { data: categoryData, error: categoryLookupError } = await db
         .from('categories')
         .select('category_id')
-        .eq('category_name', category)
-        .limit(1);
+        .eq('category_name', category.trim())
+        .maybeSingle();
+      if (categoryLookupError) throw categoryLookupError;
 
-      if (catData && catData.length > 0) {
-        await supabase
-          .from('event_category')
-          .insert([{ event_id: eventData.event_id, category_id: catData[0].category_id }]);
+      let categoryId = categoryData?.category_id;
+      if (!categoryId) {
+        const { data: insertedCategory, error: insertCategoryError } = await db
+          .from('categories')
+          .insert({ category_name: category.trim() })
+          .select('category_id')
+          .single();
+        if (insertCategoryError || !insertedCategory) throw insertCategoryError || new Error('Unable to save event category');
+        categoryId = insertedCategory.category_id;
       }
 
-      return eventData;
-    })();
+      const { error: relationError } = await db
+        .from('event_category')
+        .insert({ event_id: eventData.event_id, category_id: categoryId });
+      if (relationError) throw relationError;
 
-    const result = await Promise.race([postPromise, timeoutPromise]);
-    return NextResponse.json(result);
+      const { data: recipients } = eventStatus === 'active'
+        ? await db.from('users').select('user_id,role').in('role', ['user', 'organizer'])
+        : { data: [] };
+      if (recipients?.length) {
+        await db.from('notifications').insert(recipients.map((recipient) => ({
+          user_id: recipient.user_id,
+          type: 'announcement',
+          title: `New Event: "${title.trim()}"`,
+          message: `${title.trim()} is now listed on Spott.`,
+          is_read: false,
+          related_event_id: eventData.event_id,
+          target_role: recipient.role,
+          link: `/events/${eventData.event_id}`,
+        })));
+      }
+      if (eventStatus === 'flagged' || Number(body.capacity) >= 200) {
+        const { data: admins } = await db.from('users').select('user_id').eq('role', 'admin');
+        if (admins?.length) {
+          const titleText = eventStatus === 'flagged' ? `Listing Review: "${title.trim()}"` : `Capacity Review: "${title.trim()}"`;
+          await db.from('notifications').insert(admins.map((admin) => ({
+            user_id: admin.user_id,
+            type: 'announcement',
+            title: titleText,
+            message: eventStatus === 'flagged' ? 'This event listing was flagged and needs review.' : `This event has a capacity of ${body.capacity} attendees and needs a venue safety review.`,
+            is_read: false,
+            related_event_id: eventData.event_id,
+            target_role: 'admin',
+            link: `/admin?tab=events`,
+          })));
+        }
+      }
+
+      return NextResponse.json({ success: true, event_id: eventData.event_id }, { status: 201 });
+    } catch (writeError) {
+      // Roll back the rows we created if a later write fails.
+      if (eventId) {
+        await db.from('event_category').delete().eq('event_id', eventId);
+        await db.from('events').delete().eq('event_id', eventId);
+      }
+      if (locationId) await db.from('locations').delete().eq('location_id', locationId);
+      throw writeError;
+    }
   } catch (err: unknown) {
-    return NextResponse.json({ success: true, note: "Cached locally and on server", error: errorMessage(err) }, { status: 200 });
+    console.error('Failed to create event in Supabase', errorMessage(err));
+    return NextResponse.json({ error: 'Could not save the event. Please try again.' }, { status: 500 });
   }
 }
 
@@ -164,7 +183,7 @@ export async function GET(request: Request) {
     const { searchParams } = new URL(request.url);
     const requestedScope = searchParams.get('scope') || 'public';
     const includeDashboardEvents = requestedScope === 'admin' || requestedScope === 'organizer';
-    const account = includeDashboardEvents ? await getAuthenticatedRole() : null;
+    const account = includeDashboardEvents ? await getAuthenticatedRole(request) : null;
     if (requestedScope === 'admin' && !account) {
       return NextResponse.json({ error: 'No Supabase session or account profile was found. Sign in again with your production account.', code: 'AUTHENTICATION_REQUIRED' }, { status: 401 });
     }
@@ -176,15 +195,6 @@ export async function GET(request: Request) {
     }
     if (!['public', 'admin', 'organizer'].includes(requestedScope)) {
       return NextResponse.json({ error: 'Invalid event scope' }, { status: 400 });
-    }
-    let requestedOrganizerName = "";
-    if (requestedScope === 'organizer' && account) {
-      const { data: organizer } = await supabase
-        .from('organizers')
-        .select('organization_name')
-        .eq('user_id', account.userId)
-        .maybeSingle();
-      requestedOrganizerName = organizer?.organization_name || "";
     }
     // The scheduled job is the primary lifecycle worker; run it on reads too
     // so archives remain current if pg_cron is not enabled in this project.
@@ -248,12 +258,7 @@ export async function GET(request: Request) {
       query = query.eq('locations.city', city);
     }
 
-    // Race with a 1500ms timeout to guarantee instant responses without buffering
-    const timeoutPromise = new Promise<{ data: null; error: { message: string } }>((resolve) =>
-      setTimeout(() => resolve({ data: null, error: { message: "Database timeout" } }), 1500)
-    );
-
-    const { data, error } = await Promise.race([query, timeoutPromise]);
+    const { data, error } = await query;
 
     if (error || !data) {
       // Don't silently turn database failures into an empty public feed. This
@@ -265,7 +270,7 @@ export async function GET(request: Request) {
         message: error?.message || (!data ? "Database returned no event data" : undefined),
         hint: databaseError?.hint,
       });
-      return NextResponse.json(includeDashboardEvents ? [] : filterDefaultEvents(search, category, city));
+      return NextResponse.json({ error: 'Could not load events from the database.' }, { status: 503 });
     }
 
     // Get registration counts
@@ -276,7 +281,8 @@ export async function GET(request: Request) {
       const { data: regData } = await supabase
         .from('registrations')
         .select('event_id')
-        .in('event_id', eventIds.length > 0 ? eventIds : ['none']);
+        .in('event_id', eventIds.length > 0 ? eventIds : ['none'])
+        .in('status', ['confirmed', 'registered', 'approved']);
 
       (regData || []).forEach((registration: { event_id: string }) => {
         regCounts[registration.event_id] = (regCounts[registration.event_id] || 0) + 1;
@@ -341,16 +347,7 @@ export async function GET(request: Request) {
       };
     });
 
-    // Merge with in-memory server events
-    const serverEvents = (globalThis.__spott_server_events || [])
-      .filter((event) => includeDashboardEvents || event.status === 'active')
-      .filter((event) => requestedScope !== 'organizer' || (requestedOrganizerName && event.organizer?.toLowerCase() === requestedOrganizerName.toLowerCase()))
-      .filter((se) => !formattedData.some((fd: { id: string }) => fd.id === se.id))
-      .map((se) => ({
-        ...se,
-        capacity: typeof se.capacity === "number" ? se.capacity : 100,
-      }));
-    let combined = [...serverEvents, ...formattedData];
+    let combined = formattedData;
 
     // Filter by category name on server side (Supabase can't filter nested easily)
     if (category && category !== 'All' && category !== 'All categories') {
@@ -361,27 +358,7 @@ export async function GET(request: Request) {
 
     return NextResponse.json(combined);
   } catch (err: unknown) {
-    console.warn("API route caught exception, using default events fallback:", errorMessage(err));
-    const { searchParams } = new URL(request.url);
-    const search = searchParams.get('search') || searchParams.get('q');
-    const category = searchParams.get('category');
-    const city = searchParams.get('city');
-    return NextResponse.json(filterDefaultEvents(search, category, city));
+    console.error("Event query failed:", errorMessage(err));
+    return NextResponse.json({ error: 'Could not load events from the database.' }, { status: 503 });
   }
-}
-
-function filterDefaultEvents(search: string | null, category: string | null, city: string | null) {
-  const serverEvents = globalThis.__spott_server_events || [];
-  let result = [...serverEvents, ...DEFAULT_EVENTS];
-  if (search) {
-    const s = search.toLowerCase();
-    result = result.filter(e => e.title?.toLowerCase().includes(s) || e.location?.toLowerCase().includes(s) || e.city?.toLowerCase().includes(s));
-  }
-  if (category && category !== 'All' && category !== 'All categories') {
-    result = result.filter(e => e.categories?.some((c: string) => c.toLowerCase() === category.toLowerCase()));
-  }
-  if (city && city !== 'All' && city !== 'All cities') {
-    result = result.filter(e => e.city?.toLowerCase() === city.toLowerCase());
-  }
-  return result;
 }

@@ -2,15 +2,13 @@
 
 import { getCurrentUser } from "./auth-store";
 
-const STORAGE_KEY_VIEWS = "spott_event_views";
-const STORAGE_KEY_UNIQUE_VIEWS = "spott_event_unique_views";
 const STORAGE_KEY_VISITOR_ID = "spott_visitor_id";
 const BROADCAST_VIEWS_CHANNEL = "spott_views_sync";
 
 /**
  * 1. Visitor identification
  * - If the user is logged in, use their user ID / email.
- * - Otherwise, generate a random UUID as visitor_id, store it in cookie & localStorage,
+ * - Otherwise, generate a random UUID as visitor_id and store it in a cookie,
  *   and reuse it on later visits.
  */
 export function getOrCreateVisitorId(): string {
@@ -21,20 +19,11 @@ export function getOrCreateVisitorId(): string {
     return `user:${user.email.trim().toLowerCase()}`;
   }
 
-  // Check localStorage first
-  try {
-    const stored = localStorage.getItem(STORAGE_KEY_VISITOR_ID);
-    if (stored) return stored;
-  } catch {}
-
   // Check cookie
   try {
     const match = document.cookie.match(/spott_visitor_id=([^;]+)/);
     if (match && match[1]) {
       const id = decodeURIComponent(match[1]);
-      try {
-        localStorage.setItem(STORAGE_KEY_VISITOR_ID, id);
-      } catch {}
       return id;
     }
   } catch {}
@@ -45,72 +34,29 @@ export function getOrCreateVisitorId(): string {
       ? crypto.randomUUID()
       : `anon-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
 
-  try {
-    localStorage.setItem(STORAGE_KEY_VISITOR_ID, newId);
-    document.cookie = `spott_visitor_id=${encodeURIComponent(newId)}; path=/; max-age=31536000; SameSite=Lax`;
-  } catch {}
+  try { document.cookie = `spott_visitor_id=${encodeURIComponent(newId)}; path=/; max-age=31536000; SameSite=Lax`; } catch {}
 
   return newId;
 }
 
 export function getViewsMap(): Record<string, number> {
-  if (typeof window === "undefined") return {};
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY_VIEWS);
-    return raw ? JSON.parse(raw) : {};
-  } catch {
-    return {};
-  }
+  return {};
 }
 
 export function getUniqueViewsMap(): Record<string, number> {
-  if (typeof window === "undefined") return {};
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY_UNIQUE_VIEWS);
-    return raw ? JSON.parse(raw) : {};
-  } catch {
-    return {};
-  }
+  return {};
 }
 
 export function getEventViews(eventId: string, fallbackRegistrations: number = 0): number {
   if (!eventId) return 0;
-  if (typeof window === "undefined") {
-    return fallbackRegistrations > 0 ? fallbackRegistrations * 3 + 15 : 0;
-  }
-
-  const map = getViewsMap();
-  if (typeof map[eventId] === "number") {
-    return map[eventId];
-  }
-
-  // Calculate realistic initial baseline if not recorded yet
-  let seed = 0;
-  for (let i = 0; i < eventId.length; i++) {
-    seed += eventId.charCodeAt(i);
-  }
-  const variance = (seed % 15) + 12;
-  const initialViews =
-    fallbackRegistrations > 0
-      ? fallbackRegistrations * 3 + variance
-      : Math.max(1, (seed % 20) + 14);
-
-  map[eventId] = initialViews;
-  try {
-    localStorage.setItem(STORAGE_KEY_VIEWS, JSON.stringify(map));
-  } catch {}
-
-  return initialViews;
+  void fallbackRegistrations;
+  return 0;
 }
 
 export function getEventUniqueViews(eventId: string, fallbackRegistrations: number = 0): number {
   if (!eventId) return 0;
-  const uniqueMap = getUniqueViewsMap();
-  if (typeof uniqueMap[eventId] === "number") {
-    return uniqueMap[eventId];
-  }
-  const total = getEventViews(eventId, fallbackRegistrations);
-  return Math.max(1, Math.round(total * 0.72));
+  void fallbackRegistrations;
+  return 0;
 }
 
 /**
@@ -171,18 +117,6 @@ export async function recordEventView(
 
     if (data.counted) {
       const updatedCount = currentCount + 1;
-      map[eventId] = updatedCount;
-
-      try {
-        localStorage.setItem(STORAGE_KEY_VIEWS, JSON.stringify(map));
-      } catch {}
-
-      // Update unique views
-      const uniqueMap = getUniqueViewsMap();
-      uniqueMap[eventId] = (uniqueMap[eventId] || Math.max(1, Math.round(currentCount * 0.72))) + 1;
-      try {
-        localStorage.setItem(STORAGE_KEY_UNIQUE_VIEWS, JSON.stringify(uniqueMap));
-      } catch {}
 
       try {
         window.dispatchEvent(
@@ -225,14 +159,7 @@ export function subscribeToViews(callback: (eventId?: string) => void): () => vo
     callback(eventId);
   };
 
-  const handleStorage = (e: StorageEvent) => {
-    if (e.key === STORAGE_KEY_VIEWS || e.key === STORAGE_KEY_UNIQUE_VIEWS) {
-      callback();
-    }
-  };
-
   window.addEventListener("spott_views_updated", handleCustom);
-  window.addEventListener("storage", handleStorage);
 
   let channel: BroadcastChannel | null = null;
   try {
@@ -244,7 +171,6 @@ export function subscribeToViews(callback: (eventId?: string) => void): () => vo
 
   return () => {
     window.removeEventListener("spott_views_updated", handleCustom);
-    window.removeEventListener("storage", handleStorage);
     try {
       channel?.close();
     } catch {}

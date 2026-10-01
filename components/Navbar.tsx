@@ -5,9 +5,9 @@ import { usePathname, useRouter } from "next/navigation";
 import { useState, useEffect, useRef } from "react";
 import { Menu, X, ChevronDown, LogOut, User } from "lucide-react";
 import { createClient } from "@/lib/supabase-browser";
-import { getCurrentUser, logout, SpottAccount } from "@/lib/auth-store";
-import { getUnreadCount } from "@/lib/notifications-store";
-import { getUserProfile, subscribeToProfile, getInitials } from "@/lib/user-profile-store";
+import { clearLocalAuthState, getCurrentUser, logout, refreshCurrentUserFromDatabase, SpottAccount, SPOTT_ACCOUNTS } from "@/lib/auth-store";
+import { fetchWithSupabaseSession } from "@/lib/audit-log-client";
+import { getUserProfile, loadUserProfileFromDatabase, getInitials } from "@/lib/user-profile-store";
 import type { User as SupaUser } from "@supabase/supabase-js";
 import { useHydrated } from "@/lib/use-hydrated";
 
@@ -24,10 +24,7 @@ export default function Navbar() {
   const [mobileOpen, setMobileOpen] = useState(false);
   const [user, setUser] = useState<SupaUser | null>(null);
   const [localUser, setLocalUser] = useState<SpottAccount | null>(() => getCurrentUser());
-  const [unreadNotifs, setUnreadNotifs] = useState(() => {
-    const current = getCurrentUser();
-    return getUnreadCount(current?.role || "user", current?.email);
-  });
+  const [unreadNotifs, setUnreadNotifs] = useState(0);
   const mounted = useHydrated();
   const [dropdownOpen, setDropdownOpen] = useState(false);
   const [avatarUrl, setAvatarUrl] = useState<string>(() => {
@@ -37,10 +34,17 @@ export default function Navbar() {
   const dropdownRef = useRef<HTMLDivElement>(null);
   const supabase = createClient();
 
+  const refreshUnreadCount = () => {
+    void fetchWithSupabaseSession('/api/notifications?count=unread')
+      .then((response) => response.ok ? response.json() : { unreadCount: 0 })
+      .then((body) => setUnreadNotifs(Number(body.unreadCount) || 0))
+      .catch(() => setUnreadNotifs(0));
+  };
+
   const syncState = () => {
     const cur = getCurrentUser();
     setLocalUser(cur);
-    setUnreadNotifs(getUnreadCount(cur?.role || "user", cur?.email));
+    refreshUnreadCount();
     if (cur?.email) {
       const profile = getUserProfile(cur.email);
       setAvatarUrl(profile.avatarUrl || "");
@@ -49,32 +53,65 @@ export default function Navbar() {
     }
   };
 
+  const syncProfileAvatar = () => {
+    const cur = getCurrentUser();
+    setAvatarUrl(cur?.email ? getUserProfile(cur.email).avatarUrl || "" : "");
+  };
+
   useEffect(() => {
     const getUser = async () => {
       try {
         const { data: { user } } = await supabase.auth.getUser();
         setUser(user);
+        if (user) await refreshCurrentUserFromDatabase();
+        else {
+          const cached = getCurrentUser();
+          const isLocalDemo = typeof window !== 'undefined'
+            && ['localhost', '127.0.0.1'].includes(window.location.hostname)
+            && cached && Object.values(SPOTT_ACCOUNTS).some((account) => account.email === cached.email);
+          if (!isLocalDemo) clearLocalAuthState();
+        }
+        syncState();
+        const current = getCurrentUser();
+        if (current?.email) {
+          void loadUserProfileFromDatabase(current.email).catch(() => {});
+        }
       } catch {
         // offline fallback
       }
     };
     getUser();
+    refreshUnreadCount();
 
     const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
       setUser(session?.user ?? null);
+      if (session?.user) window.setTimeout(() => {
+        void refreshCurrentUserFromDatabase().then((account) => {
+          if (account?.email) return loadUserProfileFromDatabase(account.email).catch(() => undefined);
+          return undefined;
+        });
+      }, 0);
+      else {
+        const cached = getCurrentUser();
+        const isLocalDemo = typeof window !== 'undefined'
+          && ['localhost', '127.0.0.1'].includes(window.location.hostname)
+          && cached && Object.values(SPOTT_ACCOUNTS).some((account) => account.email === cached.email);
+        if (!isLocalDemo) clearLocalAuthState();
+      }
+      syncState();
     });
 
     window.addEventListener("spott_auth_changed", syncState);
     window.addEventListener("spott_notifications_updated", syncState);
     window.addEventListener("storage", syncState);
-    window.addEventListener("spott_profile_updated", syncState);
+    window.addEventListener("spott_profile_updated", syncProfileAvatar);
 
     return () => {
       subscription.unsubscribe();
       window.removeEventListener("spott_auth_changed", syncState);
       window.removeEventListener("spott_notifications_updated", syncState);
       window.removeEventListener("storage", syncState);
-      window.removeEventListener("spott_profile_updated", syncState);
+      window.removeEventListener("spott_profile_updated", syncProfileAvatar);
     };
   }, []);
 
@@ -103,7 +140,7 @@ export default function Navbar() {
   };
 
   const displayName =
-    (mounted && localUser?.name) ||
+    (mounted && (localUser?.displayName || localUser?.name)) ||
     user?.user_metadata?.full_name ||
     user?.email?.split("@")[0] ||
     "User";

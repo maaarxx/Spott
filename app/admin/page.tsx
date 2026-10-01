@@ -40,17 +40,6 @@ import {
   PieChart,
   MapPin,
 } from "lucide-react";
-import {
-  getVerificationState,
-  defaultVerificationState,
-  setApprovalStatus,
-  resetVerificationState,
-  getRealTimeDate,
-  get30DaysExpiryDate,
-  saveVerificationState,
-  VerificationState,
-  VerificationDocument,
-} from "@/lib/verification-store";
 import PdfViewerModal from "@/components/PdfViewerModal";
 import { fetchWithSupabaseSession } from "@/lib/audit-log-client";
 import { addNotification, removeNotificationsForEvent } from "@/lib/notifications-store";
@@ -66,33 +55,23 @@ import {
 import {
   AdminUser,
   getAdminUsers,
-  saveAdminUsers,
   deleteAdminUser,
   subscribeToUsers,
   registerUserInAdmin,
   formatRealTimeJoined,
   syncUsersFromApi,
-  INITIAL_ADMIN_USERS,
-  USERS_STORE_KEY,
-  SIGNUP_STORE_KEY,
 } from "@/lib/users-store";
 import {
+  DEFAULT_MODERATION_KEYWORDS,
   getModerationKeywords,
-  addModerationKeyword,
-  removeModerationKeyword,
-  resetModerationKeywords,
   getModerationSettings,
-  saveModerationSettings,
+  loadModerationConfig,
+  persistModerationConfig,
   subscribeToModeration,
   ModerationSettings,
 } from "@/lib/moderation-store";
-import {
-  getReports,
-  resolveReport,
-  subscribeToReports,
-  ReportItem,
-} from "@/lib/reports-store";
-import { getUserProfile, getInitials } from "@/lib/user-profile-store";
+import type { ReportItem } from "@/lib/reports-store";
+import { getInitials } from "@/lib/user-profile-store";
 import type { EventData } from "@/components/EventCard";
 
 type Report = ReportItem;
@@ -115,6 +94,9 @@ interface VerificationReq {
   category: string;
   status: "pending" | "approved" | "rejected";
   documents: string[];
+  documentUrls?: Record<string, string>;
+  expediteNote?: string;
+  isExpedited?: boolean;
   decidedAt?: string;
   retentionDays?: number;
   expiresDate?: string;
@@ -147,11 +129,6 @@ interface MonthlyData {
   heightPercent: number;
 }
 
-interface StoredGuestEntry {
-  dateRegistered?: string;
-  registeredAt?: string;
-}
-
 const initialReports: Report[] = [];
 const initialVerifications: VerificationReq[] = [];
 
@@ -169,12 +146,13 @@ function AdminContent() {
   const [reports, setReports] = useState<Report[]>(initialReports);
   const [reportTab, setReportTab] = useState<"active" | "archive">("active");
   const [verifications, setVerifications] = useState<VerificationReq[]>(initialVerifications);
-  const [usersList, setUsersList] = useState<AdminUser[]>(INITIAL_ADMIN_USERS);
+  const [usersList, setUsersList] = useState<AdminUser[]>([]);
   const [eventsList, setEventsList] = useState<AdminEvent[]>(initialEventsList);
   const [analyticsMonth, setAnalyticsMonth] = useState(() => {
     const now = new Date();
     return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
   });
+  const [rsvpsByWeek, setRsvpsByWeek] = useState<number[]>([]);
   const [eventScope, setEventScope] = useState<"active" | "archive">("active");
   const [hoveredMonth, setHoveredMonth] = useState<MonthlyData | null>(null);
   const [actionNotice, setActionNotice] = useState<string | null>(null);
@@ -197,7 +175,7 @@ function AdminContent() {
     const start = new Date(year, month - 1, 1);
     const end = new Date(year, month, 1);
     const weekCount = Math.ceil(new Date(year, month, 0).getDate() / 7);
-    const weeks = Array.from({ length: weekCount }, (_, index) => ({ month: `Week ${index + 1}`, events: 0, rsvps: 0, heightPercent: 6 }));
+    const weeks = Array.from({ length: weekCount }, (_, index) => ({ month: `Week ${index + 1}`, events: 0, rsvps: rsvpsByWeek[index] || 0, heightPercent: 6 }));
     const inRange = (value?: string | null) => {
       if (!value) return false;
       const time = new Date(value).getTime();
@@ -212,19 +190,6 @@ function AdminContent() {
       }
     }
 
-    try {
-      const guestMap: Record<string, StoredGuestEntry[]> = JSON.parse(localStorage.getItem("spott_guest_lists") || "{}");
-      for (const event of eventsList) {
-        const list = guestMap[event.id] || [];
-        for (const attendee of list) {
-          const registeredAt = attendee.dateRegistered || attendee.registeredAt;
-          if (!registeredAt || !inRange(registeredAt)) continue;
-          const day = new Date(registeredAt).getDate();
-          weeks[Math.min(weeks.length - 1, Math.floor((day - 1) / 7))].rsvps += 1;
-        }
-      }
-    } catch {}
-
     const maxCount = Math.max(...weeks.map((week) => week.events + week.rsvps), 1);
     return weeks.map((week) => ({
       ...week,
@@ -232,7 +197,19 @@ function AdminContent() {
         ? Math.max(12, Math.round(((week.events + week.rsvps) / maxCount) * 85))
         : 6,
     }));
-  }, [eventsList, analyticsMonth]);
+  }, [eventsList, analyticsMonth, rsvpsByWeek]);
+
+  useEffect(() => {
+    let active = true;
+    void fetchWithSupabaseSession(`/api/admin/analytics?month=${encodeURIComponent(analyticsMonth)}`)
+      .then(async (response) => {
+        if (!response.ok) throw new Error('Unable to load registration analytics.');
+        const payload = await response.json();
+        if (active) setRsvpsByWeek(Array.isArray(payload.rsvpsByWeek) ? payload.rsvpsByWeek : []);
+      })
+      .catch(() => { if (active) setRsvpsByWeek([]); });
+    return () => { active = false; };
+  }, [analyticsMonth]);
 
   const monthlyMetrics = useMemo(() => {
     const [year, month] = analyticsMonth.split("-").map(Number);
@@ -243,14 +220,7 @@ function AdminContent() {
       const time = new Date(value).getTime();
       return Number.isFinite(time) && time >= start.getTime() && time < end.getTime();
     };
-    let rsvps = 0;
-    try {
-      const guestMap: Record<string, StoredGuestEntry[]> = JSON.parse(localStorage.getItem("spott_guest_lists") || "{}");
-      for (const event of eventsList) {
-        const list = guestMap[event.id] || [];
-        rsvps += list.filter((attendee) => isInMonth(attendee.dateRegistered || attendee.registeredAt)).length;
-      }
-    } catch {}
+    const rsvps = rsvpsByWeek.reduce((sum, count) => sum + count, 0);
     return {
       users: usersList.filter((user) => isInMonth(user.joinedAt || user.joined)).length,
       events: eventsList.filter((event) => isInMonth(event.createdAt || event.date)).length,
@@ -260,121 +230,20 @@ function AdminContent() {
       monthLabel: start.toLocaleDateString("en-US", { month: "long", year: "numeric" }),
       rangeLabel: `${start.toLocaleDateString("en-US", { month: "short", day: "numeric" })} – ${new Date(end.getTime() - 1).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}`,
     };
-  }, [analyticsMonth, eventsList, usersList, reports]);
+  }, [analyticsMonth, eventsList, usersList, reports, rsvpsByWeek]);
 
   // Verification store state & PDF preview (SSR-safe initial baseline)
-  const [verState, setVerState] = useState<VerificationState>(defaultVerificationState);
-  const [adminPdfPreview, setAdminPdfPreview] = useState<string | null>(null);
+  const [adminPdfPreview, setAdminPdfPreview] = useState<{ name: string; url?: string } | null>(null);
 
   useEffect(() => {
-    // Sync with client localStorage on mount to prevent SSR hydration mismatch
-    const syncVerifications = () => {
-      const current = getVerificationState("Metro Creative Group");
-      setVerState(current);
-
-      // Scan ALL organizer verification keys across localStorage (not just Metro)
-      const allVerifications: VerificationReq[] = [];
-      const seen = new Set<string>();
-      try {
-        for (let i = 0; i < localStorage.length; i++) {
-          const key = localStorage.key(i);
-          if (!key || !key.startsWith("spott_verification_state")) continue;
-          const raw = localStorage.getItem(key);
-          if (!raw) continue;
-          try {
-            const parsed: VerificationState = JSON.parse(raw);
-            const orgName = parsed.organizerName || "Unknown Organizer";
-            if (seen.has(orgName.toLowerCase())) continue;
-            seen.add(orgName.toLowerCase());
-            if (!parsed.documents || parsed.documents.length === 0) continue;
-            if (parsed.status !== "pending") {
-              const expiry = parsed.expiresDate ? new Date(parsed.expiresDate).getTime() : NaN;
-              const decision = parsed.decidedAt ? new Date(parsed.decidedAt).getTime() : NaN;
-              const expiresAt = Number.isFinite(expiry)
-                ? expiry
-                : Number.isFinite(decision)
-                  ? decision + 30 * 24 * 60 * 60 * 1000
-                  : Date.now() + 30 * 24 * 60 * 60 * 1000;
-              if (expiresAt <= Date.now()) continue;
-            }
-            allVerifications.push({
-              id: `ver-${key}`,
-              organizer: orgName,
-              submitted: parsed.expeditedAt || parsed.decidedAt || formatDate(0),
-              category: "Student Organization",
-              status: parsed.status,
-              documents: parsed.documents.map((d) => d.name),
-              decidedAt: parsed.decidedAt,
-              retentionDays: parsed.retentionDays,
-              expiresDate: parsed.expiresDate,
-              decisionReason: parsed.decisionReason,
-            });
-          } catch {}
-        }
-      } catch {}
-
-      // Override Metro's entry with its live verState for consistency
-      const metroIdx = allVerifications.findIndex(
-        (v) => v.organizer.toLowerCase().includes("metro creative")
-      );
-      if (metroIdx >= 0) {
-        allVerifications[metroIdx] = {
-          ...allVerifications[metroIdx],
-          id: "ver-metro",
-          status: current.status,
-          documents: current.documents.map((d) => d.name),
-          decidedAt: current.decidedAt,
-          expiresDate: current.expiresDate,
-        };
-      } else if (current.documents && current.documents.length > 0) {
-        allVerifications.unshift({
-          id: "ver-metro",
-          organizer: "Metro Creative Group",
-          submitted: formatDate(0),
-          category: "Arts & Culture",
-          status: current.status,
-          documents: current.documents.map((d) => d.name),
-          decidedAt: current.decidedAt,
-          expiresDate: current.expiresDate,
-        });
-      }
-
-      setVerifications(allVerifications);
-    };
+    const syncVerifications = () => { void syncRemoteVerificationStatuses(); };
 
     const mapToAdminEvents = (list: EventData[]): AdminEvent[] => {
       const modSettings = getModerationSettings();
       const modKeywords = getModerationKeywords();
 
       return list.map((e) => {
-        let rsvpCount = e.registrations || 0;
-        try {
-          const rawGuests = localStorage.getItem("spott_guest_lists");
-          if (rawGuests) {
-            const guestMap = JSON.parse(rawGuests);
-            if (Array.isArray(guestMap[e.id])) {
-              const activeAttendees = guestMap[e.id].filter((attendee: { status?: string }) => attendee.status !== "Declined");
-              rsvpCount = Math.max(rsvpCount, activeAttendees.length);
-            }
-          }
-        } catch {}
-
-        try {
-          let userRegistrations = 0;
-          for (let i = 0; i < localStorage.length; i++) {
-            const key = localStorage.key(i);
-            if (key && (key === "spott_registered_events" || key.startsWith("spott_registered_events_"))) {
-              const raw = localStorage.getItem(key);
-              if (raw) {
-                const arr = JSON.parse(raw);
-                if (Array.isArray(arr) && arr.includes(e.id)) {
-                  userRegistrations++;
-                }
-              }
-            }
-          }
-          rsvpCount = Math.max(rsvpCount, userRegistrations);
-        } catch {}
+        const rsvpCount = e.registrations || 0;
 
         const cap = typeof e.capacity === "number" ? e.capacity : (e.capacity ? Number(e.capacity) : 100);
         const textToScan = `${e.title || ""} ${e.description || ""}`.toLowerCase();
@@ -410,37 +279,48 @@ function AdminContent() {
 
     const syncRemoteVerificationStatuses = async () => {
       try {
-        const response = await fetchWithSupabaseSession('/api/verification?scope=all');
-        if (!response.ok) return;
-        const payload = await response.json();
-        const rows = Array.isArray(payload.verifications) ? payload.verifications : [];
-        const metro = rows.find((row: { organization_name?: string }) => row.organization_name?.toLowerCase().includes('metro creative'));
-        if (metro) {
-          const status = metro.verification_status === 'verified' ? 'approved' : metro.verification_status === 'rejected' ? 'rejected' : 'pending';
-          const local = getVerificationState('Metro Creative Group');
-          if (local.status !== status) {
-            const updated = { ...local, status } as VerificationState;
-            if (status !== 'pending') {
-              updated.decidedAt ||= getRealTimeDate();
-              updated.retentionDays ||= 30;
-              updated.expiresDate ||= get30DaysExpiryDate();
-            }
-            saveVerificationState(updated, 'Metro Creative Group');
-            setVerState(updated);
-          }
+        const [statusResponse, documentsResponse] = await Promise.all([
+          fetchWithSupabaseSession('/api/verification?scope=all', { cache: 'no-store' }),
+          fetchWithSupabaseSession('/api/verification/documents?scope=all', { cache: 'no-store' }),
+        ]);
+        if (!statusResponse.ok || !documentsResponse.ok) return;
+        const [statusPayload, documentsPayload] = await Promise.all([statusResponse.json(), documentsResponse.json()]);
+        const rows = Array.isArray(statusPayload.verifications) ? statusPayload.verifications : [];
+        const docsByOrganizer = new Map<string, Array<{ id: string; name: string; type: string; url: string; uploadedAt: string; archivedAt?: string | null }>>();
+        for (const document of documentsPayload.documents || []) {
+          const docs = docsByOrganizer.get(document.organizerId) || [];
+          docs.push(document);
+          docsByOrganizer.set(document.organizerId, docs);
         }
-        setVerifications((current) => {
-          const merged = [...current];
-          for (const row of rows as Array<{ organizer_id: string; organization_name: string; verification_status?: string | null }>) {
-            if (!row.organization_name) continue;
-            if (!['verified', 'rejected', 'pending'].includes(row.verification_status || '')) continue;
-            const status = row.verification_status === 'verified' ? 'approved' : row.verification_status === 'rejected' ? 'rejected' : 'pending';
-            const index = merged.findIndex((entry) => entry.organizer.toLowerCase() === row.organization_name.toLowerCase());
-            if (index >= 0) merged[index] = { ...merged[index], status };
-            else merged.push({ id: `db-${row.organizer_id}`, organizer: row.organization_name, submitted: formatDate(0), category: 'Student Organization', status, documents: [] });
-          }
-          return merged;
+        const allVerifications: VerificationReq[] = rows.flatMap((row: {
+          organizer_id: string; organization_name: string; verification_status?: string | null;
+          expedite_note?: string | null; expedited_at?: string | null; decided_at?: string | null;
+          decision_reason?: string | null; expires_at?: string | null;
+        }) => {
+          if (!row.organization_name) return [];
+          const documents = docsByOrganizer.get(row.organizer_id) || [];
+          if (!documents.length) return [];
+          const status = row.verification_status === 'verified' ? 'approved' : row.verification_status === 'rejected' ? 'rejected' : 'pending';
+          if (status === 'pending' && documents.every((document) => document.archivedAt)) return [];
+          if (status !== 'pending' && row.expires_at && Date.parse(row.expires_at) <= Date.now()) return [];
+          const date = documents[documents.length - 1]?.uploadedAt;
+          return [{
+            id: row.organizer_id,
+            organizer: row.organization_name,
+            submitted: date ? new Date(date).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : formatDate(0),
+            category: 'Student Organization',
+            status,
+            documents: documents.map((document) => document.name),
+            documentUrls: Object.fromEntries(documents.map((document) => [document.name, document.url])),
+            isExpedited: Boolean(row.expedited_at),
+            expediteNote: row.expedite_note || undefined,
+            decidedAt: row.decided_at ? new Date(row.decided_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : undefined,
+            expiresDate: row.expires_at ? new Date(row.expires_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : undefined,
+            retentionDays: row.expires_at ? 30 : undefined,
+            decisionReason: row.decision_reason || undefined,
+          }];
         });
+        setVerifications(allVerifications);
       } catch { /* Keep the last successfully loaded server statuses. */ }
     };
 
@@ -456,14 +336,13 @@ function AdminContent() {
         if (res.ok) {
           const apiData = await res.json();
           if (Array.isArray(apiData)) {
-            saveStoredEvents(apiData, false);
+            saveStoredEvents(apiData, true);
             setEventsList(mapToAdminEvents(getStoredEvents()));
           }
         }
       } catch {}
     };
 
-    syncVerifications();
     void syncRemoteVerificationStatuses();
     syncAdminEvents();
 
@@ -478,7 +357,7 @@ function AdminContent() {
       void syncUsersFromApi().then(syncUsers);
     };
     const remoteUsersInterval = setInterval(refreshRemoteUsers, 5000);
-    const remoteVerificationInterval = setInterval(syncRemoteVerificationStatuses, 10000);
+    const remoteVerificationInterval = setInterval(syncRemoteVerificationStatuses, 60000);
     window.addEventListener('focus', refreshRemoteUsers);
 
     // Real-time Pending Organizers sync
@@ -523,6 +402,7 @@ function AdminContent() {
       setTempSensitivity(st.sensitivity);
     };
     syncModeration();
+    void loadModerationConfig().then(syncModeration).catch(() => {});
     const unsubModeration = subscribeToModeration(() => {
       syncModeration();
       syncAdminEvents();
@@ -530,10 +410,15 @@ function AdminContent() {
 
     // Real-time Reports sync
     const syncReports = () => {
-      setReports(getReports());
+      void fetchWithSupabaseSession('/api/admin/reports', { cache: 'no-store' })
+        .then(async (response) => {
+          if (!response.ok) throw new Error('Unable to load reports.');
+          const payload = await response.json();
+          setReports(Array.isArray(payload.reports) ? payload.reports : []);
+        })
+        .catch(() => setReports([]));
     };
     syncReports();
-    const unsubReports = subscribeToReports(syncReports);
 
     // Heartbeat to guarantee multi-tab real-time sync even across backgrounded tabs
     const syncInterval = setInterval(() => {
@@ -541,7 +426,6 @@ function AdminContent() {
       syncPendingOrgs();
       syncAdminEvents();
       syncReports();
-      syncVerifications();
     }, 1500);
 
     const unsubscribeEvents = subscribeToEvents(syncAdminEvents);
@@ -558,7 +442,6 @@ function AdminContent() {
       window.removeEventListener('focus', refreshRemoteUsers);
       unsubPendingOrgs();
       unsubModeration();
-      unsubReports();
       clearInterval(syncInterval);
       window.removeEventListener("spott_registered_updated", syncAdminEvents);
       window.removeEventListener("spott_events_updated", syncAdminEvents);
@@ -613,46 +496,70 @@ function AdminContent() {
     }).catch(() => {});
   };
 
-  const handleAddKeyword = (e?: React.FormEvent) => {
+  const handleAddKeyword = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
     const kw = newKeywordInput.trim();
     if (!kw) return;
-    const updated = addModerationKeyword(kw);
-    setModerationKeywords(updated);
-    setNewKeywordInput("");
-    showNotice(`✓ Added "${kw}" to automated listing filters.`);
+    try {
+      const saved = await persistModerationConfig({ keywords: [...getModerationKeywords(), kw] });
+      setModerationKeywords(saved.keywords);
+      setNewKeywordInput("");
+      showNotice(`✓ Added "${kw}" to automated listing filters.`);
+    } catch (error) {
+      showNotice(error instanceof Error ? error.message : 'Unable to save moderation keyword.');
+    }
   };
 
-  const handleRemoveKeyword = (kw: string) => {
-    const updated = removeModerationKeyword(kw);
-    setModerationKeywords(updated);
-    showNotice(`Removed "${kw}" from listing filters.`);
+  const handleRemoveKeyword = async (kw: string) => {
+    try {
+      const saved = await persistModerationConfig({ keywords: getModerationKeywords().filter((keyword) => keyword.toLowerCase() !== kw.toLowerCase()) });
+      setModerationKeywords(saved.keywords);
+      showNotice(`Removed "${kw}" from listing filters.`);
+    } catch (error) {
+      showNotice(error instanceof Error ? error.message : 'Unable to update moderation keywords.');
+    }
   };
 
-  const handleResetKeywords = () => {
-    const updated = resetModerationKeywords();
-    setModerationKeywords(updated);
-    showNotice(`Reset listing filters to default moderation keywords.`);
+  const handleResetKeywords = async () => {
+    try {
+      const saved = await persistModerationConfig({ keywords: DEFAULT_MODERATION_KEYWORDS });
+      setModerationKeywords(saved.keywords);
+      showNotice(`Reset listing filters to default moderation keywords.`);
+    } catch (error) {
+      showNotice(error instanceof Error ? error.message : 'Unable to reset moderation keywords.');
+    }
   };
 
-  const handleSaveThreshold = (e?: React.FormEvent) => {
+  const handleSaveThreshold = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
-    const updated = saveModerationSettings({
-      capacityThreshold: tempThreshold,
-      sensitivity: tempSensitivity,
-    });
-    setModerationSettings(updated);
-    setThresholdModalOpen(false);
-    showNotice(`✓ Threshold saved: Events with ${updated.capacityThreshold}+ capacity will trigger Crowd Safety Review.`);
+    try {
+      const saved = await persistModerationConfig({ settings: {
+        ...getModerationSettings(),
+        capacityThreshold: tempThreshold,
+        sensitivity: tempSensitivity,
+      } });
+      setModerationSettings(saved.settings);
+      setThresholdModalOpen(false);
+      showNotice(`✓ Threshold saved: Events with ${saved.settings.capacityThreshold}+ capacity will trigger Crowd Safety Review.`);
+    } catch (error) {
+      showNotice(error instanceof Error ? error.message : 'Unable to save moderation settings.');
+    }
   };
 
   // 1. User Management Handlers
-  const handleSaveUser = (updated: AdminUser) => {
-    setUsersList((prev) => {
-      const next = prev.map((u) => (u.id === updated.id ? updated : u));
-      saveAdminUsers(next);
-      return next;
+  const handleSaveUser = async (updated: AdminUser) => {
+    const response = await fetchWithSupabaseSession('/api/users', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ user_id: updated.id, name: updated.name, role: updated.role.toLowerCase() }),
     });
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      showNotice(result.error || 'Could not save account settings.');
+      return;
+    }
+    await syncUsersFromApi();
+    setUsersList(getAdminUsers());
     setSelectedUser(null);
     recordAdminAction({ action: 'user.updated', targetType: 'user', targetId: updated.id, summary: `Updated account details for ${updated.name}.` });
     showNotice(`Successfully updated account settings for ${updated.name}.`);
@@ -668,12 +575,8 @@ function AdminContent() {
         return;
       }
     } else {
-      // Fallback: just filter and save if somehow not in current list
-      setUsersList((prev) => {
-        const next = prev.filter((u) => u.id !== id);
-        saveAdminUsers(next);
-        return next;
-      });
+      showNotice(`Could not find ${name} in the database user list.`);
+      return;
     }
     setSelectedUser(null);
     recordAdminAction({ action: 'user.deleted', targetType: 'user', targetId: id, summary: `Removed account for ${name}.` });
@@ -761,8 +664,17 @@ function AdminContent() {
   };
 
   // 3. Report Resolution Handlers
-  const handleResolveReportAction = (id: string, actionNote: string) => {
-    resolveReport(id, actionNote);
+  const handleResolveReportAction = async (id: string, actionNote: string) => {
+    const response = await fetchWithSupabaseSession('/api/admin/reports', {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id, resolutionNote: actionNote }),
+    });
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      showNotice(result.error || 'Could not resolve report.');
+      return;
+    }
     if (actionNote.toLowerCase().includes("removed") && selectedReport?.eventId) {
       try {
         deleteStoredEvent(selectedReport.eventId);
@@ -770,7 +682,9 @@ function AdminContent() {
         setEventsList((prev) => prev.filter((e) => e.id !== selectedReport.eventId));
       } catch {}
     }
-    setReports(getReports());
+    setReports((current) => current.map((report) => report.id === id
+      ? { ...report, status: 'resolved', resolutionNote: actionNote, decidedAt: new Date().toISOString() }
+      : report));
     setSelectedReport(null);
     recordAdminAction({ action: 'report.resolved', targetType: 'report', targetId: id, summary: `Resolved report: ${actionNote}` });
     showNotice(`✓ Report resolved: ${actionNote}`);
@@ -783,24 +697,28 @@ function AdminContent() {
   const todayStr = formatDate(0);
   const expiresStr = formatDate(30);
 
-  const persistAdminVerificationStatus = (name: string, status: 'pending' | 'approved' | 'rejected') => {
-    void fetchWithSupabaseSession('/api/verification', {
-      method: 'PATCH', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ organizationName: name, status: status === 'approved' ? 'verified' : status }),
-    }).then(async (response) => {
-      if (!response.ok) {
-        const payload = await response.json().catch(() => ({}));
-        showNotice(payload.error || 'Verification update did not sync to the server.');
-      }
-    }).catch(() => showNotice('Verification update did not sync to the server.'));
+  const persistAdminVerificationStatus = async (organizerId: string, status: 'pending' | 'approved' | 'rejected') => {
+    try {
+      const response = await fetchWithSupabaseSession('/api/verification', {
+        method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ organizer_id: organizerId, status: status === 'approved' ? 'verified' : status }),
+      });
+      if (response.ok) return true;
+      const payload = await response.json().catch(() => ({}));
+      showNotice(payload.error || 'Verification update did not sync to the server.');
+    } catch {
+      showNotice('Verification update did not sync to the server.');
+    }
+    return false;
   };
 
-  const handleApproveVerification = (id: string, name: string) => {
+  const handleApproveVerification = async (id: string, name: string) => {
     const request = verifications.find((verification) => verification.id === id);
     if (!request?.documents?.length) {
       showNotice(`Cannot approve ${name}: no verification documents were submitted.`);
       return;
     }
+    if (!await persistAdminVerificationStatus(id, 'approved')) return;
     setVerifications((prev) =>
       prev.map((v) =>
         v.id === id
@@ -815,9 +733,6 @@ function AdminContent() {
           : v
       )
     );
-    setApprovalStatus("approved", undefined, name);
-    persistAdminVerificationStatus(name, 'approved');
-    setVerState(getVerificationState("Metro Creative Group"));
     setSelectedVerification(null);
     recordAdminAction({ action: 'verification.approved', targetType: 'verification', targetId: id, summary: `Approved verification for ${name}.` });
     showNotice(`✓ Approved verification for ${name}. Record moved to 30-Day Archive History.`);
@@ -830,7 +745,8 @@ function AdminContent() {
     });
   };
 
-  const handleRejectVerification = (id: string, name: string) => {
+  const handleRejectVerification = async (id: string, name: string) => {
+    if (!await persistAdminVerificationStatus(id, 'rejected')) return;
     setVerifications((prev) =>
       prev.map((v) =>
         v.id === id
@@ -845,9 +761,6 @@ function AdminContent() {
           : v
       )
     );
-    setApprovalStatus("rejected", undefined, name);
-    persistAdminVerificationStatus(name, 'rejected');
-    setVerState(getVerificationState("Metro Creative Group"));
     setSelectedVerification(null);
     recordAdminAction({ action: 'verification.rejected', targetType: 'verification', targetId: id, summary: `Rejected verification for ${name}.` });
     showNotice(`✕ Declined verification for ${name}. Record moved to 30-Day Archive History.`);
@@ -860,7 +773,8 @@ function AdminContent() {
     });
   };
 
-  const handleRestoreVerification = (id: string, name: string) => {
+  const handleRestoreVerification = async (id: string, name: string) => {
+    if (!await persistAdminVerificationStatus(id, 'pending')) return;
     setVerifications((prev) =>
       prev.map((v) =>
         v.id === id
@@ -875,40 +789,26 @@ function AdminContent() {
           : v
       )
     );
-    setApprovalStatus("pending", undefined, name);
-    persistAdminVerificationStatus(name, 'pending');
-    setVerState(getVerificationState("Metro Creative Group"));
     showNotice(`Restored ${name} to Active Verification Queue.`);
   };
 
   const handleResetAllSampleVerifications = () => {
     setVerifications(initialVerifications);
-    resetVerificationState();
-    setVerState(getVerificationState());
     setVerificationTab("active");
-    showNotice("Reset all sample verification requests to Active Queue.");
+    showNotice("Verification applications are loaded from the database and cannot be reset here.");
   };
 
   // Compute active vs archived counts
-  const activeVerifications = verifications.filter((v) => {
-    const isMetro = v.organizer === "Metro Creative Group";
-    const st = isMetro ? verState.status : v.status;
-    return st === "pending";
-  });
+  const activeVerifications = verifications.filter((v) => v.status === "pending");
 
   const archivedVerifications = verifications.filter((v) => {
-    const isMetro = v.organizer === "Metro Creative Group";
-    const st = isMetro ? verState.status : v.status;
+    const st = v.status;
     if (st === "pending") return false;
     if (archiveFilter === "all") return true;
     return st === archiveFilter;
   });
 
-  const allArchivedCount = verifications.filter((v) => {
-    const isMetro = v.organizer === "Metro Creative Group";
-    const st = isMetro ? verState.status : v.status;
-    return st !== "pending";
-  }).length;
+  const allArchivedCount = verifications.filter((v) => v.status !== "pending").length;
 
   const pendingReportsCount = reports.filter((r) => r.status === "open").length;
   const activeReports = reports.filter((report) => report.status === "open");
@@ -1451,12 +1351,11 @@ function AdminContent() {
                         <div className="flex items-center gap-3">
                           {/* Profile Avatar */}
                           {(() => {
-                            const p = getUserProfile(u.email);
                             const ini = getInitials(u.name);
                             return (
                               <div className="w-8 h-8 rounded-full overflow-hidden bg-[#eee9e1] border border-[#e6e1d8] flex items-center justify-center text-xs font-black text-[#555] shrink-0">
-                                {p.avatarUrl ? (
-                                  <img src={p.avatarUrl} alt={u.name} className="w-full h-full object-cover" />
+                                {u.avatarUrl ? (
+                                  <img src={u.avatarUrl} alt={u.name} className="w-full h-full object-cover" />
                                 ) : (
                                   <span>{ini}</span>
                                 )}
@@ -1466,11 +1365,10 @@ function AdminContent() {
                           <div className="min-w-0">
                             <p className="font-bold text-[#171717] text-sm truncate">{u.name}</p>
                             {(() => {
-                              const p = getUserProfile(u.email);
-                              if (p.phone || p.address) {
+                            if (u.phone || u.address) {
                                 return (
                                   <p className="text-[11px] text-[#888888] truncate">
-                                    {p.phone || p.address}
+                                    {u.phone || u.address}
                                   </p>
                                 );
                               }
@@ -1945,9 +1843,8 @@ function AdminContent() {
               {activeVerifications.length > 0 ? (
                 <div className="bg-white border border-[#e6e1d8] rounded-2xl shadow-sm p-6 space-y-4">
                   {activeVerifications.map((ver) => {
-                    const isMetro = ver.organizer === "Metro Creative Group";
-                    const isExpedited = isMetro && verState.isExpedited;
-                    const docCount = isMetro ? verState.documents.length : ver.documents.length;
+                    const isExpedited = Boolean(ver.isExpedited);
+                    const docCount = ver.documents.length;
 
                     return (
                       <div
@@ -1975,10 +1872,10 @@ function AdminContent() {
                           <p className="text-xs text-[#666666]">
                             Submitted: <strong>{ver.submitted}</strong> • {docCount} documents attached
                           </p>
-                          {isExpedited && verState.expediteNote && (
+                          {isExpedited && ver.expediteNote && (
                             <div className="text-xs text-amber-900 bg-amber-100/70 px-2.5 py-1 rounded-lg border border-amber-300/60 inline-flex items-center gap-1.5 mt-1 font-medium">
                               <span className="font-black text-amber-800">Note:</span>
-                              <span>&quot;{verState.expediteNote}&quot;</span>
+                              <span>&quot;{ver.expediteNote}&quot;</span>
                             </div>
                           )}
                         </div>
@@ -2082,8 +1979,8 @@ function AdminContent() {
                     filterKey === "all"
                       ? `All Archived (${allArchivedCount})`
                       : filterKey === "approved"
-                      ? `Approved (${verifications.filter((v) => (v.organizer === "Metro Creative Group" ? verState.status : v.status) === "approved").length})`
-                      : `Declined (${verifications.filter((v) => (v.organizer === "Metro Creative Group" ? verState.status : v.status) === "rejected").length})`;
+                      ? `Approved (${verifications.filter((v) => v.status === "approved").length})`
+                      : `Declined (${verifications.filter((v) => v.status === "rejected").length})`;
 
                   return (
                     <button
@@ -2105,11 +2002,10 @@ function AdminContent() {
               {archivedVerifications.length > 0 ? (
                 <div className="bg-white border border-[#e6e1d8] rounded-2xl shadow-sm p-6 space-y-4">
                   {archivedVerifications.map((ver) => {
-                    const isMetro = ver.organizer === "Metro Creative Group";
-                    const currentStatus = isMetro ? verState.status : ver.status;
-                    const docCount = isMetro ? verState.documents.length : ver.documents.length;
-                    const decidedAt = (isMetro && verState.decidedAt) || ver.decidedAt || todayStr;
-                    const expiresDate = (isMetro && verState.expiresDate) || ver.expiresDate || expiresStr;
+                    const currentStatus = ver.status;
+                    const docCount = ver.documents.length;
+                    const decidedAt = ver.decidedAt || todayStr;
+                    const expiresDate = ver.expiresDate || expiresStr;
                     const isApproved = currentStatus === "approved";
 
                     return (
@@ -2424,12 +2320,11 @@ function AdminContent() {
               <div className="flex items-center gap-3">
                 {/* Profile Avatar */}
                 {(() => {
-                  const p = getUserProfile(selectedUser.email);
                   const ini = getInitials(selectedUser.name);
                   return (
                     <div className="w-12 h-12 rounded-full overflow-hidden bg-[#eee9e1] border border-[#e6e1d8] flex items-center justify-center text-sm font-black text-[#555] shrink-0">
-                      {p.avatarUrl ? (
-                        <img src={p.avatarUrl} alt={selectedUser.name} className="w-full h-full object-cover" />
+                      {selectedUser.avatarUrl ? (
+                        <img src={selectedUser.avatarUrl} alt={selectedUser.name} className="w-full h-full object-cover" />
                       ) : (
                         <span>{ini}</span>
                       )}
@@ -2440,8 +2335,7 @@ function AdminContent() {
                   <h3 className="text-lg font-black text-[#171717]">Manage Account</h3>
                   <p className="text-xs text-[#666666] font-mono">{selectedUser.email}</p>
                   {(() => {
-                    const p = getUserProfile(selectedUser.email);
-                    const details = [p.phone, p.address].filter(Boolean).join(" · ");
+                    const details = [selectedUser.phone, selectedUser.address].filter(Boolean).join(" · ");
                     return details ? (
                       <p className="text-[11px] text-[#888888] mt-0.5">{details}</p>
                     ) : null;
@@ -2722,14 +2616,14 @@ function AdminContent() {
                 <p className="text-[#666666]">Submission Date: <strong>{selectedVerification.submitted}</strong></p>
               </div>
 
-              {selectedVerification.organizer === "Metro Creative Group" && verState.isExpedited && (
+              {selectedVerification.isExpedited && (
                 <div className="p-3 bg-amber-50 rounded-xl border border-amber-200 text-amber-900 space-y-1">
                   <div className="flex items-center gap-1.5 font-black text-xs text-amber-800">
                     <Zap className="w-3.5 h-3.5 fill-amber-500 text-amber-500" />
                     <span>⚡ Priority Expedited (Emergency Review Active)</span>
                   </div>
                   <p className="text-[11px] text-amber-800">
-                    &quot;{verState.expediteNote || "Organizer requested priority accreditation."}&quot;
+                    &quot;{selectedVerification.expediteNote || "Organizer requested priority accreditation."}&quot;
                   </p>
                 </div>
               )}
@@ -2737,30 +2631,7 @@ function AdminContent() {
               <div>
                 <p className="font-bold text-[#171717] mb-2">Submitted Accreditation Credentials:</p>
                 <div className="space-y-2">
-                  {selectedVerification.organizer === "Metro Creative Group" ? (
-                    verState.documents.map((doc) => (
-                      <div
-                        key={doc.id}
-                        className="flex items-center justify-between p-2.5 rounded-xl border border-emerald-200 bg-emerald-50/50 hover:bg-emerald-50 transition-colors"
-                      >
-                        <div className="flex items-center gap-2 text-emerald-900 font-bold overflow-hidden pr-2">
-                          <FileText className="w-4 h-4 text-emerald-600 shrink-0" />
-                          <div className="truncate">
-                            <p className="truncate text-xs">{doc.name}</p>
-                            <p className="text-[10px] text-emerald-700 font-normal">{doc.type}</p>
-                          </div>
-                        </div>
-                        <button
-                          type="button"
-                          onClick={() => setAdminPdfPreview(doc.name)}
-                          className="px-2.5 py-1 bg-white hover:bg-emerald-600 hover:text-white border border-emerald-300 rounded-lg text-[11px] font-bold text-emerald-700 transition-colors shrink-0 cursor-pointer shadow-2xs"
-                        >
-                          View PDF
-                        </button>
-                      </div>
-                    ))
-                  ) : (
-                    selectedVerification.documents.map((doc, idx) => (
+                  {selectedVerification.documents.map((doc, idx) => (
                       <div
                         key={idx}
                         className="flex items-center justify-between p-2.5 rounded-xl border border-emerald-200 bg-emerald-50/50 hover:bg-emerald-50 transition-colors"
@@ -2771,30 +2642,29 @@ function AdminContent() {
                         </div>
                         <button
                           type="button"
-                          onClick={() => setAdminPdfPreview(doc)}
+                          onClick={() => setAdminPdfPreview({ name: doc, url: selectedVerification.documentUrls?.[doc] })}
                           className="px-2.5 py-1 bg-white hover:bg-emerald-600 hover:text-white border border-emerald-300 rounded-lg text-[11px] font-bold text-emerald-700 transition-colors shrink-0 cursor-pointer shadow-2xs"
                         >
                           View PDF
                         </button>
                       </div>
-                    ))
-                  )}
+                    ))}
                 </div>
               </div>
 
               {/* If item is archived (approved or rejected), show retention badge */}
-              {((selectedVerification.organizer === "Metro Creative Group" ? verState.status : selectedVerification.status) !== "pending") && (
+              {selectedVerification.status !== "pending" && (
                 <div className="p-3 bg-amber-50/80 rounded-xl border border-amber-200 text-amber-900 flex items-center justify-between gap-2 text-xs">
                   <div className="flex items-center gap-2">
                     <Clock className="w-4 h-4 text-amber-600 shrink-0" />
                     <div>
                       <p className="font-black text-amber-900">
-                        {((selectedVerification.organizer === "Metro Creative Group" ? verState.status : selectedVerification.status) === "approved")
+                        {(selectedVerification.status === "approved")
                           ? "Archived Record: Verified & Approved"
                           : "Archived Record: Application Declined"}
                       </p>
                       <p className="text-[10px] text-amber-700">
-                        Preserved in 30-day archive until {(selectedVerification.organizer === "Metro Creative Group" ? verState.expiresDate : selectedVerification.expiresDate) || expiresStr}
+                        Preserved in 30-day archive until {selectedVerification.expiresDate || expiresStr}
                       </p>
                     </div>
                   </div>
@@ -2806,7 +2676,7 @@ function AdminContent() {
             </div>
 
             <div className="pt-3 border-t border-[#e6e1d8] flex items-center justify-between gap-2">
-              {((selectedVerification.organizer === "Metro Creative Group" ? verState.status : selectedVerification.status) !== "pending") ? (
+              {selectedVerification.status !== "pending" ? (
                 <>
                   <button
                     type="button"
@@ -2826,7 +2696,7 @@ function AdminContent() {
                     >
                       Close
                     </button>
-                    {((selectedVerification.organizer === "Metro Creative Group" ? verState.status : selectedVerification.status) === "rejected") ? (
+                    {(selectedVerification.status === "rejected") ? (
                       <button
                         onClick={() => handleApproveVerification(selectedVerification.id, selectedVerification.organizer)}
                         className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-black shadow-md transition-colors"
@@ -2988,7 +2858,8 @@ function AdminContent() {
       {/* PDF Viewer Modal */}
       {adminPdfPreview && (
         <PdfViewerModal
-          documentName={adminPdfPreview}
+          documentName={adminPdfPreview.name}
+          documentUrl={adminPdfPreview.url}
           organizerName={selectedVerification?.organizer || "Metro Creative Group"}
           onClose={() => setAdminPdfPreview(null)}
         />

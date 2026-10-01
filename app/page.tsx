@@ -22,15 +22,15 @@ import {
 import EventCard, { type EventData } from "@/components/EventCard";
 import CategoryPills from "@/components/CategoryPills";
 import { getStoredEvents, subscribeToEvents, saveStoredEvents, useStoredEvents } from "@/lib/events-store";
-import { syncNotificationsForEvents } from "@/lib/notifications-store";
 import { getRecommendedFeaturedEvents } from "@/lib/featured-recommendation";
-import { getCurrentUser, getUserSavedEvents, saveUserSavedEvents } from "@/lib/auth-store";
+import { getCurrentUser } from "@/lib/auth-store";
+import { loadSavedEventIds, toggleSavedEvent } from "@/lib/saved-events-client";
 import {
   getAllOrganizersList,
   subscribeToOrganizerProfile,
   OrganizerProfile,
 } from "@/lib/organizer-store";
-import { getAllCategories, matchesCategory, matchesSearchQuery, matchesDirectText, DEFAULT_APP_CATEGORIES } from "@/lib/categories";
+import { getAllCategories, matchesCategory, matchesSearchQuery, matchesDirectText, DEFAULT_APP_CATEGORIES, syncCategoriesFromDatabase } from "@/lib/categories";
 
 export default function Home() {
   const [nowTime] = useState(() => Date.now() - 2 * 60 * 60 * 1000);
@@ -72,9 +72,8 @@ export default function Home() {
     fetch("/api/events")
       .then((res) => (res.ok ? res.json() : []))
       .then((apiData: EventData[]) => {
-        if (!active || !Array.isArray(apiData) || apiData.length === 0) return;
-        saveStoredEvents(apiData, false);
-        syncNotificationsForEvents(apiData);
+        if (!active || !Array.isArray(apiData)) return;
+        saveStoredEvents(apiData, true);
         setRemoteEvents(apiData);
       })
       .catch(() => {});
@@ -85,7 +84,7 @@ export default function Home() {
         setSavedIds([]);
         return;
       }
-      setSavedIds(getUserSavedEvents(user.email));
+      void loadSavedEventIds().then(setSavedIds).catch(() => setSavedIds([]));
     };
 
     syncSaved();
@@ -116,6 +115,10 @@ export default function Home() {
   }, [events]);
 
   useEffect(() => {
+    void syncCategoriesFromDatabase().catch(() => {});
+  }, []);
+
+  useEffect(() => {
     const syncCats = () => {
       setCategoriesList(getAllCategories(events));
     };
@@ -124,18 +127,19 @@ export default function Home() {
     return () => window.removeEventListener("spott_categories_updated", syncCats);
   }, [events]);
 
-  const handleToggleSave = (eventId: string) => {
+  const handleToggleSave = async (eventId: string) => {
     const user = getCurrentUser();
     if (!user) {
       router.push(`/login?redirect=/events/${eventId}`);
       return;
     }
     const isAlreadySaved = savedIds.includes(eventId);
-    const updated = isAlreadySaved
-      ? savedIds.filter((id) => id !== eventId)
-      : [...savedIds, eventId];
-    setSavedIds(updated);
-    saveUserSavedEvents(updated, user.email);
+    try {
+      const saved = await toggleSavedEvent(eventId);
+      setSavedIds((ids) => saved ? [...new Set([...ids, eventId])] : ids.filter((id) => id !== eventId));
+    } catch (error) {
+      console.error(error);
+    }
   };
 
   // Derive distinct organizers from active events

@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { createClient, getAuthenticatedRole } from '@/lib/supabase-server';
+import { createAdminClient, getAuthenticatedRole } from '@/lib/supabase-server';
 
 export async function POST(
   request: Request,
@@ -7,9 +7,13 @@ export async function POST(
 ) {
   try {
     const { id } = await params;
-    const account = await getAuthenticatedRole();
+    const account = await getAuthenticatedRole(request);
     if (!account) return NextResponse.json({ success: false, message: 'Sign in to save events.' }, { status: 401 });
-    const supabase = await createClient();
+    const supabase = createAdminClient();
+
+    const { data: event, error: eventError } = await supabase.from('events').select('event_id').eq('event_id', id).maybeSingle();
+    if (eventError) throw eventError;
+    if (!event) return NextResponse.json({ success: false, message: 'Event not found.' }, { status: 404 });
 
     // Check if already saved
     const { data: existing } = await supabase

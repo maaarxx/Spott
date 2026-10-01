@@ -18,25 +18,9 @@ import {
   UserCheck,
   FileSpreadsheet,
 } from "lucide-react";
-import { getStoredEvents, saveStoredEvent, subscribeToEvents } from "@/lib/events-store";
-import { addNotification } from "@/lib/notifications-store";
-import { getCurrentUser, getUserRegisteredEvents, saveUserRegisteredEvents } from "@/lib/auth-store";
-import { getUserProfile } from "@/lib/user-profile-store";
-
-function isOrgEvent(eventOrg: string | undefined | null, currentOrg: string): boolean {
-  const normCurrent = (currentOrg || "").trim().toLowerCase();
-  const normEvent = (eventOrg || "").trim().toLowerCase();
-  if (!normCurrent) return true;
-  if (!normEvent) {
-    return normCurrent.includes("metro creative") || normCurrent === "mcg";
-  }
-  if (normCurrent === normEvent) return true;
-  if (normCurrent.includes("metro creative") && (normEvent.includes("metro creative") || normEvent === "mcg")) return true;
-  if (normCurrent.includes("vanguard") && normEvent.includes("vanguard")) return true;
-  if (normCurrent.includes("hobbyist") && normEvent.includes("hobbyist")) return true;
-  if (normCurrent.includes("tech manila") && normEvent.includes("tech manila")) return true;
-  return normCurrent.includes(normEvent) || normEvent.includes(normCurrent);
-}
+import { subscribeToEvents } from "@/lib/events-store";
+import { getCurrentUser } from "@/lib/auth-store";
+import { fetchWithSupabaseSession } from "@/lib/audit-log-client";
 
 interface Attendee {
   id: string;
@@ -68,63 +52,57 @@ function RsvpManagementContent() {
   const [proofToView, setProofToView] = useState<string | null>(null);
 
   useEffect(() => {
-    const loadEvents = () => {
-      const user = getCurrentUser();
-      const currentOrg = user?.organization || user?.name || "Metro Creative Group";
-      const stored = getStoredEvents();
-      const filtered = stored.filter((e) => isOrgEvent(e.organizer, currentOrg));
-      const list = filtered.map((e) => ({
-        id: e.id,
-        title: e.title,
-        capacity: e.capacity,
-        requireApproval: e.requireApproval,
-      }));
-      setAvailableEvents(list);
-      let nextSelectedEventKey = selectedEventKey;
-      if (urlEventId && list.some((e) => e.id === urlEventId)) {
-        nextSelectedEventKey = urlEventId;
-      } else if (list.length > 0 && (!selectedEventKey || !list.some((e) => e.id === selectedEventKey))) {
-        nextSelectedEventKey = list[0].id;
-      } else if (list.length === 0) {
-        nextSelectedEventKey = "";
+    let active = true;
+    const loadEvents = async () => {
+      const response = await fetchWithSupabaseSession('/api/events?scope=organizer');
+      if (!active) return;
+      if (!response.ok) {
+        setAvailableEvents([]);
+        setSelectedEventKey("");
+        setAttendees([]);
+        return;
       }
+      const data = await response.json().catch(() => []);
+      const list = Array.isArray(data) ? data.map((event) => ({
+        id: event.id,
+        title: event.title,
+        capacity: event.capacity,
+        requireApproval: event.requireApproval,
+      })) : [];
+      setAvailableEvents(list);
+      const nextSelectedEventKey = urlEventId && list.some((e) => e.id === urlEventId)
+        ? urlEventId
+        : list.some((e) => e.id === selectedEventKey) ? selectedEventKey : list[0]?.id || "";
       setSelectedEventKey(nextSelectedEventKey);
-      loadAttendeesForEvent(nextSelectedEventKey);
+      await loadAttendeesForEvent(nextSelectedEventKey);
     };
-    loadEvents();
-    const unsubscribeEvents = subscribeToEvents(loadEvents);
+    void loadEvents().catch(() => { if (active) { setAvailableEvents([]); setAttendees([]); } });
+    const unsubscribeEvents = subscribeToEvents(() => { void loadEvents(); });
     window.addEventListener("spott_auth_changed", loadEvents);
     return () => {
+      active = false;
       unsubscribeEvents();
       window.removeEventListener("spott_auth_changed", loadEvents);
     };
   }, [urlEventId, selectedEventKey]);
 
-  function loadAttendeesForEvent(eventKey: string) {
+  async function loadAttendeesForEvent(eventKey: string) {
     if (!eventKey) {
       setAttendees([]);
       return;
     }
+    setAttendees([]);
     try {
-      const raw = localStorage.getItem("spott_guest_lists");
-      const parsed = raw ? JSON.parse(raw) : {};
-      const list: Attendee[] = (parsed[eventKey] || []).map((attendee: Attendee) => ({
-        ...attendee,
-        phone: attendee.phone || getUserProfile(attendee.email).phone,
-      }));
-
-      setAttendees(list);
-      void fetch(`/api/organizer/events/${eventKey}/attendees`).then(async (response) => {
-        if (!response.ok) return;
-        const body = await response.json();
-        if (!Array.isArray(body.attendees)) return;
-        const remote: Attendee[] = body.attendees.map((row: Record<string, unknown>) => {
-          const profile = row.users as { name?: string; email?: string } | null;
-          const rawStatus = String(row.payment_status || row.status || '').toLowerCase();
-          return { id: String(row.registration_id), name: String(row.attendee_name || profile?.name || ''), email: String(row.attendee_email || profile?.email || ''), phone: String(row.mobile_number || ''), status: rawStatus.includes('reject') ? 'Declined' : rawStatus.includes('pending') ? 'Pending' : 'Confirmed', dateRegistered: String(row.registration_date || ''), attendeesCount: Number(row.attendees_count || 1), notes: String(row.notes || ''), paymentStatus: String(row.payment_status || ''), amount: Number((body.event?.price || 0) as number) * Number(row.attendees_count || 1), reference: `SP-${eventKey.slice(0,6).toUpperCase()}-${String(row.user_id).slice(0,6).toUpperCase()}`, proofUrl: (row.proof_signed_url as string | null) || null };
-        });
-        setAttendees(remote);
-      }).catch(() => {});
+      const response = await fetchWithSupabaseSession(`/api/organizer/events/${eventKey}/attendees`);
+      if (!response.ok) return;
+      const body = await response.json();
+      if (!Array.isArray(body.attendees)) return;
+      const remote: Attendee[] = body.attendees.map((row: Record<string, unknown>) => {
+        const profile = row.users as { name?: string; email?: string } | null;
+        const rawStatus = String(row.status || '').toLowerCase();
+        return { id: String(row.registration_id), name: String(row.attendee_name || profile?.name || ''), email: String(row.attendee_email || profile?.email || ''), phone: String(row.mobile_number || ''), status: rawStatus.includes('reject') || rawStatus === 'declined' ? 'Declined' : rawStatus.includes('pending') ? 'Pending' : 'Confirmed', dateRegistered: String(row.registration_date || ''), checkedIn: Boolean(row.checked_in_at), attendeesCount: Number(row.attendees_count || 1), notes: String(row.notes || ''), paymentStatus: String(row.payment_status || ''), amount: Number((body.event?.price || 0) as number) * Number(row.attendees_count || 1), reference: `SP-${eventKey.slice(0,6).toUpperCase()}-${String(row.user_id).slice(0,6).toUpperCase()}`, proofUrl: (row.proof_signed_url as string | null) || null };
+      });
+      setAttendees(remote);
     } catch {
       setAttendees([]);
     }
@@ -133,7 +111,7 @@ function RsvpManagementContent() {
   // Switch event handler
   const handleEventChange = (key: string) => {
     setSelectedEventKey(key);
-    loadAttendeesForEvent(key);
+    void loadAttendeesForEvent(key);
   };
 
   useEffect(() => {
@@ -202,86 +180,37 @@ function RsvpManagementContent() {
   const selectedEvent = availableEvents.find((e) => e.id === selectedEventKey);
 
   // Toggle status (e.g. Cancel or Confirm / Approve)
-  const handleToggleStatus = (id: string, newStatus: "Confirmed" | "Pending" | "Declined") => {
+  const handleToggleStatus = async (id: string, newStatus: "Confirmed" | "Pending" | "Declined") => {
     const affectedAttendee = attendees.find((a) => a.id === id);
     if (!affectedAttendee || affectedAttendee.status === newStatus) return;
-    if (selectedEventKey && affectedAttendee.id.length === 36 && newStatus !== "Pending") {
-      void fetch(`/api/organizer/events/${selectedEventKey}/attendees`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ registrationId: id, status: newStatus === "Confirmed" ? "Approved" : "Rejected" }) });
-    }
-
+    if (!selectedEventKey) return;
+    const response = await fetchWithSupabaseSession(`/api/organizer/events/${selectedEventKey}/attendees`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ registrationId: id, status: newStatus }),
+    });
+    if (!response.ok) return;
     const updated = attendees.map((a) => (a.id === id ? { ...a, status: newStatus } : a));
     setAttendees(updated);
-
-    if (selectedEventKey) {
-      try {
-        const raw = localStorage.getItem("spott_guest_lists");
-        const map = raw ? JSON.parse(raw) : {};
-        map[selectedEventKey] = updated;
-        localStorage.setItem("spott_guest_lists", JSON.stringify(map));
-      } catch {}
-
-      if (newStatus === "Declined" && affectedAttendee.email) {
-        const remainingEventIds = getUserRegisteredEvents(affectedAttendee.email)
-          .filter((eventId) => eventId !== selectedEventKey);
-        saveUserRegisteredEvents(remainingEventIds, affectedAttendee.email);
-      }
-
-      // The event's registration count represents confirmed attendees only.
-      try {
-        const stored = getStoredEvents();
-        const evtIdx = stored.findIndex((e) => e.id === selectedEventKey);
-        if (evtIdx !== -1) {
-          stored[evtIdx].registrations = updated.filter((a) => a.status === "Confirmed").length;
-          saveStoredEvent(stored[evtIdx]);
-        }
-      } catch {}
-
-      window.dispatchEvent(new Event("spott_events_updated"));
-      window.dispatchEvent(new Event("spott_registered_updated"));
-    }
-
-    if (affectedAttendee && selectedEvent) {
-      if (newStatus === "Confirmed") {
-        addNotification({
-          type: "update",
-          title: `RSVP Confirmed: "${selectedEvent.title}"`,
-          message: `Your RSVP for ${selectedEvent.title} was confirmed.`,
-          targetRole: "user",
-          recipientEmail: affectedAttendee.email,
-          link: `/events/${selectedEventKey}`,
-        });
-      } else if (newStatus === "Declined") {
-        addNotification({
-          type: "update",
-          title: `RSVP Update: "${selectedEvent.title}"`,
-          message: `Your RSVP for ${selectedEvent.title} was declined by the organizer.`,
-          targetRole: "user",
-          recipientEmail: affectedAttendee.email,
-          link: `/events/${selectedEventKey}`,
-        });
-      }
-    }
+    window.dispatchEvent(new Event("spott_registered_updated"));
 
     if (selectedAttendee && selectedAttendee.id === id) {
       setSelectedAttendee((prev) => (prev ? { ...prev, status: newStatus } : null));
     }
   };
 
-  const handleToggleCheckIn = (id: string) => {
-    const updated = attendees.map((attendee) => attendee.id === id
-      ? { ...attendee, checkedIn: !attendee.checkedIn }
-      : attendee);
-    setAttendees(updated);
-    try {
-      const raw = localStorage.getItem("spott_guest_lists");
-      const map = raw ? JSON.parse(raw) : {};
-      map[selectedEventKey] = updated;
-      localStorage.setItem("spott_guest_lists", JSON.stringify(map));
-      window.dispatchEvent(new Event("spott_registered_updated"));
-    } catch {}
-    if (selectedAttendee?.id === id) {
-      setSelectedAttendee((current) => current ? { ...current, checkedIn: !current.checkedIn } : null);
-    }
+  const handleToggleCheckIn = async (id: string) => {
+    const attendee = attendees.find((item) => item.id === id);
+    if (!attendee || !selectedEventKey) return;
+    const checkedIn = !attendee.checkedIn;
+    const response = await fetchWithSupabaseSession(`/api/organizer/events/${selectedEventKey}/attendees`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'checkin', registrationId: id, checkedIn }),
+    });
+    if (!response.ok) return;
+    setAttendees((current) => current.map((item) => item.id === id ? { ...item, checkedIn } : item));
+    setSelectedAttendee((current) => current?.id === id ? { ...current, checkedIn } : current);
   };
 
   return (

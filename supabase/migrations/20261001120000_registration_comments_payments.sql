@@ -24,8 +24,8 @@ $$;
 
 CREATE TABLE IF NOT EXISTS public.event_comments (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  event_id uuid NOT NULL REFERENCES public.events(event_id) ON DELETE CASCADE,
-  user_id uuid NOT NULL REFERENCES public.users(user_id) ON DELETE CASCADE,
+  event_id text NOT NULL,
+  user_id uuid NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
   content varchar(2000) NOT NULL CHECK (length(trim(content)) > 0),
   created_at timestamptz NOT NULL DEFAULT now()
 );

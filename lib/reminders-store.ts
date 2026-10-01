@@ -2,6 +2,7 @@
 
 import { addNotification } from "./notifications-store";
 import { getCurrentUser } from "./auth-store";
+import { fetchWithSupabaseSession } from "./audit-log-client";
 
 export interface EventReminder {
   id: string;
@@ -15,37 +16,51 @@ export interface EventReminder {
   createdAt: string;
 }
 
-const STORAGE_KEY_REMINDERS = "spott_event_reminders_v2";
 const REMINDERS_UPDATED_EVENT = "spott_reminders_updated";
+let reminderSnapshot: EventReminder[] = [];
+
+function fromDatabase(row: Record<string, unknown>): EventReminder {
+  return {
+    id: String(row.id || ""),
+    userId: String(row.user_id || ""),
+    eventId: String(row.event_id || ""),
+    eventTitle: String(row.event_title || ""),
+    remindAt: String(row.remind_at || ""),
+    offsetLabel: String(row.offset_label || ""),
+    offsetMinutes: Number(row.offset_minutes || 0),
+    sent: Boolean(row.sent),
+    createdAt: String(row.created_at || ""),
+  };
+}
+
+export async function loadUserReminders(): Promise<EventReminder[]> {
+  const response = await fetchWithSupabaseSession("/api/reminders", { cache: "no-store" });
+  if (!response.ok) throw new Error("Unable to load reminders.");
+  const rows = await response.json();
+  reminderSnapshot = Array.isArray(rows) ? rows.map(fromDatabase) : [];
+  if (typeof window !== "undefined") window.dispatchEvent(new Event(REMINDERS_UPDATED_EVENT));
+  return reminderSnapshot;
+}
 
 export function getAllReminders(): EventReminder[] {
-  if (typeof window === "undefined") return [];
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY_REMINDERS);
-    return raw ? JSON.parse(raw) : [];
-  } catch {
-    return [];
-  }
+  return reminderSnapshot;
 }
 
 export function saveAllReminders(reminders: EventReminder[]) {
-  if (typeof window === "undefined") return;
-  try {
-    localStorage.setItem(STORAGE_KEY_REMINDERS, JSON.stringify(reminders));
-    window.dispatchEvent(new Event(REMINDERS_UPDATED_EVENT));
-  } catch {}
+  reminderSnapshot = reminders;
+  if (typeof window !== "undefined") window.dispatchEvent(new Event(REMINDERS_UPDATED_EVENT));
 }
 
 export function getUserRemindersForEvent(eventId: string, userEmailOrId?: string): EventReminder[] {
   if (typeof window === "undefined") return [];
   const currentUser = getCurrentUser();
-  const targetUser = (userEmailOrId || currentUser?.email || "anonymous").trim().toLowerCase();
+  const targetUser = (userEmailOrId || currentUser?.email || "").trim().toLowerCase();
 
   const all = getAllReminders();
   return all.filter(
     (r) =>
       r.eventId === eventId &&
-      (r.userId.toLowerCase() === targetUser || r.userId.toLowerCase() === `user:${targetUser}`)
+      (!targetUser || r.userId.toLowerCase() === targetUser || r.userId.toLowerCase() === `user:${targetUser}` || Boolean(currentUser))
   );
 }
 
@@ -63,9 +78,6 @@ export async function setEventReminder(params: {
   offsetMinutes: number;
   userEmailOrId?: string;
 }): Promise<{ success: boolean; reminder?: EventReminder; error?: string }> {
-  const currentUser = getCurrentUser();
-  const userId = (params.userEmailOrId || currentUser?.email || "anonymous").trim().toLowerCase();
-
   // Parse event date/time
   const eventTimeMs = new Date(params.eventDate.includes(" ") ? params.eventDate.replace(" ", "T") : params.eventDate).getTime();
   if (isNaN(eventTimeMs)) {
@@ -83,53 +95,26 @@ export async function setEventReminder(params: {
   }
 
   const remindAtIso = new Date(remindAtMs).toISOString();
-  const all = getAllReminders();
-
-  // Deduplicate on (userId, eventId, offsetLabel)
-  const existingIdx = all.findIndex(
-    (r) =>
-      r.eventId === params.eventId &&
-      (r.userId.toLowerCase() === userId || r.userId.toLowerCase() === `user:${userId}`) &&
-      r.offsetLabel === params.offsetLabel
-  );
-
-  const newReminder: EventReminder = {
-    id: `rem-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
-    userId,
-    eventId: params.eventId,
-    eventTitle: params.eventTitle,
-    remindAt: remindAtIso,
-    offsetLabel: params.offsetLabel,
-    offsetMinutes: params.offsetMinutes,
-    sent: false,
-    createdAt: new Date().toISOString(),
-  };
-
-  if (existingIdx !== -1) {
-    all[existingIdx] = newReminder;
-  } else {
-    all.push(newReminder);
-  }
-
-  saveAllReminders(all);
-
-  // Sync with backend API
   try {
-    await fetch("/api/reminders", {
+    const response = await fetchWithSupabaseSession("/api/reminders", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        id: newReminder.id,
-        user_id: userId,
         event_id: params.eventId,
         event_title: params.eventTitle,
         remind_at: remindAtIso,
         offset_label: params.offsetLabel,
+        offset_minutes: params.offsetMinutes,
       }),
     });
-  } catch {}
-
-  return { success: true, reminder: newReminder };
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) return { success: false, error: payload.error || "Unable to save reminder." };
+    const newReminder = fromDatabase(payload.reminder || {});
+    saveAllReminders([newReminder, ...reminderSnapshot.filter((reminder) => reminder.id !== newReminder.id && !(reminder.eventId === newReminder.eventId && reminder.offsetLabel === newReminder.offsetLabel))]);
+    return { success: true, reminder: newReminder };
+  } catch {
+    return { success: false, error: "Unable to reach the database. Please try again." };
+  }
 }
 
 export async function removeEventReminder(
@@ -137,64 +122,47 @@ export async function removeEventReminder(
   offsetLabel?: string,
   userEmailOrId?: string
 ): Promise<boolean> {
-  const currentUser = getCurrentUser();
-  const userId = (userEmailOrId || currentUser?.email || "anonymous").trim().toLowerCase();
-
-  const all = getAllReminders();
-  const updated = all.filter((r) => {
-    const isTargetUser = r.userId.toLowerCase() === userId || r.userId.toLowerCase() === `user:${userId}`;
-    if (!isTargetUser || r.eventId !== eventId) return true;
-    if (offsetLabel && r.offsetLabel !== offsetLabel) return true;
-    return false; // delete this match
-  });
-
-  saveAllReminders(updated);
+  void userEmailOrId;
 
   try {
-    await fetch("/api/reminders", {
+    const response = await fetchWithSupabaseSession("/api/reminders", {
       method: "DELETE",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         event_id: eventId,
-        user_id: userId,
         offset_label: offsetLabel,
       }),
     });
-  } catch {}
-
-  return true;
+    if (!response.ok) return false;
+    saveAllReminders(reminderSnapshot.filter((r) => r.eventId !== eventId || (offsetLabel && r.offsetLabel !== offsetLabel)));
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /**
  * 4. Reminders sync: If an event's date or time changes, recompute remind_at
  * for all pending reminders of that event.
  */
-export function recomputeRemindersForEvent(eventId: string, newDateString: string) {
+export async function recomputeRemindersForEvent(eventId: string, newDateString: string) {
   const eventTimeMs = new Date(
     newDateString.includes(" ") ? newDateString.replace(" ", "T") : newDateString
   ).getTime();
   if (isNaN(eventTimeMs)) return;
 
-  const all = getAllReminders();
-  let modified = false;
-
-  const updated = all.map((r) => {
-    if (r.eventId === eventId) {
-      const newRemindAtMs = eventTimeMs - r.offsetMinutes * 60 * 1000;
-      modified = true;
-      return {
-        ...r,
-        remindAt: new Date(newRemindAtMs).toISOString(),
-        // If the new reminder time is in the future, allow it to trigger again
-        sent: newRemindAtMs <= Date.now() ? r.sent : false,
-      };
-    }
-    return r;
+  const response = await fetchWithSupabaseSession("/api/reminders", {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ event_id: eventId, event_date: new Date(eventTimeMs).toISOString() }),
   });
-
-  if (modified) {
-    saveAllReminders(updated);
-  }
+  if (!response.ok) throw new Error("Unable to reschedule reminders.");
+  const payload = await response.json();
+  const updatedRows = Array.isArray(payload.reminders) ? payload.reminders.map(fromDatabase) : [];
+  saveAllReminders([
+    ...reminderSnapshot.filter((reminder) => reminder.eventId !== eventId),
+    ...updatedRows,
+  ]);
 }
 
 /**

@@ -1,7 +1,7 @@
 "use client";
 
-import { getCurrentUser } from "./auth-store";
 import { useSyncExternalStore } from "react";
+import { getCurrentUser } from "./auth-store";
 
 export interface VerificationDocument {
   id: string;
@@ -10,6 +10,8 @@ export interface VerificationDocument {
   size: string;
   uploadedAt: string;
   verified: boolean;
+  sizeBytes?: number;
+  url?: string;
 }
 
 export interface VerificationState {
@@ -25,34 +27,25 @@ export interface VerificationState {
   documents: VerificationDocument[];
 }
 
-let cachedVerificationKey: string | null = null;
-let cachedVerificationRaw: string | null | undefined;
-let cachedVerificationSnapshot: VerificationState | null = null;
+const listeners = new Set<() => void>();
+const verificationByOrganization = new Map<string, VerificationState>();
+
+function organizationKey(name: string): string {
+  return name.trim().toLowerCase();
+}
+
+function emitUpdate(broadcast = true) {
+  for (const listener of listeners) listener();
+  if (broadcast && typeof window !== "undefined") window.dispatchEvent(new Event("spott_verification_updated"));
+}
 
 function subscribeToVerification(callback: () => void): () => void {
-  if (typeof window === "undefined") return () => {};
-  window.addEventListener("spott_verification_updated", callback);
-  window.addEventListener("storage", callback);
+  listeners.add(callback);
+  if (typeof window !== "undefined") window.addEventListener("spott_auth_changed", callback);
   return () => {
-    window.removeEventListener("spott_verification_updated", callback);
-    window.removeEventListener("storage", callback);
+    listeners.delete(callback);
+    if (typeof window !== "undefined") window.removeEventListener("spott_auth_changed", callback);
   };
-}
-
-function getVerificationSnapshot(): VerificationState | null {
-  if (typeof window === "undefined") return null;
-  const key = getVerificationStorageKey();
-  const raw = localStorage.getItem(key);
-  if (key !== cachedVerificationKey || raw !== cachedVerificationRaw) {
-    cachedVerificationKey = key;
-    cachedVerificationRaw = raw;
-    cachedVerificationSnapshot = getVerificationState();
-  }
-  return cachedVerificationSnapshot;
-}
-
-export function useVerificationState(): VerificationState | null {
-  return useSyncExternalStore(subscribeToVerification, getVerificationSnapshot, () => null);
 }
 
 export const getRealTimeDate = () =>
@@ -65,160 +58,46 @@ export const get30DaysExpiryDate = () => {
 };
 
 export function resolveOrgName(organizerName?: string): string {
-  if (organizerName && organizerName.trim()) return organizerName.trim();
+  if (organizerName?.trim()) return organizerName.trim();
   const current = getCurrentUser();
-  return current?.organization || current?.name || "Metro Creative Group";
+  return current?.organization || current?.name || "Organizer";
 }
 
+// Kept for reading old UI identifiers only. Verification records are no longer
+// loaded from or written to those localStorage keys.
 export function getVerificationStorageKey(organizerName?: string): string {
-  const name = resolveOrgName(organizerName);
-  const slug = name.trim().toLowerCase().replace(/[^a-z0-9_-]/g, "_");
-  if (slug === "metro_creative_group" || slug === "mcg_spott_ph") {
-    return "spott_verification_state_v1";
-  }
+  const slug = resolveOrgName(organizerName).toLowerCase().replace(/[^a-z0-9_-]/g, "_");
   return `spott_verification_state_${slug}`;
 }
 
 export const defaultVerificationState: VerificationState = {
-  organizerName: "Metro Creative Group",
+  organizerName: "Organizer",
   status: "pending",
   isExpedited: false,
   documents: [],
 };
 
 export function getVerificationState(organizerName?: string): VerificationState {
-  if (typeof window === "undefined") return defaultVerificationState;
   const name = resolveOrgName(organizerName);
-  const key = getVerificationStorageKey(name);
-
-  try {
-    const data = localStorage.getItem(key);
-    if (data) {
-      const parsed: VerificationState = JSON.parse(data);
-      // Ensure organizerName reflects current organization
-      parsed.organizerName = name;
-      // Auto-migrate old 2025 dates to current real-time date & year
-      if (parsed.expiresDate && parsed.expiresDate.includes("2025")) {
-        parsed.expiresDate = get30DaysExpiryDate();
-      }
-      if (parsed.decidedAt && parsed.decidedAt.includes("2025")) {
-        parsed.decidedAt = getRealTimeDate();
-      }
-      if (parsed.expeditedAt && parsed.expeditedAt.includes("2025")) {
-        parsed.expeditedAt = getRealTimeDate();
-      }
-      if (parsed.documents) {
-        parsed.documents = parsed.documents.map((d) => ({
-          ...d,
-          uploadedAt: d.uploadedAt?.includes("2025") ? getRealTimeDate() : d.uploadedAt,
-        }));
-      }
-      return parsed;
-    }
-  } catch {}
-
-  return {
+  return verificationByOrganization.get(organizationKey(name)) || {
+    ...defaultVerificationState,
     organizerName: name,
-    status: "pending",
-    isExpedited: false,
     documents: [],
   };
 }
 
-export function saveVerificationState(state: VerificationState, organizerName?: string) {
-  if (typeof window === "undefined") return;
+export function saveVerificationState(state: VerificationState, organizerName?: string, broadcast = true) {
   const name = resolveOrgName(organizerName || state.organizerName);
-  const key = getVerificationStorageKey(name);
-  try {
-    localStorage.setItem(key, JSON.stringify({ ...state, organizerName: name }));
-    window.dispatchEvent(new Event("spott_verification_updated"));
-  } catch {}
+  verificationByOrganization.set(organizationKey(name), { ...state, organizerName: name });
+  emitUpdate(broadcast);
 }
 
-export function setExpeditedRequest(note: string, organizerName?: string): VerificationState {
-  const current = getVerificationState(organizerName);
-  const updated: VerificationState = {
-    ...current,
-    isExpedited: true,
-    expediteNote: note || "Upcoming major event requiring verified trust badge before ticket launch.",
-    expeditedAt: new Date().toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }),
-  };
-  saveVerificationState(updated, organizerName);
-  return updated;
-}
-
-export function addVerificationDocument(
-  name: string,
-  type: string = "University Co-Curricular Charter",
-  organizerName?: string
-): VerificationState {
-  const current = getVerificationState(organizerName);
-  const newDoc: VerificationDocument = {
-    id: `doc-${Date.now()}`,
-    name: name.endsWith(".pdf") ? name : `${name}.pdf`,
-    type,
-    size: "1.2 MB",
-    uploadedAt: new Date().toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" }),
-    verified: true,
-  };
-  const updated: VerificationState = {
-    ...current,
-    documents: [...(current.documents || []), newDoc],
-  };
-  saveVerificationState(updated, organizerName);
-  return updated;
-}
-
-export function removeVerificationDocument(id: string, organizerName?: string): VerificationState {
-  const current = getVerificationState(organizerName);
-  const updated: VerificationState = {
-    ...current,
-    documents: (current.documents || []).filter((d) => d.id !== id),
-  };
-  saveVerificationState(updated, organizerName);
-  return updated;
-}
-
-export function setApprovalStatus(
-  status: "pending" | "approved" | "rejected",
-  reason?: string,
-  organizerName?: string
-): VerificationState {
-  const current = getVerificationState(organizerName);
-  const now = new Date();
-  const decidedAt = now.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
-  const expires = new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000).toLocaleDateString("en-US", {
-    month: "short",
-    day: "numeric",
-    year: "numeric",
-  });
-
-  const updated: VerificationState = {
-    ...current,
-    status,
-    decidedAt: status === "pending" ? undefined : decidedAt,
-    retentionDays: status === "pending" ? undefined : 30,
-    expiresDate: status === "pending" ? undefined : expires,
-    decisionReason:
-      reason ||
-      (status === "approved"
-        ? "Accreditation approved by University SuperAdmin."
-        : status === "rejected"
-        ? "Application declined. Record preserved in 30-day archive."
-        : undefined),
-  };
-  saveVerificationState(updated, organizerName);
-  return updated;
-}
-
-export function resetVerificationState(organizerName?: string): VerificationState {
-  const name = resolveOrgName(organizerName);
-  const emptyState: VerificationState = {
-    organizerName: name,
-    status: "pending",
-    isExpedited: false,
-    documents: [],
-  };
-  saveVerificationState(emptyState, name);
-  return emptyState;
+export function useVerificationState(): VerificationState | null {
+  const name = resolveOrgName();
+  const key = organizationKey(name);
+  return useSyncExternalStore(
+    subscribeToVerification,
+    () => verificationByOrganization.get(key) || null,
+    () => null,
+  );
 }

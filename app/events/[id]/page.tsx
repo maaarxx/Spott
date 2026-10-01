@@ -22,64 +22,26 @@ import {
 import Link from "next/link";
 import MapView from "@/components/MapView";
 import CancelRsvpModal from "@/components/CancelRsvpModal";
-import { DEFAULT_EVENTS } from "@/lib/default-events";
 import { getStoredEvents, saveStoredEvent, saveStoredEvents, subscribeToEvents } from "@/lib/events-store";
 import { recordEventView } from "@/lib/views-store";
-import { addNotification } from "@/lib/notifications-store";
-import { addReport } from "@/lib/reports-store";
 import type { EventData } from "@/components/EventCard";
-import { getUserProfile } from "@/lib/user-profile-store";
 import { fetchWithSupabaseSession } from "@/lib/audit-log-client";
 import {
   getCurrentUser,
-  getUserSavedEvents,
-  saveUserSavedEvents,
-  getUserRegisteredEvents,
-  saveUserRegisteredEvents,
-  SPOTT_ACCOUNTS,
   SpottAccount,
 } from "@/lib/auth-store";
+import { loadSavedEventIds, toggleSavedEvent } from "@/lib/saved-events-client";
 
 type EventDetail = EventData & { confirmations?: number };
-type GuestEntry = {
-  id?: string;
-  name?: string;
-  email: string;
-  status?: "Confirmed" | "Pending" | "Declined";
-  dateRegistered?: string;
-  ticketType?: string;
-  phone?: string;
-  notes?: string;
-};
-
-function isGuestEntry(value: unknown): value is GuestEntry {
-  return Boolean(value && typeof value === "object" && "email" in value && typeof value.email === "string");
-}
-
-function parseGuestMap(raw: string | null): Record<string, GuestEntry[]> {
-  if (!raw) return {};
-  try {
-    const parsed: unknown = JSON.parse(raw);
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
-    return Object.fromEntries(Object.entries(parsed).map(([eventId, entries]) => [
-      eventId,
-      Array.isArray(entries) ? entries.filter(isGuestEntry) : [],
-    ]));
-  } catch {
-    return {};
-  }
-}
-
 export default function EventDetailsPage({
   params,
 }: {
   params: Promise<{ id: string }>;
 }) {
   const { id } = use(params);
-  const initialEvent = (DEFAULT_EVENTS.find((e) => e.id === id) || null) as EventDetail | null;
   const router = useRouter();
   const [currentUser, setCurrentUser] = useState<SpottAccount | null>(null);
-  const [event, setEvent] = useState<EventDetail | null>(initialEvent);
+  const [event, setEvent] = useState<EventDetail | null>(null);
   const [comments, setComments] = useState<Array<{id:string; user_id:string; content:string; created_at:string; users?: {name?:string}|null; is_owner?:boolean}>>([]);
   const [commentText, setCommentText] = useState("");
   const [commentError, setCommentError] = useState("");
@@ -107,7 +69,6 @@ export default function EventDetailsPage({
   const [showCancelModal, setShowCancelModal] = useState(false);
   const [isCancellingRsvp, setIsCancellingRsvp] = useState(false);
   const [rsvpFormOpen, setRsvpFormOpen] = useState(false);
-  const [rsvpFormReady, setRsvpFormReady] = useState(false);
   const [rsvpInfo, setRsvpInfo] = useState({ fullName: "", mobile: "", email: "", attendees: "1", notes: "" });
   const [paymentProof, setPaymentProof] = useState<File | null>(null);
   const proofInputRef = useRef<HTMLInputElement>(null);
@@ -123,145 +84,63 @@ export default function EventDetailsPage({
   };
 
   useEffect(() => {
-    const getAccurateRsvps = (baseRegistrations: number, isUserConfirmed: boolean): number => {
-      let guestListCount = 0;
-      let hasGuestList = false;
-      try {
-        const rawGuests = localStorage.getItem("spott_guest_lists");
-        if (rawGuests) {
-      const guestMap = parseGuestMap(rawGuests);
-          if (Array.isArray(guestMap[id])) {
-            hasGuestList = true;
-            guestListCount = guestMap[id].filter(
-              (attendee) => attendee.status === "Confirmed"
-            ).length;
-          }
-        }
-      } catch {}
-
-      if (hasGuestList) {
-        return guestListCount;
-      }
-
-      if (isUserConfirmed) {
-        return Math.max(baseRegistrations, 1);
-      }
-      return baseRegistrations;
-    };
-
-    // 1. Check saved & registered status scoped to logged-in user
-    const checkUserStatus = (): { isRsvpd: boolean; isConfirmed: boolean } => {
-      try {
-        const user = getCurrentUser();
-        setCurrentUser(user);
-
-        if (!user) {
-          setIsSaved(false);
-          setRsvpd(false);
-          setAttendeeStatus(null);
-          setSavedCount(0);
-          return { isRsvpd: false, isConfirmed: false };
-        }
-
-        const savedIds = getUserSavedEvents(user.email);
-        const hasSaved = savedIds.includes(id);
-        setIsSaved(hasSaved);
-        setSavedCount(hasSaved ? 1 : 0);
-
-        const regIds = getUserRegisteredEvents(user.email);
-        let hasReg = regIds.includes(id);
-        let foundStatus: "Confirmed" | "Pending" | "Declined" | null = null;
-
-        try {
-          const rawGuests = localStorage.getItem("spott_guest_lists");
-          if (rawGuests) {
-            const guestMap = parseGuestMap(rawGuests);
-            const list = guestMap[id];
-            if (Array.isArray(list)) {
-              const matched = list.find(
-                (attendee) => attendee.email.toLowerCase() === user.email.toLowerCase()
-              );
-              if (matched) {
-                foundStatus = matched.status || "Confirmed";
-                hasReg = matched.status !== "Declined";
-              }
-            }
-          }
-        } catch {}
-
-        if (hasReg && !foundStatus) {
-          foundStatus = "Confirmed";
-        }
-
-        setRsvpd(hasReg);
-        setAttendeeStatus(hasReg ? foundStatus : null);
-        return { isRsvpd: hasReg, isConfirmed: hasReg && foundStatus === "Confirmed" };
-      } catch {
+    const checkUserStatus = () => {
+      const user = getCurrentUser();
+      setCurrentUser(user);
+      if (!user) {
         setIsSaved(false);
         setRsvpd(false);
         setAttendeeStatus(null);
         setSavedCount(0);
-        return { isRsvpd: false, isConfirmed: false };
+        return;
       }
+      void loadSavedEventIds().then((savedIds) => {
+        const hasSaved = savedIds.includes(id);
+        setIsSaved(hasSaved);
+        setSavedCount(hasSaved ? 1 : 0);
+      }).catch(() => { setIsSaved(false); setSavedCount(0); });
+      void fetchWithSupabaseSession('/api/my-registrations', { cache: 'no-store' })
+        .then(async (response) => {
+          if (!response.ok) throw new Error('Unable to load RSVP status');
+          const payload = await response.json();
+          const registration = (payload.registrations || []).find((item: { event_id: string }) => item.event_id === id);
+          if (!registration) {
+            setRsvpd(false);
+            setAttendeeStatus(null);
+            return;
+          }
+          const status = String(registration.status || '').toLowerCase();
+          const pending = status.includes('pending') || status === 'rejected' || status === 'declined';
+          setRsvpd(status !== 'rejected' && status !== 'declined');
+          setAttendeeStatus(pending ? 'Pending' : 'Confirmed');
+        })
+        .catch(() => {
+          setRsvpd(false);
+          setAttendeeStatus(null);
+        });
     };
 
-    const userStatus = checkUserStatus();
-
-    // 2. Check local storage first (organizer created events)
-    const stored = getStoredEvents();
-    const foundLocal = stored.find((e) => e.id === id);
+    checkUserStatus();
 
     // Track view once per page load (deduplicated on backend, guarded with useRef + sessionStorage)
-    if (!hasTrackedView.current) {
-      hasTrackedView.current = true;
-      recordEventView(id, { organizer: foundLocal?.organizer || initialEvent?.organizer });
-    }
-    if (foundLocal) {
-      setEvent(foundLocal);
-      const accurateCount = getAccurateRsvps(foundLocal.registrations || 0, userStatus.isConfirmed);
-      setRsvpCount(accurateCount);
-      setConfirmationsCount(foundLocal.confirmations || 0);
-
-      // If guest list exists for this event, sync the confirmed registrations count
+    const fetchEvent = async () => {
       try {
-        const rawGuests = localStorage.getItem("spott_guest_lists");
-        if (rawGuests) {
-          const guestMap = parseGuestMap(rawGuests);
-          if (Array.isArray(guestMap[id])) {
-            const confirmedCount = guestMap[id].filter((attendee) => attendee.status === "Confirmed").length;
-            if (foundLocal.registrations !== confirmedCount) {
-              foundLocal.registrations = confirmedCount;
-              const updated = stored.map((e) => (e.id === id ? { ...e, registrations: confirmedCount } : e));
-              localStorage.setItem("spott_events_directory", JSON.stringify(updated));
-            }
+        const res = await fetch(`/api/events/${id}`, { cache: 'no-store' });
+        if (!res.ok) throw new Error("Failed to fetch event");
+        const data = await res.json() as EventDetail;
+        if (data && data.title) {
+          setEvent(data);
+          saveStoredEvent(data);
+          setRsvpCount(data.registrations || 0);
+          setConfirmationsCount(data.confirmations || (data.confirmedAt ? 3 : 0));
+          if (!hasTrackedView.current) {
+            hasTrackedView.current = true;
+            recordEventView(id, { organizer: data.organizer });
           }
         }
       } catch {}
-    } else {
-      // 3. Otherwise fetch from API / fallback
-      const fetchEvent = async () => {
-        try {
-          const res = await fetch(`/api/events/${id}`);
-          if (!res.ok) throw new Error("Failed to fetch event");
-          const data = await res.json() as EventDetail;
-          if (data && data.title) {
-            setEvent(data);
-            const accurateCount = getAccurateRsvps(data.registrations || 0, userStatus.isConfirmed);
-            setRsvpCount(accurateCount);
-            setConfirmationsCount(data.confirmations || (data.confirmedAt ? 3 : 0));
-          }
-        } catch {
-          const fallback = DEFAULT_EVENTS.find((e) => e.id === id);
-          if (fallback) {
-            setEvent(fallback);
-            const accurateCount = getAccurateRsvps(fallback.registrations || 0, userStatus.isConfirmed);
-            setRsvpCount(accurateCount);
-          }
-        }
-      };
-
-      fetchEvent();
-    }
+    };
+    void fetchEvent();
 
     const loadAllAvailable = async () => {
       const local = getStoredEvents();
@@ -271,19 +150,9 @@ export default function EventDetailsPage({
         const res = await fetch("/api/events");
         if (res.ok) {
           const apiData = await res.json();
-          if (Array.isArray(apiData) && apiData.length > 0) {
-            saveStoredEvents(apiData, false);
-            const freshLocal = getStoredEvents();
-            const pool = [...freshLocal, ...apiData];
-            const seen = new Set<string>();
-            const deduped: EventData[] = [];
-            for (const item of pool) {
-              if (!seen.has(item.id)) {
-                seen.add(item.id);
-                deduped.push(item);
-              }
-            }
-            setAllAvailableEvents(deduped);
+          if (Array.isArray(apiData)) {
+            saveStoredEvents(apiData, true);
+            setAllAvailableEvents(apiData);
           }
         }
       } catch {}
@@ -292,14 +161,12 @@ export default function EventDetailsPage({
     loadAllAvailable();
 
     const handleSyncUpdate = () => {
-      const currentStatus = checkUserStatus();
+      checkUserStatus();
       const currentStored = getStoredEvents();
       const match = currentStored.find((e) => e.id === id);
-      const accurateCount = getAccurateRsvps(match?.registrations ?? 0, currentStatus.isConfirmed);
+      const accurateCount = match?.registrations ?? 0;
       setRsvpCount(accurateCount);
-      if (match) {
-        setEvent((prev) => (prev ? { ...prev, ...match, registrations: accurateCount } : match));
-      }
+      void fetchEvent();
       setAllAvailableEvents(currentStored);
     };
 
@@ -315,7 +182,7 @@ export default function EventDetailsPage({
     };
   }, [id]);
 
-  const handleToggleSave = () => {
+  const handleToggleSave = async () => {
     if (!currentUser) {
       showToast("Please log in to save events.");
       router.push(`/login?redirect=/events/${id}`);
@@ -329,22 +196,13 @@ export default function EventDetailsPage({
     }
 
     try {
-      const currentSaves = getUserSavedEvents(user.email);
-      let ids = [...currentSaves];
-
-      if (isSaved) {
-        ids = ids.filter((itemId) => itemId !== id);
-        setIsSaved(false);
-        setSavedCount((c) => Math.max(0, c - 1));
-        showToast("Event removed from your saved plan.");
-      } else {
-        if (!ids.includes(id)) ids.push(id);
-        setIsSaved(true);
-        setSavedCount((c) => c + 1);
-        showToast("Event saved to your plan!");
-      }
-      saveUserSavedEvents(ids, user.email);
-    } catch {}
+      const saved = await toggleSavedEvent(id);
+      setIsSaved(saved);
+      setSavedCount(saved ? 1 : 0);
+      showToast(saved ? "Event saved to your plan!" : "Event removed from your saved plan.");
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : "Could not update saved event.");
+    }
   };
 
   const handleRSVP = () => {
@@ -358,113 +216,9 @@ export default function EventDetailsPage({
       setShowCancelModal(true);
       return;
     }
-    if (!rsvpFormReady) {
-      setRsvpInfo((info) => ({ ...info, fullName: currentUser.name || "", email: currentUser.email || "" }));
-      setRsvpFormError("");
-      setRsvpFormOpen(true);
-      return;
-    }
-    setRsvpFormReady(false);
-
-    try {
-      const user = currentUser || getCurrentUser();
-      if (!user) return;
-
-      const storedEvents = getStoredEvents();
-      const foundIndex = storedEvents.findIndex((e) => e.id === id);
-      const eventTarget = (foundIndex !== -1 ? storedEvents[foundIndex] : event) as EventDetail | null;
-
-      const requireApproval = Boolean(eventTarget?.requireApproval);
-      const rawCap = eventTarget?.capacity;
-      const effectiveCap = typeof rawCap === "number" ? rawCap : (rawCap ? Number(rawCap) : 100);
-      const isCapacityLimited = effectiveCap > 0;
-      const currentConfirmed = eventTarget?.registrations || 0;
-      const isFull = isCapacityLimited && currentConfirmed >= effectiveCap;
-
-      const newStatus: "Confirmed" | "Pending" = (requireApproval || isFull) ? "Pending" : "Confirmed";
-
-      // 1. Update registered event IDs for user
-      const currentRegs = getUserRegisteredEvents(user.email);
-      const regIds = [...currentRegs];
-      if (!regIds.includes(id)) regIds.push(id);
-      saveUserRegisteredEvents(regIds, user.email);
-
-      // 2. Only increment registrations count if Confirmed
-      let newCount = currentConfirmed;
-      if (newStatus === "Confirmed") {
-        newCount = currentConfirmed + 1;
-        if (foundIndex !== -1) {
-          storedEvents[foundIndex].registrations = newCount;
-          localStorage.setItem("spott_events_directory", JSON.stringify(storedEvents));
-        } else if (event) {
-          const eventToSave = {
-            ...event,
-            registrations: newCount,
-          };
-          localStorage.setItem("spott_events_directory", JSON.stringify([eventToSave, ...storedEvents]));
-        }
-      }
-
-      // 3. Update organizer guest lists in spott_guest_lists
-      const rawGuests = localStorage.getItem("spott_guest_lists");
-      const guestMap = parseGuestMap(rawGuests);
-
-      const currentGuestList = guestMap[id] || [];
-      const alreadyAttendingIdx = currentGuestList.findIndex(
-        (a) => a.email?.toLowerCase() === user.email.toLowerCase() || a.id === user.email
-      );
-      const newAttendee = {
-        id: `att-${Date.now()}`,
-        name: rsvpInfo.fullName || user.name || "Guest Attendee",
-        email: rsvpInfo.email || user.email,
-        status: newStatus,
-        dateRegistered: new Date().toISOString().split("T")[0],
-        ticketType: "General Admission",
-        phone: rsvpInfo.mobile || getUserProfile(user.email).phone,
-        attendeesCount: Number(rsvpInfo.attendees) || 1,
-        notes: rsvpInfo.notes || (isFull ? "Waitlist (Event Full)" : requireApproval ? "Awaiting Screening" : "Direct RSVP"),
-        paymentStatus: Number(eventTarget?.price) > 0 ? "Pending verification" : "Not required",
-      };
-
-      if (alreadyAttendingIdx !== -1) {
-        currentGuestList[alreadyAttendingIdx] = newAttendee;
-      } else {
-        currentGuestList.unshift(newAttendee);
-      }
-      guestMap[id] = currentGuestList;
-      localStorage.setItem("spott_guest_lists", JSON.stringify(guestMap));
-
-      // 4. Update UI states
-      setRsvpd(true);
-      setAttendeeStatus(newStatus);
-      setRsvpCount(newCount);
-      setEvent((prev) => (prev ? { ...prev, registrations: newCount } : null));
-
-      // 5. Notify organizer
-      addNotification({
-        type: newStatus === "Pending" ? "reminder" : "announcement",
-        title: newStatus === "Pending" ? `RSVP Needs Approval: "${eventTarget?.title}"` : `New Confirmed RSVP: "${eventTarget?.title}"`,
-        message: `${user.name} (${user.email}) registered for your event. Status: ${newStatus}.`,
-        targetRole: "organizer",
-        link: `/organizer/rsvp?eventId=${id}`,
-      });
-
-      // 6. Broadcast updates
-      window.dispatchEvent(new Event("spott_registered_updated"));
-      window.dispatchEvent(new Event("spott_events_updated"));
-
-      if (newStatus === "Pending") {
-        if (isFull) {
-          showToast("Event is full! You have been placed on the Pending waitlist.");
-        } else {
-          showToast("RSVP Submitted! Your registration is pending organizer review.");
-        }
-      } else {
-        showToast("You are registered! Check My Events to view your ticket.");
-      }
-    } catch (e) {
-      console.error("Failed to update RSVP:", e);
-    }
+    setRsvpInfo((info) => ({ ...info, fullName: currentUser.name || "", email: currentUser.email || "" }));
+    setRsvpFormError("");
+    setRsvpFormOpen(true);
   };
 
   const submitRsvpForm = async (e: React.FormEvent<HTMLFormElement>) => {
@@ -476,89 +230,42 @@ export default function EventDetailsPage({
     const data = new FormData();
     Object.entries(rsvpInfo).forEach(([key, value]) => data.set(key, value));
     if (paymentProof) data.set("proof", paymentProof);
-    const response = await fetch(`/api/events/${id}/register`, { method: "POST", body: data });
+    const response = await fetchWithSupabaseSession(`/api/events/${id}/register`, { method: "POST", body: data });
     const result = await response.json();
-    if (!response.ok && paid) { setRsvpFormError(result.error || "Unable to submit RSVP."); return; }
-    if (paid) {
-      const user = currentUser || getCurrentUser();
-      if (user) {
-        const ids = getUserRegisteredEvents(user.email); if (!ids.includes(id)) saveUserRegisteredEvents([...ids, id], user.email);
-        const guestMap = parseGuestMap(localStorage.getItem("spott_guest_lists"));
-        const guests = guestMap[id] || [];
-        const pendingAttendee = { id: `att-${Date.now()}`, name: rsvpInfo.fullName, email: user.email, status: "Pending" as const, dateRegistered: new Date().toISOString(), ticketType: "General Admission", phone: rsvpInfo.mobile, attendeesCount: Number(rsvpInfo.attendees), notes: rsvpInfo.notes, paymentStatus: "Pending verification" };
-        guestMap[id] = [pendingAttendee, ...guests.filter((entry) => entry.email?.toLowerCase() !== user.email.toLowerCase())];
-        localStorage.setItem("spott_guest_lists", JSON.stringify(guestMap));
-      }
-      addNotification({ type: "reminder", title: `Payment Verification: "${event?.title}"`, message: `${rsvpInfo.fullName} submitted payment proof for verification.`, targetRole: "organizer", link: `/organizer/rsvp?eventId=${id}` });
-      setRsvpd(true); setAttendeeStatus("Pending"); setRsvpFormOpen(false);
-      showToast("Payment submitted. Your RSVP is pending verification.");
-      window.dispatchEvent(new Event("spott_registered_updated"));
-      return;
-    }
-    setRsvpFormOpen(false); setRsvpFormReady(true);
+    if (!response.ok) { setRsvpFormError(result.error || "Unable to submit RSVP."); return; }
+    const attendeeState = result.attendeeStatus === "Confirmed" ? "Confirmed" : "Pending";
+    setRsvpd(true);
+    setAttendeeStatus(attendeeState);
+    setRsvpCount(Number(result.confirmedCount) || 0);
+    setEvent((previous) => previous ? { ...previous, registrations: Number(result.confirmedCount) || 0 } : previous);
+    setRsvpFormOpen(false);
+    setPaymentProof(null);
+    showToast(paid ? "Payment submitted. Your RSVP is pending verification." : attendeeState === "Pending" ? "RSVP submitted and is pending organizer review." : "You are registered! Check My Events to view your ticket.");
+    window.dispatchEvent(new Event("spott_registered_updated"));
+    window.dispatchEvent(new Event("spott_events_updated"));
   };
-  useEffect(() => { if (rsvpFormReady) handleRSVP(); }, [rsvpFormReady]);
 
-  const handleConfirmCancelRSVP = () => {
+  const handleConfirmCancelRSVP = async () => {
     const user = currentUser || getCurrentUser();
     if (!user) return;
     setIsCancellingRsvp(true);
-
     try {
-      // 1. Remove from user registered IDs
-      const currentRegs = getUserRegisteredEvents(user.email);
-      const regIds = currentRegs.filter((itemId) => itemId !== id);
-      saveUserRegisteredEvents(regIds, user.email);
-
-      // 2. Decrement registrations count in directory ONLY if attendee was Confirmed
-      const wasConfirmed = attendeeStatus === "Confirmed";
-      const storedEvents = getStoredEvents();
-      const foundIndex = storedEvents.findIndex((e) => e.id === id);
-      const curCount = foundIndex !== -1 ? (storedEvents[foundIndex].registrations || 0) : (event?.registrations || 0);
-      const newCount = wasConfirmed ? Math.max(0, curCount - 1) : curCount;
-
-      if (wasConfirmed) {
-        if (foundIndex !== -1) {
-          storedEvents[foundIndex].registrations = newCount;
-          localStorage.setItem("spott_events_directory", JSON.stringify(storedEvents));
-        } else if (event) {
-          const eventToSave = { ...event, registrations: newCount };
-          localStorage.setItem("spott_events_directory", JSON.stringify([eventToSave, ...storedEvents]));
-        }
-      }
-
-      // 3. Remove attendee from organizer guest lists
-      const rawGuests = localStorage.getItem("spott_guest_lists");
-      const guestMap = parseGuestMap(rawGuests);
-
-      const userEmail = user.email.trim().toLowerCase();
-      const userName = (user.name || "").trim().toLowerCase();
-      let currentGuestList = guestMap[id] || [];
-      currentGuestList = currentGuestList.filter(
-        (a) =>
-          a.email?.toLowerCase() !== userEmail &&
-          a.id !== userEmail &&
-          (!userName || a.name?.toLowerCase() !== userName)
-      );
-      guestMap[id] = currentGuestList;
-      localStorage.setItem("spott_guest_lists", JSON.stringify(guestMap));
-
-      // 4. Update UI states immediately
+      const response = await fetchWithSupabaseSession(`/api/events/${id}/register`, { method: "DELETE" });
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(result.error || "Could not cancel RSVP.");
+      const newCount = Number(result.confirmedCount) || 0;
       setRsvpd(false);
       setAttendeeStatus(null);
       setRsvpCount(newCount);
       setEvent((prev) => (prev ? { ...prev, registrations: newCount } : null));
-      setIsCancellingRsvp(false);
       setShowCancelModal(false);
-
-      // 5. Broadcast updates
       window.dispatchEvent(new Event("spott_registered_updated"));
       window.dispatchEvent(new Event("spott_events_updated"));
-
       showToast("RSVP cancelled. Your slot has been released.");
-    } catch {
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : "Could not cancel RSVP.");
+    } finally {
       setIsCancellingRsvp(false);
-      setShowCancelModal(false);
     }
   };
 
@@ -581,26 +288,23 @@ export default function EventDetailsPage({
     showToast("Feedback submitted. Thank you!");
   };
 
-  const handleReportSubmit = (e: React.FormEvent) => {
+  const handleReportSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (reportReason.trim().length < 5) {
       showToast("Please provide at least 5 characters.");
       return;
     }
 
-    const user = getCurrentUser();
-    const reporterName = user?.name || "John Doe";
-    const reporterEmail = user?.email || "jd@spott.ph";
-
-    addReport({
-      reporter: reporterName,
-      reporterEmail: reporterEmail,
-      eventId: id,
-      event: event?.title || "Community Event",
-      reason: "Listing Policy / Content Concern",
-      details: reportReason.trim(),
+    const response = await fetchWithSupabaseSession(`/api/events/${id}/report`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ reason: "Listing Policy / Content Concern", details: reportReason.trim() }),
     });
-
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      showToast(result.message || "Could not submit report. Sign in and try again.");
+      return;
+    }
     setReportSubmitted(true);
     setShowReport(false);
     showToast("Report submitted for administrator review.");

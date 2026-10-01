@@ -1,9 +1,9 @@
 "use client";
 
 import { getCurrentUser } from "./auth-store";
+import { fetchWithSupabaseSession } from "./audit-log-client";
 import { getStoredEvents } from "./events-store";
 import { DEFAULT_EVENTS } from "./default-events";
-import { getVerificationState } from "./verification-store";
 import type { EventData } from "@/components/EventCard";
 
 export interface OrganizerProfile {
@@ -17,11 +17,10 @@ export interface OrganizerProfile {
   updatedAt?: string;
 }
 
-const STORAGE_PREFIX = "spott_organizer_profile_";
+const profileCache = new Map<string, OrganizerProfile>();
 
 export function getProfileStorageKey(name: string): string {
-  const slug = name.trim().toLowerCase().replace(/[^a-z0-9_-]/g, "_");
-  return `${STORAGE_PREFIX}${slug}`;
+  return name.trim().toLowerCase();
 }
 
 export const DEFAULT_ORGANIZER_PROFILES: Record<string, OrganizerProfile> = {
@@ -75,22 +74,9 @@ export function getOrganizerProfile(organizerName?: string): OrganizerProfile {
     current?.name ||
     "Metro Creative Group";
 
-  const key = getProfileStorageKey(name);
   const normalized = name.toLowerCase().trim();
-
-  if (typeof window !== "undefined") {
-    try {
-      const raw = localStorage.getItem(key);
-      if (raw) {
-        const parsed = JSON.parse(raw);
-        return {
-          ...DEFAULT_ORGANIZER_PROFILES[normalized],
-          ...parsed,
-          name,
-        };
-      }
-    } catch {}
-  }
+  const cached = profileCache.get(normalized);
+  if (cached) return { ...cached };
 
   // Fallback to defaults or generate baseline
   if (DEFAULT_ORGANIZER_PROFILES[normalized]) {
@@ -126,34 +112,106 @@ export function saveOrganizerProfile(
   };
 
   if (typeof window !== "undefined") {
-    try {
-      const key = getProfileStorageKey(name);
-      localStorage.setItem(key, JSON.stringify(updated));
-      window.dispatchEvent(new Event("spott_organizer_profile_updated"));
-    } catch (e) {
-      console.error("Failed to save organizer profile:", e);
-    }
+    profileCache.set(name.toLowerCase().trim(), updated);
+    window.dispatchEvent(new Event("spott_organizer_profile_updated"));
   }
 
   return updated;
+}
+
+function mapDatabaseProfile(row: Record<string, unknown>): OrganizerProfile {
+  return {
+    name: String(row.name || ""),
+    avatarUrl: typeof row.avatarUrl === "string" ? row.avatarUrl : "",
+    caption: typeof row.caption === "string" ? row.caption : "",
+    address: typeof row.address === "string" ? row.address : "",
+    email: typeof row.email === "string" ? row.email : "",
+    website: typeof row.website === "string" ? row.website : "",
+    category: typeof row.category === "string" ? row.category : "",
+  };
+}
+
+export async function loadOrganizerProfileFromDatabase(name?: string): Promise<OrganizerProfile> {
+  const url = name ? `/api/organizer/profile?name=${encodeURIComponent(name)}` : "/api/organizer/profile";
+  const response = await fetchWithSupabaseSession(url, { cache: "no-store" });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok || !payload.profile) throw new Error(payload.error || "Unable to load organizer profile.");
+  let profile = mapDatabaseProfile(payload.profile);
+  if (typeof window !== "undefined") {
+    try {
+      const legacyKey = `spott_organizer_profile_${profile.name.toLowerCase().trim().replace(/[^a-z0-9_-]/g, "_")}`;
+      const raw = localStorage.getItem(legacyKey);
+      const legacy = raw ? JSON.parse(raw) as OrganizerProfile : null;
+      if (legacy) {
+        const form = new FormData();
+        form.set("organization_name", profile.name);
+        let hasImport = false;
+        for (const [field, current, oldValue] of [
+          ['description', profile.caption, legacy.caption],
+          ['address', profile.address, legacy.address],
+          ['public_email', profile.email, legacy.email],
+          ['website', profile.website, legacy.website],
+          ['category', profile.category, legacy.category],
+        ] as const) {
+          if (!current && typeof oldValue === 'string' && oldValue.trim()) {
+            form.set(field, oldValue.trim());
+            hasImport = true;
+          }
+        }
+        if (!profile.avatarUrl && typeof legacy.avatarUrl === 'string') {
+          const match = legacy.avatarUrl.match(/^data:(image\/(?:jpeg|png|webp|gif));base64,(.+)$/);
+          if (match) {
+            const binary = atob(match[2]);
+            const bytes = Uint8Array.from(binary, (char) => char.charCodeAt(0));
+            const ext = match[1].split('/')[1].replace('jpeg', 'jpg');
+            form.set('avatar', new File([bytes], `legacy-organizer.${ext}`, { type: match[1] }));
+            hasImport = true;
+          }
+        }
+        if (hasImport) {
+          form.set('migration_mode', 'true');
+          form.set('avatar_action', 'keep');
+          const migrated = await fetchWithSupabaseSession('/api/organizer/profile', { method: 'PATCH', body: form });
+          const migratedPayload = await migrated.json().catch(() => ({}));
+          if (migrated.ok && migratedPayload.profile) profile = mapDatabaseProfile(migratedPayload.profile);
+        }
+      }
+    } catch {
+      // Retain the old browser copy if migration is unavailable.
+    }
+  }
+  profileCache.set(profile.name.toLowerCase().trim(), profile);
+  return profile;
+}
+
+export async function saveOrganizerProfileToDatabase(
+  profile: OrganizerProfile,
+  avatarFile?: File | null,
+  removeAvatar = false,
+): Promise<OrganizerProfile> {
+  const form = new FormData();
+  form.set("organization_name", profile.name);
+  form.set("description", profile.caption || "");
+  form.set("address", profile.address || "");
+  form.set("public_email", profile.email || "");
+  form.set("website", profile.website || "");
+  form.set("category", profile.category || "");
+  form.set("avatar_action", removeAvatar ? "remove" : "keep");
+  if (avatarFile) form.set("avatar", avatarFile);
+  const response = await fetchWithSupabaseSession("/api/organizer/profile", { method: "PATCH", body: form });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok || !payload.profile) throw new Error(payload.error || "Unable to save organizer profile.");
+  return saveOrganizerProfile(mapDatabaseProfile(payload.profile));
 }
 
 export function subscribeToOrganizerProfile(callback: () => void): () => void {
   if (typeof window === "undefined") return () => {};
 
   const handleUpdate = () => callback();
-  const handleStorage = (e: StorageEvent) => {
-    if (e.key && e.key.startsWith(STORAGE_PREFIX)) {
-      callback();
-    }
-  };
-
   window.addEventListener("spott_organizer_profile_updated", handleUpdate);
-  window.addEventListener("storage", handleStorage);
 
   return () => {
     window.removeEventListener("spott_organizer_profile_updated", handleUpdate);
-    window.removeEventListener("storage", handleStorage);
   };
 }
 
@@ -190,25 +248,8 @@ export function getAllOrganizersList(extraEvents?: EventData[]): Array<Organizer
     }
   });
 
-  // 3. Merge stored profile overrides from localStorage if any
-  if (typeof window !== "undefined") {
-    try {
-      for (let i = 0; i < localStorage.length; i++) {
-        const k = localStorage.key(i);
-        if (k && k.startsWith(STORAGE_PREFIX)) {
-          const raw = localStorage.getItem(k);
-          if (raw) {
-            const p: OrganizerProfile = JSON.parse(raw);
-            if (p.name) {
-              const key = p.name.toLowerCase().trim();
-              const existing = orgMap.get(key) || getOrganizerProfile(p.name);
-              orgMap.set(key, { ...existing, ...p });
-            }
-          }
-        }
-      }
-    } catch {}
-  }
+  // Database-loaded profile cache only; localStorage is never the profile source.
+  profileCache.forEach((profile, key) => orgMap.set(key, { ...profile }));
 
   // Calculate event count & verification status for each
   const result: Array<OrganizerProfile & { eventCount: number; isVerified: boolean }> = [];
@@ -233,10 +274,7 @@ export function getAllOrganizersList(extraEvents?: EventData[]): Array<Organizer
       return evOrg === target;
     });
 
-    const ver = getVerificationState(prof.name);
-    const isVerified =
-      (ver && ver.status === "approved") ||
-      isMetro;
+    const isVerified = eventsForOrg.some((event) => Boolean(event.verified));
 
     result.push({
       ...prof,
