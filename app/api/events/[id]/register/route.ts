@@ -20,12 +20,13 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
     const fullName = String(form.get('fullName') || '').trim();
     const mobile = String(form.get('mobile') || '').trim();
     const email = String(form.get('email') || '').trim().toLowerCase();
-    const attendees = Number(form.get('attendees') || 1);
+    // One authenticated account may reserve one seat per event. Ignore any
+    // client-supplied attendee count, including requests from older app builds.
+    const attendeeCount = 1;
     const notes = String(form.get('notes') || '').trim();
     if (fullName.length < 2 || fullName.length > 100) return NextResponse.json({ error: 'Enter your name (maximum 100 characters).', field: 'fullName' }, { status: 400 });
     if (!/^09\d{9}$/.test(mobile)) return NextResponse.json({ error: 'Use a valid PH mobile number in 09XXXXXXXXX format.', field: 'mobile' }, { status: 400 });
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || email.length > 254) return NextResponse.json({ error: 'Enter a valid email address (maximum 254 characters).', field: 'email' }, { status: 400 });
-    if (!Number.isInteger(attendees) || attendees < 1 || attendees > 20) return NextResponse.json({ error: 'Choose between 1 and 20 attendees.', field: 'attendees' }, { status: 400 });
     if (notes.length > 1000) return NextResponse.json({ error: 'Notes must be 1,000 characters or fewer.', field: 'notes' }, { status: 400 });
     const db = createAdminClient();
     const { data: event, error: eventError } = await db.from('events').select('price,capacity,require_approval,organizer_id,title').eq('event_id', id).maybeSingle();
@@ -60,13 +61,13 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
     const requiresApproval = Boolean(event.require_approval);
     const attendeeStatus = paid || requiresApproval || full ? 'pending' : 'confirmed';
     const status = paid ? 'pending verification' : attendeeStatus;
-    const registration = { status, attendee_name: fullName, attendee_email: email, mobile_number: mobile, attendees_count: attendees, notes, payment_status: paid ? 'pending verification' : 'not required', payment_proof_url: proofPath };
+    const registration = { status, attendee_name: fullName, attendee_email: email, mobile_number: mobile, attendees_count: attendeeCount, notes, payment_status: paid ? 'pending verification' : 'not required', payment_proof_url: proofPath };
     const write = existing
       ? await db.from('registrations').update(registration).eq('registration_id', existing.registration_id).eq('user_id', account.userId).eq('event_id', id).select('registration_id').maybeSingle()
       : await db.from('registrations').insert({ ...registration, user_id: account.userId, event_id: id }).select('registration_id').maybeSingle();
     const { data: savedRegistration, error } = write;
     if (error?.code === '23514' && error.message.includes('EVENT_CAPACITY_REACHED')) {
-      return NextResponse.json({ error: 'This event has no remaining confirmed slots. Your RSVP was not saved as confirmed.', field: 'attendees' }, { status: 409 });
+      return NextResponse.json({ error: 'This event has no remaining confirmed slots. Your RSVP was not saved as confirmed.' }, { status: 409 });
     }
     if (error?.code === '23505') {
       return NextResponse.json({ error: 'An RSVP for this event was just submitted. Refresh your event status before trying again.' }, { status: 409 });
@@ -93,9 +94,9 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
     await writeAuditEntry(account, {
       action: 'rsvp.created_or_updated', targetType: 'event', targetId: id,
       summary: `Submitted an RSVP for event ${id}.`,
-      details: { registration_status: status, attendee_count: attendees, payment_status: paid ? 'pending verification' : 'not required' },
+      details: { registration_status: status, attendee_count: attendeeCount, payment_status: paid ? 'pending verification' : 'not required' },
     });
-    return NextResponse.json({ success: true, status, attendeeStatus: attendeeStatus === 'confirmed' ? 'Confirmed' : 'Pending', confirmedCount: updatedConfirmedCount, reference: `SP-${id.slice(0,6).toUpperCase()}-${account.userId.slice(0,6).toUpperCase()}`, amount: Number(event.price) * attendees });
+    return NextResponse.json({ success: true, status, attendeeStatus: attendeeStatus === 'confirmed' ? 'Confirmed' : 'Pending', confirmedCount: updatedConfirmedCount, reference: `SP-${id.slice(0,6).toUpperCase()}-${account.userId.slice(0,6).toUpperCase()}`, amount: Number(event.price) * attendeeCount });
   } catch { return NextResponse.json({ error: 'Could not save RSVP.' }, { status: 500 }); }
 }
 

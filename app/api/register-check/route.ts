@@ -56,10 +56,10 @@ export async function POST(request: Request) {
     const normalizedMi = String(mi || '').trim();
     const normalizedLastName = String(lastName || '').trim();
     const validNamePart = /^[\p{L}\p{M}][\p{L}\p{M} '\u2019-]*$/u;
-    if (!normalizedFirstName || normalizedFirstName.length > 15 || !validNamePart.test(normalizedFirstName)) return NextResponse.json({ error: 'Enter a valid first name (maximum 15 characters; letters, spaces, apostrophes, and hyphens only).' }, { status: 400 });
+    if (!normalizedFirstName || normalizedFirstName.length < 2 || normalizedFirstName.length > 15 || !validNamePart.test(normalizedFirstName)) return NextResponse.json({ error: 'Enter a valid first name (2–15 characters; letters, spaces, apostrophes, and hyphens only).' }, { status: 400 });
     if (!normalizedMi) return NextResponse.json({ error: 'Middle initial is required.' }, { status: 400 });
     if (!/^[A-Za-z]$/.test(normalizedMi)) return NextResponse.json({ error: 'Middle initial must be one alphabetic character.' }, { status: 400 });
-    if (!normalizedLastName || normalizedLastName.length > 15 || !validNamePart.test(normalizedLastName)) return NextResponse.json({ error: 'Enter a valid last name (maximum 15 characters; letters, spaces, apostrophes, and hyphens only).' }, { status: 400 });
+    if (!normalizedLastName || normalizedLastName.length < 2 || normalizedLastName.length > 15 || !validNamePart.test(normalizedLastName)) return NextResponse.json({ error: 'Enter a valid last name (2–15 characters; letters, spaces, apostrophes, and hyphens only).' }, { status: 400 });
     if (typeof password !== 'string' || password.length < 8 || password.length > 20 || /\s/.test(password)) return NextResponse.json({ error: 'Password must be 8–20 characters with no spaces.' }, { status: 400 });
     const passLower = password.toLowerCase();
     const nameParts = [normalizedFirstName, normalizedLastName].flatMap((part) => part.toLowerCase().split(/[\s.'’_-]+/)).filter((part) => part.length >= 2);
