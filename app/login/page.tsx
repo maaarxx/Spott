@@ -199,16 +199,6 @@ export default function LoginPage() {
           executeLogin(account);
           return;
         }
-        // Demo accounts are intentionally limited to localhost. Production access
-        // must use a Supabase Auth session so privileged APIs can verify the role.
-        const demoAccount = findAccount(email, password);
-        if (typeof window !== 'undefined' && ['localhost', '127.0.0.1'].includes(window.location.hostname) && demoAccount) {
-          executeLogin(demoAccount);
-          return;
-        }
-        if (demoAccount) {
-          throw new Error('These built-in demo credentials only work on localhost. On Vercel, create/sign in with this email through Supabase Auth, then have its public.users row assigned the admin role.');
-        }
         throw new Error(error.message);
       } catch (error) {
         setLoading(false);
