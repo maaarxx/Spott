@@ -36,6 +36,8 @@ DROP POLICY IF EXISTS event_comments_insert_own ON public.event_comments;
 CREATE POLICY event_comments_insert_own ON public.event_comments FOR INSERT TO authenticated WITH CHECK (user_id = auth.uid());
 DROP POLICY IF EXISTS event_comments_delete_own ON public.event_comments;
 CREATE POLICY event_comments_delete_own ON public.event_comments FOR DELETE TO authenticated USING (user_id = auth.uid());
+GRANT SELECT ON public.event_comments TO anon, authenticated;
+GRANT INSERT, DELETE ON public.event_comments TO authenticated;
 
 ALTER TABLE public.registrations ADD COLUMN IF NOT EXISTS payment_status varchar(30);
 ALTER TABLE public.registrations ADD COLUMN IF NOT EXISTS payment_proof_url text;
