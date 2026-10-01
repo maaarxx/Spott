@@ -428,9 +428,16 @@ export function saveAdminUsers(list: AdminUser[]) {
  * Records all three identifiers in the deleted-set so getAdminUsers() never re-adds them
  * from INITIAL_ADMIN_USERS, signup store, pending organizers, or events directory.
  */
-export function deleteAdminUser(user: { id: string; email: string; name?: string }): void {
-  if (typeof window === "undefined") return;
+export async function deleteAdminUser(user: { id: string; email: string; name?: string }): Promise<boolean> {
+  if (typeof window === "undefined") return false;
   try {
+    const response = await fetchWithSupabaseSession("/api/users", {
+      method: "DELETE",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ user_id: user.id, email: user.email }),
+    });
+    if (!response.ok) return false;
+
     // 1. Add to deleted set (ids + emails + names)
     const delRaw = localStorage.getItem(DELETED_USERS_KEY);
     const del: { ids: string[]; emails: string[]; names: string[] } = delRaw
@@ -478,7 +485,8 @@ export function deleteAdminUser(user: { id: string; email: string; name?: string
         }
       }
     } catch {}
-  } catch {}
+    return true;
+  } catch { return false; }
 }
 
 /**

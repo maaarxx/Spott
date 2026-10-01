@@ -658,11 +658,15 @@ function AdminContent() {
     showNotice(`Successfully updated account settings for ${updated.name}.`);
   };
 
-  const handleDeleteUser = (id: string, name: string) => {
+  const handleDeleteUser = async (id: string, name: string) => {
     if (!confirm(`Are you sure you want to permanently remove ${name}'s account?\n\nThis cannot be undone — the account will not return after a page refresh.`)) return;
     const userToDelete = usersList.find((u) => u.id === id);
     if (userToDelete) {
-      deleteAdminUser({ id: userToDelete.id, email: userToDelete.email, name: userToDelete.name });
+      const deleted = await deleteAdminUser({ id: userToDelete.id, email: userToDelete.email, name: userToDelete.name });
+      if (!deleted) {
+        showNotice(`Could not permanently delete ${name}. Confirm you are signed in as an admin and try again.`);
+        return;
+      }
     } else {
       // Fallback: just filter and save if somehow not in current list
       setUsersList((prev) => {
