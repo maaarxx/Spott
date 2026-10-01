@@ -29,6 +29,7 @@ import { addNotification } from "@/lib/notifications-store";
 import { addReport } from "@/lib/reports-store";
 import type { EventData } from "@/components/EventCard";
 import { getUserProfile } from "@/lib/user-profile-store";
+import { fetchWithSupabaseSession } from "@/lib/audit-log-client";
 import {
   getCurrentUser,
   getUserSavedEvents,
@@ -82,15 +83,15 @@ export default function EventDetailsPage({
   const [comments, setComments] = useState<Array<{id:string; user_id:string; content:string; created_at:string; users?: {name?:string}|null; is_owner?:boolean}>>([]);
   const [commentText, setCommentText] = useState("");
   const [commentError, setCommentError] = useState("");
-  useEffect(() => { if (!id) return; fetch(`/api/events/${id}/comments`).then((r) => r.json()).then((body) => setComments(body.comments || [])).catch(() => {}); }, [id]);
+  useEffect(() => { if (!id) return; void fetchWithSupabaseSession(`/api/events/${id}/comments`).then((r) => r.json()).then((body) => setComments(body.comments || [])).catch(() => {}); }, [id]);
   const submitComment = async (e: React.FormEvent) => {
     e.preventDefault(); setCommentError("");
-    const response = await fetch(`/api/events/${id}/comments`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ content: commentText }) });
-    const body = await response.json();
+    const response = await fetchWithSupabaseSession(`/api/events/${id}/comments`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ content: commentText }) });
+    const body = await response.json().catch(() => ({}));
     if (!response.ok) { setCommentError(body.error || "Unable to post comment."); return; }
     setComments((current) => [...current, { ...body.comment, is_owner: true }]); setCommentText("");
   };
-  const deleteComment = async (commentId: string) => { const response = await fetch(`/api/events/${id}/comments?commentId=${commentId}`, { method: "DELETE" }); if (response.ok) setComments((items) => items.filter((item) => item.id !== commentId)); };
+  const deleteComment = async (commentId: string) => { const response = await fetchWithSupabaseSession(`/api/events/${id}/comments?commentId=${commentId}`, { method: "DELETE" }); if (response.ok) setComments((items) => items.filter((item) => item.id !== commentId)); else { const body = await response.json().catch(() => ({})); setCommentError(body.error || "Unable to delete comment."); } };
   const [loading, setLoading] = useState(false);
   const [isSaved, setIsSaved] = useState(false);
   const [savedCount, setSavedCount] = useState(0);
@@ -109,6 +110,7 @@ export default function EventDetailsPage({
   const [rsvpFormReady, setRsvpFormReady] = useState(false);
   const [rsvpInfo, setRsvpInfo] = useState({ fullName: "", mobile: "", email: "", attendees: "1", notes: "" });
   const [paymentProof, setPaymentProof] = useState<File | null>(null);
+  const proofInputRef = useRef<HTMLInputElement>(null);
   const [rsvpFormError, setRsvpFormError] = useState("");
   const [allAvailableEvents, setAllAvailableEvents] = useState<EventDetail[]>([]);
   const hasTrackedView = useRef(false);
@@ -479,7 +481,14 @@ export default function EventDetailsPage({
     if (!response.ok && paid) { setRsvpFormError(result.error || "Unable to submit RSVP."); return; }
     if (paid) {
       const user = currentUser || getCurrentUser();
-      if (user) { const ids = getUserRegisteredEvents(user.email); if (!ids.includes(id)) saveUserRegisteredEvents([...ids, id], user.email); }
+      if (user) {
+        const ids = getUserRegisteredEvents(user.email); if (!ids.includes(id)) saveUserRegisteredEvents([...ids, id], user.email);
+        const guestMap = parseGuestMap(localStorage.getItem("spott_guest_lists"));
+        const guests = guestMap[id] || [];
+        const pendingAttendee = { id: `att-${Date.now()}`, name: rsvpInfo.fullName, email: user.email, status: "Pending" as const, dateRegistered: new Date().toISOString(), ticketType: "General Admission", phone: rsvpInfo.mobile, attendeesCount: Number(rsvpInfo.attendees), notes: rsvpInfo.notes, paymentStatus: "Pending verification" };
+        guestMap[id] = [pendingAttendee, ...guests.filter((entry) => entry.email?.toLowerCase() !== user.email.toLowerCase())];
+        localStorage.setItem("spott_guest_lists", JSON.stringify(guestMap));
+      }
       addNotification({ type: "reminder", title: `Payment Verification: "${event?.title}"`, message: `${rsvpInfo.fullName} submitted payment proof for verification.`, targetRole: "organizer", link: `/organizer/rsvp?eventId=${id}` });
       setRsvpd(true); setAttendeeStatus("Pending"); setRsvpFormOpen(false);
       showToast("Payment submitted. Your RSVP is pending verification.");
@@ -1311,8 +1320,8 @@ export default function EventDetailsPage({
       {rsvpFormOpen && <div className="fixed inset-0 z-[70] flex items-center justify-center overflow-y-auto bg-black/50 p-4"><form onSubmit={submitRsvpForm} className="my-8 max-h-[90vh] w-full max-w-lg space-y-4 overflow-y-auto rounded-2xl bg-white p-6 shadow-2xl"><div className="flex items-center justify-between"><h2 className="m-0 text-xl font-black">RSVP for {event?.title}</h2><button type="button" onClick={() => setRsvpFormOpen(false)} aria-label="Close RSVP form"><X className="h-5 w-5" /></button></div>
         {([['Full Name','fullName','text'],['Mobile Number (09XXXXXXXXX)','mobile','tel'],['Email','email','email'],['Number of Attendees','attendees','number']] as const).map(([label,key,type]) => <label key={key} className="block text-sm font-bold">{label} <span className="text-rose-600">*</span><input required maxLength={key === 'fullName' ? 100 : key === 'email' ? 254 : undefined} min={key === 'attendees' ? 1 : undefined} max={key === 'attendees' ? 20 : undefined} type={type} value={rsvpInfo[key]} onChange={(e) => setRsvpInfo((info) => ({ ...info, [key]: e.target.value }))} className="mt-1 w-full rounded-xl border border-line px-3 py-2.5 font-normal" /></label>)}
         <label className="block text-sm font-bold">Notes (optional)<textarea maxLength={1000} value={rsvpInfo.notes} onChange={(e) => setRsvpInfo((info) => ({ ...info, notes: e.target.value }))} className="mt-1 w-full rounded-xl border border-line px-3 py-2.5 font-normal" /></label>
-        {Number(event?.price) > 0 && <div className="space-y-3 rounded-xl border border-amber-200 bg-amber-50 p-4"><p className="m-0 font-bold">Please pay ₱{(Number(event?.price) * Number(rsvpInfo.attendees || 1)).toLocaleString('en-PH',{minimumFractionDigits:2,maximumFractionDigits:2})} via GCash/bank transfer using the QR code below, then upload your proof of payment here.</p><div className="flex items-center gap-4"><svg role="img" aria-label="Placeholder GCash QR code" viewBox="0 0 100 100" className="h-24 w-24 rounded bg-white p-2">{Array.from({length:100},(_,i)=><rect key={i} x={(i%10)*10} y={Math.floor(i/10)*10} width="10" height="10" fill={((i*7+i*i)%11)<5?'#111':'#fff'}/>)}</svg><div><b>Reference:</b> SP-{id.slice(0,6).toUpperCase()}-{currentUser?.email?.slice(0,4).toUpperCase()}<p className="mb-0 mt-1 text-xs">Demo payment instructions only</p></div></div><label className="block text-sm font-bold">Proof of payment <span className="text-rose-600">*</span><input required type="file" accept="image/*" onChange={(e) => setPaymentProof(e.target.files?.[0] || null)} className="mt-1 block w-full text-sm"/><span className="text-xs font-normal">Image only, max 5 MB.</span></label></div>}
-        {rsvpFormError && <p role="alert" className="rounded-lg bg-rose-50 p-3 text-sm text-rose-700">{rsvpFormError}</p>}<div className="flex justify-end gap-2"><button type="button" onClick={() => setRsvpFormOpen(false)} className="rounded-xl border border-line px-4 py-2">Cancel</button><button type="submit" className="rounded-xl bg-[#ff6b35] px-5 py-2 font-bold text-white">{Number(event?.price) > 0 ? "Submit payment proof" : "Submit RSVP"}</button></div></form></div>}
+        {Number(event?.price) > 0 && <div className="space-y-3 rounded-xl border border-amber-200 bg-amber-50 p-4"><p className="m-0 font-bold">Please pay ₱{(Number(event?.price) * Number(rsvpInfo.attendees || 1)).toLocaleString('en-PH',{minimumFractionDigits:2,maximumFractionDigits:2})} via GCash/bank transfer using the QR code below, then upload your proof of payment here.</p><div className="flex items-center gap-4"><svg role="img" aria-label="Placeholder GCash QR code" viewBox="0 0 100 100" className="h-24 w-24 rounded bg-white p-2">{Array.from({length:100},(_,i)=><rect key={i} x={(i%10)*10} y={Math.floor(i/10)*10} width="10" height="10" fill={((i*7+i*i)%11)<5?'#111':'#fff'}/>)}</svg><div><b>Reference:</b> SP-{id.slice(0,6).toUpperCase()}-{currentUser?.email?.slice(0,4).toUpperCase()}<p className="mb-0 mt-1 text-xs">Demo payment instructions only</p></div></div><div className="rounded-xl border border-dashed border-amber-400 bg-white p-4"><p className="mb-2 text-sm font-bold">Upload proof of payment <span className="text-rose-600">*</span></p><input ref={proofInputRef} required type="file" accept="image/jpeg,image/png,image/webp,image/gif" onChange={(e) => { const file=e.target.files?.[0] || null; if (file && file.size > 5*1024*1024) { setPaymentProof(null); setRsvpFormError("The selected image is over 5 MB."); e.target.value=""; return; } setRsvpFormError(""); setPaymentProof(file); }} className="sr-only"/><button type="button" onClick={() => proofInputRef.current?.click()} className="rounded-lg border border-line bg-white px-4 py-2 text-sm font-bold hover:border-[#ff6b35]">{paymentProof ? "Choose a different image" : "Choose payment proof image"}</button>{paymentProof ? <div className="mt-2 flex items-center justify-between gap-3 text-sm"><span className="truncate">✓ {paymentProof.name} ({(paymentProof.size/1024/1024).toFixed(2)} MB)</span><button type="button" onClick={() => { setPaymentProof(null); if (proofInputRef.current) proofInputRef.current.value=""; }} className="shrink-0 text-rose-600 underline">Remove</button></div> : <p className="mb-0 mt-2 text-xs text-muted">Choose a JPG, PNG, WEBP, or GIF image (maximum 5 MB). Payment proof is required before submitting.</p>}</div></div>}
+        {rsvpFormError && <p role="alert" className="rounded-lg bg-rose-50 p-3 text-sm text-rose-700">{rsvpFormError}</p>}<div className="flex justify-end gap-2"><button type="button" onClick={() => setRsvpFormOpen(false)} className="rounded-xl border border-line px-4 py-2">Cancel</button><button type="submit" disabled={Number(event?.price) > 0 && !paymentProof} className="rounded-xl bg-[#ff6b35] px-5 py-2 font-bold text-white disabled:cursor-not-allowed disabled:opacity-50">Submit</button></div></form></div>}
 
       {/* Cancel RSVP Confirmation Modal */}
       <CancelRsvpModal

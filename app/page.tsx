@@ -16,7 +16,6 @@ import {
   Users,
   Compass,
   Building2,
-  DollarSign,
   ArrowUpDown,
   CheckCircle2,
 } from "lucide-react";
@@ -746,7 +745,7 @@ export default function Home() {
 
                   {/* Price Filter Pill */}
                   <div className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-paper border border-line text-xs font-semibold text-ink">
-                    <DollarSign className="w-3.5 h-3.5 text-accent shrink-0" />
+                    <span className="shrink-0 font-black text-accent">₱</span>
                     <select
                       value={priceFilter}
                       onChange={(e) => setPriceFilter(e.target.value as typeof priceFilter)}

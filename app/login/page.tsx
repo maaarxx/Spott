@@ -148,7 +148,7 @@ export default function LoginPage() {
     const formattedName = signupName.trim();
     if (!formattedName) { setAuthError("Please fill in your name."); return; }
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(signupEmail.trim()) || signupEmail.length > 254) { setAuthError("Please enter a valid email address."); return; }
-    if (signupRole === "user" && (!/^([^,]{2,50}),\s*([A-Za-z][A-Za-z '\u2019-]{1,49}?)(?:\s+([A-Za-z]))?\.?$/.test(formattedName) || formattedName.length > 104)) {
+    if (signupRole === "user" && (!/^([^,]{2,50}),\s*([A-Za-z][A-Za-z '\u2019-]{1,49}?)(?:\s+([A-Za-z]))?\.?$/.test(formattedName) || formattedName.length > 50)) {
       setAuthError("Enter your name as Last name, First name MI (for example, Dela Cruz, Ana M).");
       return;
     }
@@ -165,7 +165,7 @@ export default function LoginPage() {
     void (async () => {
       try {
         if (signupRole === "user") {
-          const checked = await fetch("/api/register-check", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ email: signupEmail, username: signupUsername, password: signupPassword }) });
+          const checked = await fetch("/api/register-check", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ email: signupEmail, username: signupUsername, password: signupPassword, name: formattedName }) });
           const checkedBody = await checked.json();
           if (!checked.ok) throw new Error(checkedBody.error || "Please check your details.");
         }
@@ -354,7 +354,7 @@ export default function LoginPage() {
               </div>
 
               {signupRole === "organizer" ? <div><label className="block text-[11px] font-black uppercase tracking-wider text-[#666666] mb-1.5">Organizer Name</label><input maxLength={50} value={signupName} onChange={(e) => setSignupName(e.target.value)} className="w-full border border-[#e6e1d8] rounded-xl px-4 py-2.5 text-sm" required placeholder="Your organization or group name" /></div> : <>
-                <div className="space-y-2"><div><label className="block text-[11px] font-black uppercase tracking-wider text-[#666666] mb-1.5">Name (Last name, First name MI) <span className="text-rose-600">*</span></label><input maxLength={104} value={signupName} onChange={(e) => setSignupName(e.target.value)} className="w-full border border-[#e6e1d8] rounded-xl px-4 py-3 text-sm" required autoComplete="name" placeholder="Dela Cruz, Ana M" /></div><div><label className="block text-[11px] font-black uppercase mb-1">Username <span className="text-rose-600">*</span></label><input maxLength={20} minLength={4} value={signupUsername} onChange={(e) => setSignupUsername(e.target.value)} className="w-full border border-[#e6e1d8] rounded-xl px-3 py-2.5 text-sm" required autoComplete="username" /><small>{signupUsername.length}/20</small></div></div>
+                <div className="space-y-2"><div><label className="block text-[11px] font-black uppercase tracking-wider text-[#666666] mb-1.5">Name (Last name, First name MI) <span className="text-rose-600">*</span></label><input maxLength={50} value={signupName} onChange={(e) => setSignupName(e.target.value)} className="w-full border border-[#e6e1d8] rounded-xl px-4 py-3 text-sm" required autoComplete="name" placeholder="Dela Cruz, Ana M" /></div><div><label className="block text-[11px] font-black uppercase mb-1">Username <span className="text-rose-600">*</span></label><input maxLength={20} minLength={4} value={signupUsername} onChange={(e) => setSignupUsername(e.target.value)} className="w-full border border-[#e6e1d8] rounded-xl px-3 py-2.5 text-sm" required autoComplete="username" /><small>{signupUsername.length}/20</small></div></div>
               </>}
               <div>
                 <label className="block text-[11px] font-black uppercase tracking-wider text-[#666666] mb-1.5">

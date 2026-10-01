@@ -235,11 +235,19 @@ export default function MyEventsPage() {
 
   const now = new Date();
   const savedEvents = events.filter((e) => savedIds.includes(e.id));
-  const registeredEvents = events.filter((e) => registeredIds.includes(e.id));
   const userEventIds = new Set(registeredIds);
-  const registeredOnly = events.filter((e) => userEventIds.has(e.id));
-  const upcomingEvents = registeredOnly.filter((e) => new Date(e.date) > now).sort((a,b) => +new Date(a.date) - +new Date(b.date));
-  const pastEvents = registeredOnly.filter((e) => new Date(e.date) <= now);
+  const statusFor = (eventId: string) => {
+    try {
+      const guestMap = parseGuestLists(localStorage.getItem("spott_guest_lists"));
+      const attendee = guestMap[eventId]?.find((item) => item.email?.toLowerCase() === currentUser?.email?.toLowerCase());
+      return String(attendee?.status || "Confirmed").toLowerCase();
+    } catch { return "confirmed"; }
+  };
+  const userEvents = events.filter((e) => userEventIds.has(e.id));
+  const registeredEvents = userEvents.filter((e) => statusFor(e.id).includes("pending"));
+  const approvedEvents = userEvents.filter((e) => !statusFor(e.id).includes("pending") && !statusFor(e.id).includes("declin") && !statusFor(e.id).includes("reject"));
+  const upcomingEvents = approvedEvents.filter((e) => new Date(e.date) > now).sort((a,b) => +new Date(a.date) - +new Date(b.date));
+  const pastEvents = approvedEvents.filter((e) => new Date(e.date) <= now);
 
   const tabs: { key: Tab; label: string; count: number }[] = [
     { key: "saved", label: "Saved", count: savedEvents.length },

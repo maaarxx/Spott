@@ -23,6 +23,10 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
       if (!(proof instanceof File) || !['image/jpeg','image/png','image/webp','image/gif'].includes(proof.type) || proof.size > 5 * 1024 * 1024) return NextResponse.json({ error: 'Upload a JPG, PNG, WEBP, or GIF proof of payment no larger than 5 MB.' }, { status: 400 });
       const ext = proof.name.split('.').pop()?.replace(/[^a-z0-9]/gi, '').slice(0, 8) || 'img';
       proofPath = `${id}/${account.userId}/${crypto.randomUUID()}.${ext}`;
+      const { data: bucketList } = await db.storage.listBuckets();
+      if (!bucketList?.some((bucket) => bucket.name === 'payment-proofs')) {
+        await db.storage.createBucket('payment-proofs', { public: false, fileSizeLimit: 5 * 1024 * 1024, allowedMimeTypes: ['image/jpeg','image/png','image/webp','image/gif'] });
+      }
       const { error: uploadError } = await db.storage.from('payment-proofs').upload(proofPath, proof, { contentType: proof.type, upsert: false });
       if (uploadError) return NextResponse.json({ error: 'Could not save payment proof. Ensure the payment-proofs storage bucket exists.' }, { status: 500 });
     }

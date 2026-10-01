@@ -15,7 +15,6 @@ import {
   Tag,
   CheckCircle2,
   Users,
-  DollarSign,
   ArrowLeft,
   X,
   ImagePlus,
@@ -909,7 +908,7 @@ export default function CreateEventPage() {
                   <span>{formValues.location || "Location TBA"}</span>
                 </div>
                 <div className="flex items-center gap-2">
-                  <DollarSign className="w-4 h-4 text-[#ff6b35]" />
+                  <span className="font-black text-[#ff6b35]">₱</span>
                   <span className="font-bold text-[#171717]">
                     {formValues.isFree ? "Free Entry" : `₱${formValues.price || "0.00"}`}
                   </span>
