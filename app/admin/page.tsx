@@ -337,7 +337,9 @@ function AdminContent() {
         if (res.ok) {
           const apiData = await res.json();
           if (Array.isArray(apiData)) {
-            saveStoredEvents(apiData, true);
+            // This callback is subscribed to event updates; rebroadcasting the
+            // fetched snapshot here would recursively trigger another fetch.
+            saveStoredEvents(apiData, false);
             setEventsList(mapToAdminEvents(getStoredEvents()));
           }
         }

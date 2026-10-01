@@ -9,7 +9,7 @@ STABLE
 SECURITY DEFINER
 SET search_path = public
 AS $$
-  SELECT r.event_id, COUNT(*)::bigint
+  SELECT r.event_id, COALESCE(SUM(GREATEST(COALESCE(r.attendees_count, 1), 1)), 0)::bigint
   FROM public.registrations AS r
   WHERE r.event_id = ANY (p_event_ids)
     AND r.status IN ('confirmed', 'registered', 'approved')

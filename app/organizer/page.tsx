@@ -110,6 +110,7 @@ export interface OrganizerEvent {
   date: string;
   time: string;
   rsvps: number;
+  pendingRsvps: number;
   capacity: number;
   views: number;
   uniqueViews?: number;
@@ -314,6 +315,7 @@ function OrganizerContent() {
         date: dateStr,
         time: timeStr,
         rsvps: e.registrations || 0,
+        pendingRsvps: e.pendingRegistrations || 0,
         capacity: typeof e.capacity === "number" ? e.capacity : (e.capacity ? Number(e.capacity) : 100),
         views: getEventViews(e.id, e.registrations || 0),
         uniqueViews: getEventUniqueViews(e.id, e.registrations || 0),
@@ -374,9 +376,10 @@ function OrganizerContent() {
       if (res.ok) {
         const apiData = await res.json();
         if (Array.isArray(apiData)) {
-          saveStoredEvents(apiData, true);
-          const freshStored = getStoredEvents();
-          setEvents(mapToOrganizerEvents(filterForOrg(freshStored)));
+          // This loader is subscribed to event updates. Do not rebroadcast its
+          // own fetch result or it will continually reload the same endpoints.
+          saveStoredEvents(apiData, false);
+          setEvents(mapToOrganizerEvents(filterForOrg(apiData)));
         }
       }
     } catch {}
@@ -389,6 +392,9 @@ function OrganizerContent() {
     window.addEventListener("spott_registered_updated", syncEvents);
     window.addEventListener("spott_views_updated", syncEvents);
     window.addEventListener("spott_auth_changed", syncEvents);
+    const remoteRefresh = window.setInterval(() => {
+      if (document.visibilityState === "visible") void syncEvents();
+    }, 30000);
 
     const syncCats = () => setCategoriesList(getAllCategories());
     syncCats();
@@ -401,6 +407,7 @@ function OrganizerContent() {
       window.removeEventListener("spott_registered_updated", syncEvents);
       window.removeEventListener("spott_views_updated", syncEvents);
       window.removeEventListener("spott_auth_changed", syncEvents);
+      window.clearInterval(remoteRefresh);
       window.removeEventListener("spott_categories_updated", syncCats);
     };
   }, []);
@@ -623,7 +630,7 @@ function OrganizerContent() {
     })
     .sort((a, b) => new Date(`${a.date}T${a.time}`).getTime() - new Date(`${b.date}T${b.time}`).getTime());
   const totalEvents = activeEvents.length;
-  const totalRSVPs = activeEvents.reduce((acc, curr) => acc + curr.rsvps, 0);
+  const totalRSVPs = activeEvents.reduce((acc, curr) => acc + curr.rsvps + curr.pendingRsvps, 0);
   const totalViews = activeEvents.reduce((acc, curr) => acc + curr.views, 0);
   const totalUniqueViews = activeEvents.reduce((acc, curr) => acc + (curr.uniqueViews || Math.max(1, Math.round(curr.views * 0.72))), 0);
   const regRate = Math.round((totalRSVPs / Math.max(totalViews, 1)) * 100);
@@ -667,8 +674,9 @@ function OrganizerContent() {
 
   const handleDelete = async (id: string, name: string) => {
     const target = events.find((e) => e.id === id);
-    if (target && target.status !== "Draft" && target.rsvps > 0) {
-      showAlert(`⚠️ Cannot delete "${name}" because it has ${target.rsvps} active RSVP(s). Please use "Cancel Event" to notify attendees.`);
+    const activeRsvpCount = target ? target.rsvps + target.pendingRsvps : 0;
+    if (target && target.status !== "Draft" && activeRsvpCount > 0) {
+      showAlert(`⚠️ Cannot delete "${name}" because it has ${activeRsvpCount} active RSVP(s). Please use "Cancel Event" to notify attendees.`);
       return;
     }
 
@@ -1132,7 +1140,7 @@ function OrganizerContent() {
                       <tr key={evt.id} className="hover:bg-[#faf8f3]/60 transition-colors">
                         <td className="py-4 px-6 font-bold text-[#171717]">{evt.name}</td>
                         <td className="py-4 px-6 text-xs text-[#555555]">{evt.date}</td>
-                        <td className="py-4 px-6 text-center font-bold">{evt.rsvps}</td>
+                        <td className="py-4 px-6 text-center font-bold">{evt.rsvps + evt.pendingRsvps}</td>
                         <td className="py-4 px-6 text-center">
                           <span className="font-bold text-[#171717]">{evt.views}</span>
                           <span className="text-[10px] text-[#888888] block">
@@ -1355,7 +1363,7 @@ function OrganizerContent() {
                           className="px-4 py-2 bg-[#ff6b35] text-white text-xs font-bold rounded-xl hover:bg-[#e0531f] transition-all no-underline shadow-xs flex items-center gap-1.5"
                         >
                           <Users className="w-3.5 h-3.5" />
-                          <span>Manage RSVPs ({evt.rsvps})</span>
+                          <span>Manage RSVPs ({evt.rsvps + evt.pendingRsvps})</span>
                         </Link>
                         <button
                           type="button"

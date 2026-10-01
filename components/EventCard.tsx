@@ -23,6 +23,7 @@ export type EventData = {
   categories: string[];
   category?: string;
   registrations?: number;
+  pendingRegistrations?: number;
   latitude?: number;
   longitude?: number;
   confirmedAt?: string | null;

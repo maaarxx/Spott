@@ -284,26 +284,36 @@ export async function GET(request: Request) {
     const dataRows = (data || []) as unknown as EventListRow[];
     const eventIds = dataRows.map((event) => event.event_id);
     const regCounts: Record<string, number> = {};
+    const pendingRegCounts: Record<string, number> = {};
     if (eventIds.length > 0) {
-      const { data: counts, error: countError } = await supabase.rpc('get_event_registration_counts', {
-        p_event_ids: eventIds,
-      });
+      const [confirmedResult, pendingResult] = await Promise.all([
+        supabase.rpc('get_event_registration_counts', { p_event_ids: eventIds }),
+        supabase.rpc('get_event_pending_registration_counts', { p_event_ids: eventIds }),
+      ]);
+      const counts = confirmedResult.data;
+      const countError = confirmedResult.error || pendingResult.error;
 
-      if (!countError && counts) {
+      if (!countError && counts && pendingResult.data) {
         (counts as Array<{ event_id: string; registration_count: number | string }>).forEach((row) => {
           regCounts[row.event_id] = Number(row.registration_count) || 0;
+        });
+        (pendingResult.data as Array<{ event_id: string; pending_registration_count: number | string }>).forEach((row) => {
+          pendingRegCounts[row.event_id] = Number(row.pending_registration_count) || 0;
         });
       } else {
         // Keep compatibility until the accompanying migration has been pushed.
         console.warn('Registration count RPC unavailable; using compatibility query.', countError?.message);
         const { data: regData } = await supabase
           .from('registrations')
-          .select('event_id')
+          .select('event_id,status,attendees_count')
           .in('event_id', eventIds)
-          .in('status', ['confirmed', 'registered', 'approved']);
+          .in('status', ['confirmed', 'registered', 'approved', 'pending', 'pending verification']);
 
-        (regData || []).forEach((registration: { event_id: string }) => {
-          regCounts[registration.event_id] = (regCounts[registration.event_id] || 0) + 1;
+        (regData || []).forEach((registration: { event_id: string; status: string; attendees_count?: number | null }) => {
+          const attendeeCount = Math.max(1, Number(registration.attendees_count) || 1);
+          const isPending = ['pending', 'pending verification'].includes(registration.status.toLowerCase());
+          const targetCounts = isPending ? pendingRegCounts : regCounts;
+          targetCounts[registration.event_id] = (targetCounts[registration.event_id] || 0) + attendeeCount;
         });
       }
     }
@@ -356,6 +366,7 @@ export async function GET(request: Request) {
           return category?.category_name;
         }).filter((name): name is string => Boolean(name)),
         registrations: regCounts[event.event_id] || 0,
+        pendingRegistrations: pendingRegCounts[event.event_id] || 0,
         confirmedAt: event.is_still_happening_confirmed_at,
         capacity,
         requireApproval: event.require_approval,

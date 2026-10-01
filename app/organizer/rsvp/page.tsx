@@ -100,7 +100,11 @@ function RsvpManagementContent() {
       const remote: Attendee[] = body.attendees.map((row: Record<string, unknown>) => {
         const profile = row.users as { name?: string; email?: string } | null;
         const rawStatus = String(row.status || '').toLowerCase();
-        return { id: String(row.registration_id), name: String(row.attendee_name || profile?.name || ''), email: String(row.attendee_email || profile?.email || ''), phone: String(row.mobile_number || ''), status: rawStatus.includes('reject') || rawStatus === 'declined' ? 'Declined' : rawStatus.includes('pending') ? 'Pending' : 'Confirmed', dateRegistered: String(row.registration_date || ''), checkedIn: Boolean(row.checked_in_at), attendeesCount: Number(row.attendees_count || 1), notes: String(row.notes || ''), paymentStatus: String(row.payment_status || ''), amount: Number((body.event?.price || 0) as number) * Number(row.attendees_count || 1), reference: `SP-${eventKey.slice(0,6).toUpperCase()}-${String(row.user_id).slice(0,6).toUpperCase()}`, proofUrl: (row.proof_signed_url as string | null) || null };
+        const attendeesCount = Number(row.attendees_count || 1);
+        const amount = row.payment_amount == null
+          ? Number((body.event?.price || 0) as number) * attendeesCount
+          : Number(row.payment_amount);
+        return { id: String(row.registration_id), name: String(row.attendee_name || profile?.name || ''), email: String(row.attendee_email || profile?.email || ''), phone: String(row.mobile_number || ''), status: rawStatus.includes('reject') || rawStatus === 'declined' ? 'Declined' : rawStatus.includes('pending') ? 'Pending' : 'Confirmed', dateRegistered: String(row.registration_date || ''), checkedIn: Boolean(row.checked_in_at), attendeesCount, notes: String(row.notes || ''), paymentStatus: String(row.payment_status || ''), amount, reference: `SP-${eventKey.slice(0,6).toUpperCase()}-${String(row.user_id).slice(0,6).toUpperCase()}`, proofUrl: (row.proof_signed_url as string | null) || null };
       });
       setAttendees(remote);
     } catch {
@@ -122,9 +126,15 @@ function RsvpManagementContent() {
     };
     const unsubscribeEvents = subscribeToEvents(handleSync);
     window.addEventListener("spott_registered_updated", handleSync);
+    const refreshTimer = window.setInterval(() => {
+      if (document.visibilityState === "visible") handleSync();
+    }, 30000);
+    window.addEventListener("focus", handleSync);
     return () => {
       unsubscribeEvents();
       window.removeEventListener("spott_registered_updated", handleSync);
+      window.removeEventListener("focus", handleSync);
+      window.clearInterval(refreshTimer);
     };
   }, [selectedEventKey]);
 
