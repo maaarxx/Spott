@@ -48,6 +48,11 @@ interface Attendee {
   phone?: string;
   notes?: string;
   checkedIn?: boolean;
+  attendeesCount?: number;
+  paymentStatus?: string;
+  amount?: number;
+  reference?: string;
+  proofUrl?: string | null;
 }
 
 function RsvpManagementContent() {
@@ -60,6 +65,7 @@ function RsvpManagementContent() {
   const [searchQuery, setSearchQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState<string>("All");
   const [selectedAttendee, setSelectedAttendee] = useState<Attendee | null>(null);
+  const [proofToView, setProofToView] = useState<string | null>(null);
 
   useEffect(() => {
     const loadEvents = () => {
@@ -104,30 +110,21 @@ function RsvpManagementContent() {
       const parsed = raw ? JSON.parse(raw) : {};
       const list: Attendee[] = (parsed[eventKey] || []).map((attendee: Attendee) => ({
         ...attendee,
-        phone: getUserProfile(attendee.email).phone,
+        phone: attendee.phone || getUserProfile(attendee.email).phone,
       }));
 
-      // If attendee list is empty in storage but event has registrations in directory:
-      const stored = getStoredEvents();
-      const currentEvt = stored.find((e) => e.id === eventKey);
-      if (list.length === 0 && currentEvt && (currentEvt.registrations || 0) > 0) {
-        const autoAttendee: Attendee = {
-          id: "att-student-1",
-          name: "Juan Dela Cruz",
-          email: "jdc@spott.ph",
-          status: "Confirmed",
-          dateRegistered: new Date().toISOString().split("T")[0],
-          ticketType: "General Admission",
-          phone: getUserProfile("jdc@spott.ph").phone,
-          notes: "Campus Student RSVP",
-        };
-        parsed[eventKey] = [autoAttendee];
-        localStorage.setItem("spott_guest_lists", JSON.stringify(parsed));
-        setAttendees([autoAttendee]);
-        return;
-      }
-
       setAttendees(list);
+      void fetch(`/api/organizer/events/${eventKey}/attendees`).then(async (response) => {
+        if (!response.ok) return;
+        const body = await response.json();
+        if (!Array.isArray(body.attendees)) return;
+        const remote: Attendee[] = body.attendees.map((row: Record<string, unknown>) => {
+          const profile = row.users as { name?: string; email?: string } | null;
+          const rawStatus = String(row.payment_status || row.status || '').toLowerCase();
+          return { id: String(row.registration_id), name: String(row.attendee_name || profile?.name || ''), email: String(row.attendee_email || profile?.email || ''), phone: String(row.mobile_number || ''), status: rawStatus.includes('reject') ? 'Declined' : rawStatus.includes('pending') ? 'Pending' : 'Confirmed', dateRegistered: String(row.registration_date || ''), attendeesCount: Number(row.attendees_count || 1), notes: String(row.notes || ''), paymentStatus: String(row.payment_status || ''), amount: Number((body.event?.price || 0) as number) * Number(row.attendees_count || 1), reference: `SP-${eventKey.slice(0,6).toUpperCase()}-${String(row.user_id).slice(0,6).toUpperCase()}`, proofUrl: (row.proof_signed_url as string | null) || null };
+        });
+        setAttendees(remote);
+      }).catch(() => {});
     } catch {
       setAttendees([]);
     }
@@ -165,7 +162,8 @@ function RsvpManagementContent() {
       const matchSearch =
         a.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
         a.email.toLowerCase().includes(searchQuery.toLowerCase());
-      const matchStatus = statusFilter === "All" || a.status === statusFilter;
+      const normalizedStatus = a.paymentStatus?.toLowerCase().includes("pending") ? "Pending" : a.paymentStatus?.toLowerCase() === "approved" ? "Approved" : a.paymentStatus?.toLowerCase() === "rejected" ? "Rejected" : a.status === "Confirmed" ? "Approved" : a.status === "Declined" ? "Rejected" : "Pending";
+      const matchStatus = statusFilter === "All" || normalizedStatus === statusFilter;
       return matchSearch && matchStatus;
     });
   }, [attendees, searchQuery, statusFilter]);
@@ -207,6 +205,9 @@ function RsvpManagementContent() {
   const handleToggleStatus = (id: string, newStatus: "Confirmed" | "Pending" | "Declined") => {
     const affectedAttendee = attendees.find((a) => a.id === id);
     if (!affectedAttendee || affectedAttendee.status === newStatus) return;
+    if (selectedEventKey && affectedAttendee.id.length === 36 && newStatus !== "Pending") {
+      void fetch(`/api/organizer/events/${selectedEventKey}/attendees`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ registrationId: id, status: newStatus === "Confirmed" ? "Approved" : "Rejected" }) });
+    }
 
     const updated = attendees.map((a) => (a.id === id ? { ...a, status: newStatus } : a));
     setAttendees(updated);
@@ -427,9 +428,9 @@ function RsvpManagementContent() {
               className="px-3.5 py-2 text-xs sm:text-sm font-bold border border-[#e6e1d8] rounded-xl bg-white text-[#171717] focus:outline-none focus:border-[#ff6b35] cursor-pointer"
             >
               <option value="All">Status: All</option>
-              <option value="Confirmed">Going</option>
-              <option value="Pending">Maybe</option>
-              <option value="Declined">Declined</option>
+              <option value="Pending">Pending</option>
+              <option value="Approved">Approved</option>
+              <option value="Rejected">Rejected</option>
             </select>
           </div>
         </div>
@@ -439,10 +440,16 @@ function RsvpManagementContent() {
           <table className="w-full text-left text-sm border-collapse">
             <thead>
               <tr className="bg-[#faf8f3] border-b border-[#e6e1d8] text-[11px] font-black uppercase tracking-wider text-[#666666]">
-                <th className="py-3.5 px-6">Name</th>
+                <th className="py-3.5 px-6">Full Name</th>
                 <th className="py-3.5 px-6">Email</th>
+                <th className="py-3.5 px-6">Mobile</th>
+                <th className="py-3.5 px-6">Attendees</th>
+                <th className="py-3.5 px-6">Notes</th>
                 <th className="py-3.5 px-6">RSVP Status</th>
-                <th className="py-3.5 px-6">Date Registered</th>
+                <th className="py-3.5 px-6">RSVP Date / Time</th>
+                <th className="py-3.5 px-6">Payment</th>
+                <th className="py-3.5 px-6">Amount / Reference</th>
+                <th className="py-3.5 px-6">Proof</th>
                 <th className="py-3.5 px-6">Check-in</th>
                 <th className="py-3.5 px-6 text-right">Actions</th>
               </tr>
@@ -450,7 +457,7 @@ function RsvpManagementContent() {
             <tbody className="divide-y divide-[#e6e1d8]">
               {filteredAttendees.length === 0 ? (
                 <tr>
-                  <td colSpan={6} className="py-12 text-center text-[#888888] text-sm">
+                  <td colSpan={12} className="py-12 text-center text-[#888888] text-sm">
                     {attendees.length === 0
                       ? "No RSVPs recorded yet. When guests register for your events, they will appear here in real-time."
                       : "No attendees match your search."}
@@ -468,6 +475,9 @@ function RsvpManagementContent() {
                     <td className="py-4 px-6 text-xs text-[#555555] font-mono">
                       {attendee.email}
                     </td>
+                    <td className="py-4 px-6 text-xs">{attendee.phone || "—"}</td>
+                    <td className="py-4 px-6 text-xs">{attendee.attendeesCount || 1}</td>
+                    <td className="max-w-48 py-4 px-6 text-xs">{attendee.notes || "—"}</td>
                     <td className="py-4 px-6 whitespace-nowrap">
                       <span
                         className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-black ${
@@ -487,12 +497,15 @@ function RsvpManagementContent() {
                               : "bg-rose-500"
                           }`}
                         />
-                        {attendee.status === "Confirmed" ? "Going" : attendee.status === "Pending" ? "Maybe" : "Declined"}
+                        {attendee.paymentStatus?.toLowerCase().includes("pending") ? "Pending" : attendee.paymentStatus?.toLowerCase() === "approved" ? "Approved" : attendee.paymentStatus?.toLowerCase() === "rejected" ? "Rejected" : attendee.status === "Confirmed" ? "Approved" : attendee.status === "Pending" ? "Pending" : "Rejected"}
                       </span>
                     </td>
                     <td className="py-4 px-6 text-xs font-semibold text-[#444444] whitespace-nowrap">
                       {attendee.dateRegistered}
                     </td>
+                    <td className="py-4 px-6 text-xs">{attendee.paymentStatus || "—"}</td>
+                    <td className="py-4 px-6 text-xs">{attendee.amount ? `₱${attendee.amount.toLocaleString('en-PH',{minimumFractionDigits:2})}` : "—"}<br/>{attendee.reference || ""}</td>
+                    <td className="py-4 px-6">{attendee.proofUrl ? <button onClick={() => setProofToView(attendee.proofUrl || null)} className="text-xs font-bold text-[#ff6b35] underline">View proof of payment</button> : "—"}</td>
                     <td className="py-4 px-6 whitespace-nowrap">
                       {attendee.status === "Confirmed" ? (
                         <button type="button" onClick={() => handleToggleCheckIn(attendee.id)} className={`px-2.5 py-1 rounded-lg text-xs font-bold ${attendee.checkedIn ? "bg-emerald-100 text-emerald-800" : "bg-white border border-[#e6e1d8] text-[#666666] hover:border-emerald-500"}`}>
@@ -520,7 +533,7 @@ function RsvpManagementContent() {
                               onClick={() => handleToggleStatus(attendee.id, "Declined")}
                               className="px-2 py-1 bg-rose-50 text-rose-700 hover:bg-rose-100 rounded-lg text-xs font-bold transition-all cursor-pointer"
                             >
-                              Decline
+                              Reject
                             </button>
                           </>
                         ) : attendee.status === "Confirmed" ? (
@@ -547,6 +560,8 @@ function RsvpManagementContent() {
           </table>
         </div>
       </div>
+
+      {proofToView && <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/70 p-4" onClick={() => setProofToView(null)}><div className="max-h-[90vh] max-w-4xl rounded-2xl bg-white p-3" onClick={(event) => event.stopPropagation()}><button onClick={() => setProofToView(null)} className="mb-2 rounded-lg border px-3 py-1">Close</button><img src={proofToView} alt="Uploaded proof of payment" className="max-h-[80vh] max-w-full object-contain" /></div></div>}
 
       {/* Attendee Detail Modal */}
       {selectedAttendee && (

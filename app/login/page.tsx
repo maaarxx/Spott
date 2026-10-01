@@ -8,6 +8,8 @@ import {
   CheckCircle2,
   LogIn,
   UserPlus,
+  Eye,
+  EyeOff,
 } from "lucide-react";
 import {
   SPOTT_ACCOUNTS,
@@ -43,10 +45,10 @@ export default function LoginPage() {
 
   // Sign-up fields
   const [signupName, setSignupName] = useState("");
-  const [signupFirst, setSignupFirst] = useState("");
-  const [signupMI, setSignupMI] = useState("");
-  const [signupLast, setSignupLast] = useState("");
   const [signupUsername, setSignupUsername] = useState("");
+  const [showSignInPassword, setShowSignInPassword] = useState(false);
+  const [showSignupPassword, setShowSignupPassword] = useState(false);
+  const [showSignupConfirm, setShowSignupConfirm] = useState(false);
   const [signupEmail, setSignupEmail] = useState("");
   const [signupPassword, setSignupPassword] = useState("");
   const [signupConfirm, setSignupConfirm] = useState("");
@@ -143,12 +145,13 @@ export default function LoginPage() {
     e.preventDefault();
     clearErrors();
 
-    const formattedName = signupRole === "organizer" ? signupName.trim() : `${signupLast.trim()}, ${signupFirst.trim()}${signupMI.trim() ? ` ${signupMI.trim().toUpperCase()}` : ""}`;
-    if (signupRole === "user" && [signupLast, signupFirst].some((name) => name.trim().length < 2 || name.length > 50)) {
-      setAuthError("First and last names must be 2–50 characters.");
+    const formattedName = signupName.trim();
+    if (!formattedName) { setAuthError("Please fill in your name."); return; }
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(signupEmail.trim()) || signupEmail.length > 254) { setAuthError("Please enter a valid email address."); return; }
+    if (signupRole === "user" && (!/^([^,]{2,50}),\s*([A-Za-z][A-Za-z '\u2019-]{1,49}?)(?:\s+([A-Za-z]))?\.?$/.test(formattedName) || formattedName.length > 104)) {
+      setAuthError("Enter your name as Last name, First name MI (for example, Dela Cruz, Ana M).");
       return;
     }
-    if (signupMI.length > 1 || (signupMI && !/^[A-Za-z]$/.test(signupMI))) { setAuthError("Middle initial must be one letter."); return; }
     if (signupRole === "user" && !/^[a-zA-Z0-9_]{4,20}$/.test(signupUsername)) { setAuthError("Username must be 4–20 letters, numbers, or underscores."); return; }
     if (signupPassword.length < 8 || signupPassword.length > 64 || /\s/.test(signupPassword)) {
       setAuthError("Password must be 8–64 characters with no spaces.");
@@ -162,7 +165,7 @@ export default function LoginPage() {
     void (async () => {
       try {
         if (signupRole === "user") {
-          const checked = await fetch("/api/register-check", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ email: signupEmail, username: signupUsername }) });
+          const checked = await fetch("/api/register-check", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ email: signupEmail, username: signupUsername, password: signupPassword }) });
           const checkedBody = await checked.json();
           if (!checked.ok) throw new Error(checkedBody.error || "Please check your details.");
         }
@@ -191,12 +194,22 @@ export default function LoginPage() {
         } else {
           setNotice('Account created. Check your email to confirm your account, then sign in.');
         }
-        setSignupName(''); setSignupFirst(''); setSignupMI(''); setSignupLast(''); setSignupUsername(''); setSignupEmail(''); setSignupPassword(''); setSignupConfirm(''); setSignupRole('user');
+        setSignupName(''); setSignupUsername(''); setSignupEmail(''); setSignupPassword(''); setSignupConfirm(''); setSignupRole('user');
       } catch (error) {
         setAuthError(error instanceof Error ? error.message : 'Unable to create account.');
       } finally { setLoading(false); }
     })();
   };
+
+  const passwordChecks = [
+    { label: "8 or more characters", met: signupPassword.length >= 8 },
+    { label: "Uppercase letter", met: /[A-Z]/.test(signupPassword) },
+    { label: "Lowercase letter", met: /[a-z]/.test(signupPassword) },
+    { label: "Number", met: /[0-9]/.test(signupPassword) },
+    { label: "Special character", met: /[^A-Za-z0-9]/.test(signupPassword) },
+  ];
+  const strengthScore = passwordChecks.filter((check) => check.met).length;
+  const passwordStrength = strengthScore <= 2 ? "Weak" : strengthScore <= 4 ? "Medium" : "Strong";
 
   return (
     <div className="min-h-[calc(100vh-72px)] flex items-center justify-center px-4 py-12 bg-[#faf8f3]">
@@ -270,7 +283,7 @@ export default function LoginPage() {
             <form onSubmit={handleSignIn} className="space-y-4">
               <div>
                 <label className="block text-[11px] font-black uppercase tracking-wider text-[#666666] mb-1.5">
-                  Email Address
+                  Email Address <span className="text-rose-600">*</span>
                 </label>
                 <input
                   type="email"
@@ -286,10 +299,10 @@ export default function LoginPage() {
               </div>
               <div>
                 <label className="block text-[11px] font-black uppercase tracking-wider text-[#666666] mb-1.5">
-                  Password
+                  Password <span className="text-rose-600">*</span>
                 </label>
                 <input
-                  type="password"
+                  type={showSignInPassword ? "text" : "password"}
                   value={password}
                   onChange={(e) => { setPassword(e.target.value); setAuthError(null); }}
                   className={`w-full border rounded-xl px-4 py-3 text-sm font-semibold text-[#171717] focus:outline-none transition-colors ${
@@ -299,6 +312,7 @@ export default function LoginPage() {
                   autoComplete="current-password"
                   placeholder="••••••••"
                 />
+                <button type="button" aria-label={showSignInPassword ? "Hide password" : "Show password"} onClick={() => setShowSignInPassword((shown) => !shown)} className="mt-1 inline-flex items-center gap-1 text-xs font-semibold text-[#666]">{showSignInPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}{showSignInPassword ? "Hide password" : "Show password"}</button>
               </div>
               <button
                 type="submit"
@@ -310,7 +324,7 @@ export default function LoginPage() {
               </button>
             </form>
           ) : (
-            <form onSubmit={handleSignUp} className="space-y-4">
+            <form noValidate onSubmit={handleSignUp} className="space-y-4">
               {/* Role selector — only User and Organizer can sign up */}
               <div>
                 <label className="block text-[11px] font-black uppercase tracking-wider text-[#666666] mb-1.5">
@@ -340,11 +354,11 @@ export default function LoginPage() {
               </div>
 
               {signupRole === "organizer" ? <div><label className="block text-[11px] font-black uppercase tracking-wider text-[#666666] mb-1.5">Organizer Name</label><input maxLength={50} value={signupName} onChange={(e) => setSignupName(e.target.value)} className="w-full border border-[#e6e1d8] rounded-xl px-4 py-2.5 text-sm" required placeholder="Your organization or group name" /></div> : <>
-                <div className="grid grid-cols-2 gap-2"><div><label className="block text-[11px] font-black uppercase mb-1">Last Name</label><input maxLength={50} minLength={2} value={signupLast} onChange={(e) => setSignupLast(e.target.value)} className="w-full border border-[#e6e1d8] rounded-xl px-3 py-2.5 text-sm" required autoComplete="family-name" /></div><div><label className="block text-[11px] font-black uppercase mb-1">First Name</label><input maxLength={50} minLength={2} value={signupFirst} onChange={(e) => setSignupFirst(e.target.value)} className="w-full border border-[#e6e1d8] rounded-xl px-3 py-2.5 text-sm" required autoComplete="given-name" /></div><div><label className="block text-[11px] font-black uppercase mb-1">Middle Initial (optional)</label><input maxLength={1} value={signupMI} onChange={(e) => setSignupMI(e.target.value.slice(0,1))} className="w-full border border-[#e6e1d8] rounded-xl px-3 py-2.5 text-sm" /></div><div><label className="block text-[11px] font-black uppercase mb-1">Username</label><input maxLength={20} minLength={4} value={signupUsername} onChange={(e) => setSignupUsername(e.target.value)} className="w-full border border-[#e6e1d8] rounded-xl px-3 py-2.5 text-sm" required autoComplete="username" /><small>{signupUsername.length}/20</small></div></div>
+                <div className="space-y-2"><div><label className="block text-[11px] font-black uppercase tracking-wider text-[#666666] mb-1.5">Name (Last name, First name MI) <span className="text-rose-600">*</span></label><input maxLength={104} value={signupName} onChange={(e) => setSignupName(e.target.value)} className="w-full border border-[#e6e1d8] rounded-xl px-4 py-3 text-sm" required autoComplete="name" placeholder="Dela Cruz, Ana M" /></div><div><label className="block text-[11px] font-black uppercase mb-1">Username <span className="text-rose-600">*</span></label><input maxLength={20} minLength={4} value={signupUsername} onChange={(e) => setSignupUsername(e.target.value)} className="w-full border border-[#e6e1d8] rounded-xl px-3 py-2.5 text-sm" required autoComplete="username" /><small>{signupUsername.length}/20</small></div></div>
               </>}
               <div>
                 <label className="block text-[11px] font-black uppercase tracking-wider text-[#666666] mb-1.5">
-                  Email Address
+                  Email Address <span className="text-rose-600">*</span>
                 </label>
                 <input
                   type="email"
@@ -361,10 +375,10 @@ export default function LoginPage() {
               </div>
               <div>
                 <label className="block text-[11px] font-black uppercase tracking-wider text-[#666666] mb-1.5">
-                  Password
+                  Password <span className="text-rose-600">*</span>
                 </label>
                 <input
-                  type="password"
+                  type={showSignupPassword ? "text" : "password"}
                   minLength={8} maxLength={64}
                   value={signupPassword}
                   onChange={(e) => { setSignupPassword(e.target.value.replace(/\s/g, "").slice(0,64)); setAuthError(null); }}
@@ -378,13 +392,16 @@ export default function LoginPage() {
                 <p className="mt-1.5 text-xs text-[#777777]">
                   Letters, numbers, and special characters are allowed; spaces are not. {signupPassword.length}/64
                 </p>
+                <p className={`mt-1 text-xs font-bold ${passwordStrength === "Strong" ? "text-emerald-700" : passwordStrength === "Medium" ? "text-amber-700" : "text-rose-700"}`}>Strength: {passwordStrength}</p>
+                <ul className="mt-1 grid grid-cols-2 gap-x-2 text-[11px]">{passwordChecks.map((check) => <li key={check.label} className={check.met ? "text-emerald-700" : "text-[#888]"}>{check.met ? "✓" : "○"} {check.label}</li>)}</ul>
+                <button type="button" aria-label={showSignupPassword ? "Hide password" : "Show password"} onClick={() => setShowSignupPassword((shown) => !shown)} className="mt-1 inline-flex items-center gap-1 text-xs font-semibold text-[#666]">{showSignupPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}{showSignupPassword ? "Hide password" : "Show password"}</button>
               </div>
               <div>
                 <label className="block text-[11px] font-black uppercase tracking-wider text-[#666666] mb-1.5">
-                  Confirm Password
+                  Confirm Password <span className="text-rose-600">*</span>
                 </label>
                 <input
-                  type="password"
+                  type={showSignupConfirm ? "text" : "password"}
                   maxLength={64}
                   value={signupConfirm}
                   onChange={(e) => { setSignupConfirm(e.target.value.replace(/\s/g, "").slice(0,64)); setAuthError(null); }}
@@ -395,6 +412,7 @@ export default function LoginPage() {
                   placeholder="Repeat your password"
                   autoComplete="new-password"
                 />
+                <button type="button" aria-label={showSignupConfirm ? "Hide password" : "Show password"} onClick={() => setShowSignupConfirm((shown) => !shown)} className="mt-1 inline-flex items-center gap-1 text-xs font-semibold text-[#666]">{showSignupConfirm ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}{showSignupConfirm ? "Hide password" : "Show password"}</button>
               </div>
               <button
                 type="submit"
@@ -406,7 +424,7 @@ export default function LoginPage() {
                     ? "Submitting…"
                     : signupRole === "organizer"
                     ? "Submit for Approval"
-                    : "Create Account & Sign In"}
+                    : "Create Account"}
                 </span>
                 <UserPlus className="w-4 h-4" />
               </button>

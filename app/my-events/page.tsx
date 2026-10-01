@@ -17,7 +17,7 @@ import {
   LogIn,
 } from "lucide-react";
 import Link from "next/link";
-import { format, addDays, isBefore, parseISO } from "date-fns";
+import { format, addDays, isBefore, parseISO, startOfMonth, addMonths, subMonths, getDaysInMonth } from "date-fns";
 import type { EventData } from "@/components/EventCard";
 import { DEFAULT_EVENTS } from "@/lib/default-events";
 import { getStoredEvents, subscribeToEvents, useStoredEvents } from "@/lib/events-store";
@@ -42,7 +42,7 @@ import CancelRsvpModal from "@/components/CancelRsvpModal";
 import { useHydrated } from "@/lib/use-hydrated";
 import { parseGuestLists } from "@/lib/guest-list";
 
-type Tab = "saved" | "registered" | "created" | "upcoming" | "past";
+type Tab = "saved" | "registered" | "upcoming" | "past";
 
 // ─── Google Calendar URL builder ────────────────────────────────────────────
 function buildGoogleCalendarUrl(event: EventData): string {
@@ -86,6 +86,8 @@ export default function MyEventsPage() {
   const [currentUser, setCurrentUser] = useState<SpottAccount | null>(() => getCurrentUser());
   const mounted = useHydrated();
   const [activeTab, setActiveTab] = useState<Tab>("saved");
+  const [calendarMonth, setCalendarMonth] = useState(() => startOfMonth(new Date()));
+  const [selectedCalendarDate, setSelectedCalendarDate] = useState<string | null>(null);
   const storedEvents = useStoredEvents();
   const [remoteEvents, setRemoteEvents] = useState<EventData[]>([]);
   const events = useMemo(() => {
@@ -234,19 +236,14 @@ export default function MyEventsPage() {
   const now = new Date();
   const savedEvents = events.filter((e) => savedIds.includes(e.id));
   const registeredEvents = events.filter((e) => registeredIds.includes(e.id));
-  const userOrgName = (currentUser?.organization || currentUser?.name || "").toLowerCase();
-  const createdEvents = currentUser && currentUser.role === "organizer"
-    ? events.filter((e) => (e.organizer || "").toLowerCase() === userOrgName)
-    : [];
-  const userEventIds = new Set([...savedIds, ...registeredIds]);
-  const userEvents = events.filter((e) => userEventIds.has(e.id));
-  const upcomingEvents = userEvents.filter((e) => new Date(e.date) > now);
-  const pastEvents = userEvents.filter((e) => new Date(e.date) <= now);
+  const userEventIds = new Set(registeredIds);
+  const registeredOnly = events.filter((e) => userEventIds.has(e.id));
+  const upcomingEvents = registeredOnly.filter((e) => new Date(e.date) > now).sort((a,b) => +new Date(a.date) - +new Date(b.date));
+  const pastEvents = registeredOnly.filter((e) => new Date(e.date) <= now);
 
   const tabs: { key: Tab; label: string; count: number }[] = [
     { key: "saved", label: "Saved", count: savedEvents.length },
     { key: "registered", label: "Registered", count: registeredEvents.length },
-    { key: "created", label: "Created Events", count: createdEvents.length },
     { key: "upcoming", label: "Upcoming", count: upcomingEvents.length },
     { key: "past", label: "Past", count: pastEvents.length },
   ];
@@ -254,10 +251,14 @@ export default function MyEventsPage() {
   const currentEvents = {
     saved: savedEvents,
     registered: registeredEvents,
-    created: createdEvents,
     upcoming: upcomingEvents,
     past: pastEvents,
   }[activeTab];
+  const displayedEvents = activeTab === "upcoming" && selectedCalendarDate
+    ? currentEvents.filter((item) => format(new Date(item.date), "yyyy-MM-dd") === selectedCalendarDate)
+    : currentEvents;
+  const calendarStart = startOfMonth(calendarMonth);
+  const calendarCells = [...Array(calendarStart.getDay()).fill(null), ...Array.from({ length: getDaysInMonth(calendarMonth) }, (_, index) => addDays(calendarStart, index))];
 
   // The "selected" event for Quick Actions = first upcoming, else first in current tab, else null
   const quickActionEvent: EventData | null = upcomingEvents[0] ?? currentEvents[0] ?? null;
@@ -414,7 +415,12 @@ export default function MyEventsPage() {
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
         {/* ── Events List ── */}
         <div className="lg:col-span-2 space-y-4">
-          {currentEvents.length === 0 ? (
+          {activeTab === "upcoming" && <div className="rounded-2xl border border-line bg-white p-5">
+            <div className="mb-4 flex items-center justify-between"><button onClick={() => { setCalendarMonth(subMonths(calendarMonth, 1)); setSelectedCalendarDate(null); }} className="rounded-lg border border-line px-3 py-1.5" aria-label="Previous month">‹</button><h2 className="m-0 text-lg font-bold">{format(calendarMonth, "MMMM yyyy")}</h2><button onClick={() => { setCalendarMonth(addMonths(calendarMonth, 1)); setSelectedCalendarDate(null); }} className="rounded-lg border border-line px-3 py-1.5" aria-label="Next month">›</button></div>
+            <div className="grid grid-cols-7 gap-1 text-center">{["Sun","Mon","Tue","Wed","Thu","Fri","Sat"].map((day) => <span key={day} className="py-2 text-xs font-bold text-muted">{day}</span>)}{calendarCells.map((day, index) => { const eventForDay = day && upcomingEvents.find((item) => format(new Date(item.date), "yyyy-MM-dd") === format(day, "yyyy-MM-dd")); const dayKey = day ? format(day, "yyyy-MM-dd") : ""; return day ? <button key={dayKey} onClick={() => setSelectedCalendarDate(eventForDay ? dayKey : null)} title={eventForDay?.title || "No registered event"} className={`relative rounded-lg py-2 text-sm ${eventForDay ? "bg-[#fff0e8] font-black text-[#e0531f]" : "text-ink"} ${selectedCalendarDate === dayKey ? "ring-2 ring-[#ff6b35]" : ""}`}>{format(day, "d")}{eventForDay && <i className="absolute bottom-1 left-1/2 h-1 w-1 -translate-x-1/2 rounded-full bg-[#ff6b35]" />}</button> : <span key={`blank-${index}`} />; })}</div>
+            <p className="mb-0 mt-3 text-xs text-muted">Highlighted dates have events you registered for. Select a date to show its event below.</p>
+          </div>}
+          {displayedEvents.length === 0 ? (
             <div className="bg-white border border-line rounded-2xl p-12 text-center">
               <Bookmark className="w-12 h-12 text-muted mx-auto mb-4 stroke-1" />
               <h3 className="font-bold text-lg text-ink mb-2">No events found</h3>
@@ -429,7 +435,7 @@ export default function MyEventsPage() {
               </Link>
             </div>
           ) : (
-            currentEvents.map((event) => (
+              displayedEvents.map((event) => (
               <div
                 key={event.id}
                 onClick={() => router.push(`/events/${event.id}`)}

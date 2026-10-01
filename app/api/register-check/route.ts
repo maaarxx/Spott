@@ -5,9 +5,10 @@ import { createAdminClient } from '@/lib/supabase-server';
 const disposable = new Set(['mailinator.com','tempmail.com','10minutemail.com','guerrillamail.com','yopmail.com','throwawaymail.com','trashmail.com','fakeinbox.com']);
 export async function POST(request: Request) {
   try {
-    const { email, username } = await request.json();
+    const { email, username, password } = await request.json();
     const normalizedEmail = String(email || '').trim().toLowerCase();
     const normalizedUsername = String(username || '').trim().toLowerCase();
+    if (typeof password !== 'string' || password.length < 8 || password.length > 64 || /\s/.test(password)) return NextResponse.json({ error: 'Password must be 8–64 characters with no spaces.' }, { status: 400 });
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedEmail) || normalizedEmail.length > 254) return NextResponse.json({ error: 'Enter a valid email address (max 254 characters).' }, { status: 400 });
     if (!/^[a-z0-9_]{4,20}$/.test(normalizedUsername)) return NextResponse.json({ error: 'Username must be 4–20 letters, numbers, or underscores.' }, { status: 400 });
     const domain = normalizedEmail.split('@')[1];

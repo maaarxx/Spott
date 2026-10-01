@@ -105,6 +105,11 @@ export default function EventDetailsPage({
   const [toastMessage, setToastMessage] = useState<string | null>(null);
   const [showCancelModal, setShowCancelModal] = useState(false);
   const [isCancellingRsvp, setIsCancellingRsvp] = useState(false);
+  const [rsvpFormOpen, setRsvpFormOpen] = useState(false);
+  const [rsvpFormReady, setRsvpFormReady] = useState(false);
+  const [rsvpInfo, setRsvpInfo] = useState({ fullName: "", mobile: "", email: "", attendees: "1", notes: "" });
+  const [paymentProof, setPaymentProof] = useState<File | null>(null);
+  const [rsvpFormError, setRsvpFormError] = useState("");
   const [allAvailableEvents, setAllAvailableEvents] = useState<EventDetail[]>([]);
   const hasTrackedView = useRef(false);
 
@@ -351,6 +356,13 @@ export default function EventDetailsPage({
       setShowCancelModal(true);
       return;
     }
+    if (!rsvpFormReady) {
+      setRsvpInfo((info) => ({ ...info, fullName: currentUser.name || "", email: currentUser.email || "" }));
+      setRsvpFormError("");
+      setRsvpFormOpen(true);
+      return;
+    }
+    setRsvpFormReady(false);
 
     try {
       const user = currentUser || getCurrentUser();
@@ -401,13 +413,15 @@ export default function EventDetailsPage({
       );
       const newAttendee = {
         id: `att-${Date.now()}`,
-        name: user.name || "Guest Attendee",
-        email: user.email,
+        name: rsvpInfo.fullName || user.name || "Guest Attendee",
+        email: rsvpInfo.email || user.email,
         status: newStatus,
         dateRegistered: new Date().toISOString().split("T")[0],
         ticketType: "General Admission",
-        phone: getUserProfile(user.email).phone,
-        notes: isFull ? "Waitlist (Event Full)" : requireApproval ? "Awaiting Screening" : "Direct RSVP",
+        phone: rsvpInfo.mobile || getUserProfile(user.email).phone,
+        attendeesCount: Number(rsvpInfo.attendees) || 1,
+        notes: rsvpInfo.notes || (isFull ? "Waitlist (Event Full)" : requireApproval ? "Awaiting Screening" : "Direct RSVP"),
+        paymentStatus: Number(eventTarget?.price) > 0 ? "Pending verification" : "Not required",
       };
 
       if (alreadyAttendingIdx !== -1) {
@@ -450,6 +464,31 @@ export default function EventDetailsPage({
       console.error("Failed to update RSVP:", e);
     }
   };
+
+  const submitRsvpForm = async (e: React.FormEvent<HTMLFormElement>) => {
+    e.preventDefault(); setRsvpFormError("");
+    if (!/^09\d{9}$/.test(rsvpInfo.mobile)) { setRsvpFormError("Use a valid PH mobile number in 09XXXXXXXXX format."); return; }
+    if (!rsvpInfo.fullName.trim() || rsvpInfo.fullName.trim().length > 100 || !/^\S+@\S+\.\S+$/.test(rsvpInfo.email) || Number(rsvpInfo.attendees) < 1 || Number(rsvpInfo.attendees) > 20 || rsvpInfo.notes.length > 1000) { setRsvpFormError("Please check the required fields and their limits."); return; }
+    const paid = Number(event?.price) > 0;
+    if (paid && (!paymentProof || !["image/jpeg","image/png","image/webp","image/gif"].includes(paymentProof.type) || paymentProof.size > 5 * 1024 * 1024)) { setRsvpFormError("Upload a JPG, PNG, WEBP, or GIF proof of payment no larger than 5 MB."); return; }
+    const data = new FormData();
+    Object.entries(rsvpInfo).forEach(([key, value]) => data.set(key, value));
+    if (paymentProof) data.set("proof", paymentProof);
+    const response = await fetch(`/api/events/${id}/register`, { method: "POST", body: data });
+    const result = await response.json();
+    if (!response.ok && paid) { setRsvpFormError(result.error || "Unable to submit RSVP."); return; }
+    if (paid) {
+      const user = currentUser || getCurrentUser();
+      if (user) { const ids = getUserRegisteredEvents(user.email); if (!ids.includes(id)) saveUserRegisteredEvents([...ids, id], user.email); }
+      addNotification({ type: "reminder", title: `Payment Verification: "${event?.title}"`, message: `${rsvpInfo.fullName} submitted payment proof for verification.`, targetRole: "organizer", link: `/organizer/rsvp?eventId=${id}` });
+      setRsvpd(true); setAttendeeStatus("Pending"); setRsvpFormOpen(false);
+      showToast("Payment submitted. Your RSVP is pending verification.");
+      window.dispatchEvent(new Event("spott_registered_updated"));
+      return;
+    }
+    setRsvpFormOpen(false); setRsvpFormReady(true);
+  };
+  useEffect(() => { if (rsvpFormReady) handleRSVP(); }, [rsvpFormReady]);
 
   const handleConfirmCancelRSVP = () => {
     const user = currentUser || getCurrentUser();
@@ -970,7 +1009,7 @@ export default function EventDetailsPage({
                   {attendeeStatus === "Pending" ? (
                     <div className="w-full py-3 px-4 rounded-xl font-bold text-xs bg-amber-50 text-amber-900 border border-amber-300 flex items-center justify-center gap-2 shadow-xs text-center">
                       <Clock className="w-4 h-4 text-amber-600 shrink-0" />
-                      <span>⏳ RSVP Pending Organizer Approval</span>
+                      <span>⏳ {Number(event?.price) > 0 ? "Pending Verification" : "RSVP Pending Organizer Approval"}</span>
                     </div>
                   ) : (
                     <div className="w-full py-3 px-4 rounded-xl font-bold text-sm bg-emerald-50 text-emerald-800 border border-emerald-200/80 flex items-center justify-center gap-2 shadow-xs">
@@ -1268,6 +1307,12 @@ export default function EventDetailsPage({
         {commentError && <p className="text-sm text-rose-600">{commentError}</p>}
         <div className="space-y-3">{comments.map((comment) => <article key={comment.id} className="rounded-xl bg-[#faf8f3] p-4"><div className="flex justify-between gap-3"><strong>{comment.users?.name || "Spott user"}</strong><time className="text-xs text-muted">{new Date(comment.created_at).toLocaleString()}</time></div><p className="mb-0 mt-2 whitespace-pre-wrap">{comment.content}</p>{comment.is_owner && <button onClick={() => deleteComment(comment.id)} className="mt-2 text-xs font-bold text-rose-600">Delete</button>}</article>)}</div>
       </section>
+
+      {rsvpFormOpen && <div className="fixed inset-0 z-[70] flex items-center justify-center overflow-y-auto bg-black/50 p-4"><form onSubmit={submitRsvpForm} className="my-8 max-h-[90vh] w-full max-w-lg space-y-4 overflow-y-auto rounded-2xl bg-white p-6 shadow-2xl"><div className="flex items-center justify-between"><h2 className="m-0 text-xl font-black">RSVP for {event?.title}</h2><button type="button" onClick={() => setRsvpFormOpen(false)} aria-label="Close RSVP form"><X className="h-5 w-5" /></button></div>
+        {([['Full Name','fullName','text'],['Mobile Number (09XXXXXXXXX)','mobile','tel'],['Email','email','email'],['Number of Attendees','attendees','number']] as const).map(([label,key,type]) => <label key={key} className="block text-sm font-bold">{label} <span className="text-rose-600">*</span><input required maxLength={key === 'fullName' ? 100 : key === 'email' ? 254 : undefined} min={key === 'attendees' ? 1 : undefined} max={key === 'attendees' ? 20 : undefined} type={type} value={rsvpInfo[key]} onChange={(e) => setRsvpInfo((info) => ({ ...info, [key]: e.target.value }))} className="mt-1 w-full rounded-xl border border-line px-3 py-2.5 font-normal" /></label>)}
+        <label className="block text-sm font-bold">Notes (optional)<textarea maxLength={1000} value={rsvpInfo.notes} onChange={(e) => setRsvpInfo((info) => ({ ...info, notes: e.target.value }))} className="mt-1 w-full rounded-xl border border-line px-3 py-2.5 font-normal" /></label>
+        {Number(event?.price) > 0 && <div className="space-y-3 rounded-xl border border-amber-200 bg-amber-50 p-4"><p className="m-0 font-bold">Please pay ₱{(Number(event?.price) * Number(rsvpInfo.attendees || 1)).toLocaleString('en-PH',{minimumFractionDigits:2,maximumFractionDigits:2})} via GCash/bank transfer using the QR code below, then upload your proof of payment here.</p><div className="flex items-center gap-4"><svg role="img" aria-label="Placeholder GCash QR code" viewBox="0 0 100 100" className="h-24 w-24 rounded bg-white p-2">{Array.from({length:100},(_,i)=><rect key={i} x={(i%10)*10} y={Math.floor(i/10)*10} width="10" height="10" fill={((i*7+i*i)%11)<5?'#111':'#fff'}/>)}</svg><div><b>Reference:</b> SP-{id.slice(0,6).toUpperCase()}-{currentUser?.email?.slice(0,4).toUpperCase()}<p className="mb-0 mt-1 text-xs">Demo payment instructions only</p></div></div><label className="block text-sm font-bold">Proof of payment <span className="text-rose-600">*</span><input required type="file" accept="image/*" onChange={(e) => setPaymentProof(e.target.files?.[0] || null)} className="mt-1 block w-full text-sm"/><span className="text-xs font-normal">Image only, max 5 MB.</span></label></div>}
+        {rsvpFormError && <p role="alert" className="rounded-lg bg-rose-50 p-3 text-sm text-rose-700">{rsvpFormError}</p>}<div className="flex justify-end gap-2"><button type="button" onClick={() => setRsvpFormOpen(false)} className="rounded-xl border border-line px-4 py-2">Cancel</button><button type="submit" className="rounded-xl bg-[#ff6b35] px-5 py-2 font-bold text-white">{Number(event?.price) > 0 ? "Submit payment proof" : "Submit RSVP"}</button></div></form></div>}
 
       {/* Cancel RSVP Confirmation Modal */}
       <CancelRsvpModal

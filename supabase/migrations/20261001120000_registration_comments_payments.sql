@@ -40,12 +40,22 @@ CREATE POLICY event_comments_delete_own ON public.event_comments FOR DELETE TO a
 ALTER TABLE public.registrations ADD COLUMN IF NOT EXISTS payment_status varchar(30);
 ALTER TABLE public.registrations ADD COLUMN IF NOT EXISTS payment_proof_url text;
 ALTER TABLE public.registrations ADD COLUMN IF NOT EXISTS attendee_name varchar(100);
+ALTER TABLE public.registrations ADD COLUMN IF NOT EXISTS attendee_email varchar(254);
 ALTER TABLE public.registrations ADD COLUMN IF NOT EXISTS mobile_number varchar(11);
 ALTER TABLE public.registrations ADD COLUMN IF NOT EXISTS attendees_count integer NOT NULL DEFAULT 1;
 ALTER TABLE public.registrations ADD COLUMN IF NOT EXISTS notes text;
+INSERT INTO storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
+VALUES ('payment-proofs', 'payment-proofs', false, 5242880, ARRAY['image/jpeg','image/png','image/webp','image/gif'])
+ON CONFLICT (id) DO UPDATE SET public = false, file_size_limit = 5242880, allowed_mime_types = EXCLUDED.allowed_mime_types;
 ALTER TABLE public.registrations ENABLE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS registrations_view_self_or_owned_event ON public.registrations;
 CREATE POLICY registrations_view_self_or_owned_event ON public.registrations FOR SELECT TO authenticated
+USING (user_id = auth.uid() OR EXISTS (
+  SELECT 1 FROM public.events e JOIN public.organizers o ON o.organizer_id = e.organizer_id
+  WHERE e.event_id = registrations.event_id AND o.user_id = auth.uid()
+));
+DROP POLICY IF EXISTS registrations_private_contact_restrictive ON public.registrations;
+CREATE POLICY registrations_private_contact_restrictive ON public.registrations AS RESTRICTIVE FOR SELECT TO authenticated
 USING (user_id = auth.uid() OR EXISTS (
   SELECT 1 FROM public.events e JOIN public.organizers o ON o.organizer_id = e.organizer_id
   WHERE e.event_id = registrations.event_id AND o.user_id = auth.uid()
