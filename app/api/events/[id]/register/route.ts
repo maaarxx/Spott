@@ -93,7 +93,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
     if (updatedConfirmedCount === null) return NextResponse.json({ error: 'RSVP saved, but its updated count could not be loaded.' }, { status: 500 });
     const sideEffects: Promise<unknown>[] = [];
     if (organizer?.user_id) {
-      sideEffects.push(db.from('notifications').insert({
+      sideEffects.push(Promise.resolve(db.from('notifications').insert({
         user_id: organizer.user_id,
         type: 'announcement',
         title: `New RSVP: "${event.title}"`,
@@ -101,7 +101,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
         target_role: 'organizer',
         related_event_id: id,
         link: `/organizer/rsvp?eventId=${id}`,
-      }));
+      })));
     }
     sideEffects.push(writeAuditEntry(account, {
       action: 'rsvp.created_or_updated', targetType: 'event', targetId: id,
