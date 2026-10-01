@@ -245,7 +245,7 @@ export async function PATCH(
           .maybeSingle();
       if (updateError || !updatedEvent) return NextResponse.json({ error: 'Could not cancel event in the database.' }, { status: 500 });
 
-      if (account.role === 'admin') await writeAuditEntry(account, {
+      await writeAuditEntry(account, {
         action: 'event.cancelled', targetType: 'event', targetId: id,
         summary: `Cancelled event “${currentTitle}”.`, details: { reason: cancelReason },
       });
@@ -313,11 +313,6 @@ export async function PATCH(
       }
     }
 
-    if (account.role === 'admin' && changes.length > 0) await writeAuditEntry(account, {
-      action: 'event.updated', targetType: 'event', targetId: id,
-      summary: `Updated event “${newTitle}”.`, details: { changes },
-    });
-
     if (body.location !== undefined && body.location.trim() !== existingEvent.location?.trim()) {
       if (!existingEvent.locationId) {
         return NextResponse.json({ error: 'Event location is missing from the database.' }, { status: 500 });
@@ -342,6 +337,11 @@ export async function PATCH(
         .select('event_id')
         .maybeSingle();
     if (updateError || !updatedEvent) return NextResponse.json({ error: 'Could not update event in the database.' }, { status: 500 });
+
+    if (changes.length > 0) await writeAuditEntry(account, {
+      action: 'event.updated', targetType: 'event', targetId: id,
+      summary: `Updated event “${newTitle}”.`, details: { changes },
+    });
 
     // If changes occurred, notify RSVPed attendees and recompute pending reminders
     let createdNotification = null;
@@ -460,7 +460,7 @@ export async function DELETE(
       return NextResponse.json({ error: 'Unable to delete event' }, { status: 500 });
     }
 
-    if (account.role === 'admin') await writeAuditEntry(account, {
+    await writeAuditEntry(account, {
       action: 'event.deleted', targetType: 'event', targetId: id,
       summary: `Deleted event “${existingEventTitle || id}”.`,
     });

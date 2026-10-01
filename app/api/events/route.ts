@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { createClient, createAdminClient, getAuthenticatedRole } from '@/lib/supabase-server';
 import { errorMessage } from '@/lib/error-message';
+import { writeAuditEntry } from '@/lib/audit-log-server';
 import type { EventData } from '@/components/EventCard';
 
 type DbRelation<T> = T | T[] | null;
@@ -160,6 +161,14 @@ export async function POST(request: Request) {
           })));
         }
       }
+
+      await writeAuditEntry(account, {
+        action: 'event.created',
+        targetType: 'event',
+        targetId: eventData.event_id,
+        summary: `Created event “${title.trim()}”.`,
+        details: { status: eventStatus, capacity: body.capacity ?? null },
+      });
 
       return NextResponse.json({ success: true, event_id: eventData.event_id }, { status: 201 });
     } catch (writeError) {
