@@ -20,7 +20,7 @@ export async function POST(request: Request) {
     const nameParts = [normalizedFirstName, normalizedLastName].flatMap((part) => part.toLowerCase().split(/[\s.'’_-]+/)).filter((part) => part.length >= 2);
     if (nameParts.some((part) => passLower.includes(part))) return NextResponse.json({ error: 'Password cannot contain any part of your first or last name.' }, { status: 400 });
     if (normalizedUsername && passLower.includes(normalizedUsername)) return NextResponse.json({ error: 'Password cannot contain your username.' }, { status: 400 });
-    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedEmail) || normalizedEmail.length > 254) return NextResponse.json({ error: 'Enter a valid email address (max 254 characters).' }, { status: 400 });
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedEmail) || normalizedEmail.length > 150) return NextResponse.json({ error: 'Enter a valid email address (max 150 characters).' }, { status: 400 });
     if (!/^[a-z0-9_]{4,20}$/.test(normalizedUsername)) return NextResponse.json({ error: 'Username must be 4–20 letters, numbers, or underscores.' }, { status: 400 });
     const domain = normalizedEmail.split('@')[1];
     if (disposable.has(domain)) return NextResponse.json({ error: 'Please use a non-disposable email address.' }, { status: 400 });

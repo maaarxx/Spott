@@ -72,7 +72,7 @@ export default function LoginPage() {
     mi: signupMI && !/^[A-Za-z]$/.test(signupMI) ? "Middle initial must be one letter." : "",
     lastName: signupLastName.length > 150 ? "Last name must be 150 characters or fewer." : signupLastName && !/^[\p{L}\p{M}][\p{L}\p{M} '\u2019-]*$/u.test(signupLastName) ? "Use letters, spaces, apostrophes, or hyphens only." : "",
     username: signupUsername && !/^[a-zA-Z0-9_]{4,20}$/.test(signupUsername) ? "Use 4–20 letters, numbers, or underscores." : "",
-    email: signupEmail && (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(signupEmail.trim()) || signupEmail.trim().length > 254) ? "Enter a valid email address (maximum 254 characters)." : "",
+    email: signupEmail && (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(signupEmail.trim()) || signupEmail.trim().length > 150) ? "Enter a valid email address (maximum 150 characters)." : "",
     password: signupPassword.length > 20 ? "Password must be 20 characters or fewer." : /\s/.test(signupPassword) ? "Password cannot contain spaces." : signupPassword.length > 0 && signupPassword.length < 8 ? "Password must be at least 8 characters." : signupPassword && [signupFirstName, signupMI, signupLastName, signupUsername].flatMap((part) => part.trim().split(/[\s.'’_-]+/)).filter((part) => part.length >= 2).some((part) => signupPassword.toLowerCase().includes(part.toLowerCase())) ? "Password cannot contain your name or username." : "",
     confirm: signupConfirm && signupConfirm !== signupPassword ? "Passwords do not match." : "",
   };
@@ -170,7 +170,7 @@ export default function LoginPage() {
       setAuthError("Please complete the highlighted fields."); return;
     }
     if (signupRole === "organizer" && !formattedName) { setAuthError("Please fill in your organization name."); return; }
-    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(signupEmail.trim()) || signupEmail.length > 254) { setAuthError("Please enter a valid email address."); setSignupTouched((current) => ({ ...current, email: true })); return; }
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(signupEmail.trim()) || signupEmail.length > 150) { setAuthError("Please enter a valid email address (maximum 150 characters)."); setSignupTouched((current) => ({ ...current, email: true })); return; }
     if (signupRole === "user" && Object.values(fieldErrors).some(Boolean)) { setSignupTouched({ firstName: true, mi: true, lastName: true, username: true, password: true, confirm: true }); setAuthError("Please correct the highlighted fields."); return; }
     if (signupPassword.length < 8 || signupPassword.length > 20 || /\s/.test(signupPassword)) {
       setSignupTouched((current) => ({ ...current, password: true }));
@@ -239,7 +239,9 @@ export default function LoginPage() {
     { label: "Special character", met: /[^A-Za-z0-9]/.test(signupPassword) },
   ];
   const strengthScore = passwordChecks.filter((check) => check.met).length;
-  const passwordStrength = signupPassword.length === 0 ? "Neutral" : strengthScore <= 2 ? "Weak" : strengthScore <= 4 ? "Medium" : "Strong";
+  const hasCommonWeakPattern = /^(password|qwerty|letmein|welcome|admin|123456|12345678|abcdef)|(.)\2{3,}/i.test(signupPassword);
+  const personalPassword = Boolean(fieldErrors.password.includes("name or username"));
+  const passwordStrength = signupPassword.length === 0 ? "Neutral" : hasCommonWeakPattern || personalPassword || strengthScore <= 2 ? "Weak" : strengthScore <= 4 ? "Medium" : "Strong";
 
   return (
     <div className="min-h-[calc(100vh-72px)] flex items-center justify-center px-4 py-12 bg-[#faf8f3]">
@@ -418,7 +420,7 @@ export default function LoginPage() {
                 </label>
                 <input
                   type="email"
-                  maxLength={254}
+                  maxLength={150}
                   value={signupEmail}
                   onChange={(e) => { touch("email"); setServerFieldErrors((current) => ({ ...current, email: "" })); setSignupEmail(e.target.value); setAuthError(null); }}
                   className={`w-full border rounded-xl px-4 py-3 text-sm font-semibold text-[#171717] focus:outline-none transition-colors ${

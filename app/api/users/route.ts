@@ -1,6 +1,5 @@
 import { NextResponse } from 'next/server';
 import { createAdminClient, getAuthenticatedRole } from '@/lib/supabase-server';
-import { errorMessage } from '@/lib/error-message';
 import { writeAuditEntry } from '@/lib/audit-log-server';
 
 export async function GET(request: Request) {
@@ -35,7 +34,13 @@ export async function PATCH(request: Request) {
     }
 
     const update: Record<string, string | null> = { role };
-    if (typeof body.name === 'string') update.name = body.name.trim();
+    if (typeof body.name === 'string') {
+      if (!body.name.trim() || body.name.trim().length > 200) return NextResponse.json({ error: 'Name must be between 1 and 200 characters.' }, { status: 400 });
+      update.name = body.name.trim();
+    }
+    if (typeof body.first_name === 'string' && body.first_name.trim().length > 100) return NextResponse.json({ error: 'First name must be 100 characters or fewer.' }, { status: 400 });
+    if (typeof body.middle_initial === 'string' && body.middle_initial.trim() && !/^[A-Za-z]$/.test(body.middle_initial.trim())) return NextResponse.json({ error: 'Middle initial must be one alphabetic character.' }, { status: 400 });
+    if (typeof body.last_name === 'string' && body.last_name.trim().length > 150) return NextResponse.json({ error: 'Last name must be 150 characters or fewer.' }, { status: 400 });
     for (const field of ['first_name', 'middle_initial', 'last_name'] as const) {
       if (body[field] !== undefined) update[field] = typeof body[field] === 'string' && body[field].trim() ? body[field].trim() : null;
     }
@@ -51,8 +56,8 @@ export async function PATCH(request: Request) {
       summary: `Updated account details for ${data.name}.`,
     });
     return NextResponse.json({ success: true, user: data });
-  } catch (error: unknown) {
-    return NextResponse.json({ error: errorMessage(error, 'Unable to update user.') }, { status: 500 });
+  } catch {
+    return NextResponse.json({ error: 'Unable to update user.' }, { status: 500 });
   }
 }
 
@@ -62,14 +67,17 @@ export async function POST(request: Request) {
     if (!account) return NextResponse.json({ error: 'No Supabase session or account profile was found. Sign in again with your production account.', code: 'AUTHENTICATION_REQUIRED' }, { status: 401 });
     if (account.role !== 'admin') return NextResponse.json({ error: 'Your signed-in account does not have the admin role.', code: 'ADMIN_ROLE_REQUIRED' }, { status: 403 });
     const body = await request.json();
-    const { name, email, role } = body;
+    const { name, email, role } = body || {};
 
     if (role !== undefined && !['user', 'organizer', 'admin'].includes(role)) {
       return NextResponse.json({ error: 'Invalid role' }, { status: 400 });
     }
 
-    if (!email) {
-      return NextResponse.json({ error: 'Email is required' }, { status: 400 });
+    if (typeof email !== 'string' || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim()) || email.trim().length > 150) {
+      return NextResponse.json({ error: 'Enter a valid email address (maximum 150 characters).' }, { status: 400 });
+    }
+    if (name !== undefined && (typeof name !== 'string' || !name.trim() || name.trim().length > 200)) {
+      return NextResponse.json({ error: 'Name must be between 1 and 200 characters.' }, { status: 400 });
     }
 
     const supabase = createAdminClient();
@@ -90,7 +98,8 @@ export async function POST(request: Request) {
       .maybeSingle();
 
     if (error) {
-      return NextResponse.json({ error: error.message }, { status: 500 });
+      console.error('Admin user upsert failed', { code: error.code });
+      return NextResponse.json({ error: 'Unable to save this user.' }, { status: 500 });
     }
 
     await writeAuditEntry(account, {
@@ -99,8 +108,8 @@ export async function POST(request: Request) {
     });
 
     return NextResponse.json({ success: true, user: data });
-  } catch (error: unknown) {
-    return NextResponse.json({ error: errorMessage(error, 'Server error') }, { status: 500 });
+  } catch {
+    return NextResponse.json({ error: 'Unable to save this user.' }, { status: 500 });
   }
 }
 
