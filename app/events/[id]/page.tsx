@@ -223,9 +223,9 @@ export default function EventDetailsPage({
     const error = key === "mobile"
       ? (/^09\d{9}$/.test(value) ? "" : "Use a valid PH mobile number in 09XXXXXXXXX format.")
       : key === "email"
-        ? (/^\S+@\S+\.\S+$/.test(value) && value.length <= 25 ? "" : "Enter a valid email address.")
+        ? (value.trim().toLowerCase() !== (currentUser?.email || "").toLowerCase() ? "Email must match your account." : "")
         : key === "fullName"
-          ? (value.trim().length >= 2 && value.trim().length <= 25 ? "" : "Enter your name (First Name MI Last Name).")
+          ? (value.trim().toLowerCase() !== (currentUser?.name || "").trim().toLowerCase() ? "Name must match your profile." : "")
           : (value.length <= 1000 ? "" : "Notes must be 1,000 characters or fewer.");
     setRsvpInfo((info) => ({ ...info, [key]: value }));
     setRsvpTouched((current) => ({ ...current, [key]: true }));
@@ -237,9 +237,9 @@ export default function EventDetailsPage({
     if (rsvpSubmitting) return;
     setRsvpFormError(""); setRsvpFieldErrors({});
     const errors: Record<string, string> = {};
-    if (!rsvpInfo.fullName.trim() || rsvpInfo.fullName.trim().length > 25) errors.fullName = "Enter your name (First Name MI Last Name).";
+    if (!rsvpInfo.fullName.trim() || rsvpInfo.fullName.trim().toLowerCase() !== (currentUser?.name || "").trim().toLowerCase()) errors.fullName = "Name must match your profile.";
     if (!/^09\d{9}$/.test(rsvpInfo.mobile)) errors.mobile = "Use a valid PH mobile number in 09XXXXXXXXX format.";
-    if (!/^\S+@\S+\.\S+$/.test(rsvpInfo.email) || rsvpInfo.email.length > 25) errors.email = "Enter a valid email address.";
+    if (rsvpInfo.email.trim().toLowerCase() !== (currentUser?.email || "").toLowerCase()) errors.email = "Email must match your account.";
     if (rsvpInfo.notes.length > 1000) errors.notes = "Notes must be 1,000 characters or fewer.";
     if (Object.keys(errors).length) { setRsvpTouched({ fullName: true, mobile: true, email: true, notes: true }); setRsvpFieldErrors(errors); return; }
     const paid = Number(event?.price) > 0;

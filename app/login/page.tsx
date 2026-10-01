@@ -70,13 +70,25 @@ export default function LoginPage() {
 
   const fullName = [signupFirstName.trim(), signupMI.trim() ? `${signupMI.trim()}.` : "", signupLastName.trim()]
     .filter(Boolean).join(" ");
+  const passwordChecks = [
+    { label: "8 or more characters", met: signupPassword.length >= 8 },
+    { label: "Uppercase letter", met: /[A-Z]/.test(signupPassword) },
+    { label: "Lowercase letter", met: /[a-z]/.test(signupPassword) },
+    { label: "Number", met: /[0-9]/.test(signupPassword) },
+    { label: "Special character", met: /[^A-Za-z0-9]/.test(signupPassword) },
+  ];
+  const strengthScore = passwordChecks.filter((check) => check.met).length;
+  const hasCommonWeakPattern = /^(password|qwerty|letmein|welcome|admin|123456|12345678|abcdef)|(.)\2{3,}/i.test(signupPassword);
+  const nameOrUsernameUsed = Boolean(signupRole === "user" && signupPassword && [signupFirstName, signupMI, signupLastName, signupUsername].flatMap((part) => part.trim().split(/[\s.'’_-]+/)).filter((part) => part.length >= 2).some((part) => signupPassword.toLowerCase().includes(part.toLowerCase())));
+  const passwordStrength = signupPassword.length === 0 ? "Neutral" : hasCommonWeakPattern || nameOrUsernameUsed || strengthScore <= 2 ? "Weak" : strengthScore <= 4 ? "Medium" : "Strong";
+
   const fieldErrors = {
     firstName: signupFirstName.trim().length === 1 ? "First name must be at least 2 characters." : signupFirstName.length > 15 ? "First name must be 15 characters or fewer." : signupFirstName && !/^[\p{L}\p{M}][\p{L}\p{M} '\u2019-]*$/u.test(signupFirstName) ? "Use letters, spaces, apostrophes, or hyphens only." : "",
     mi: !signupMI.trim() ? "Middle initial is required." : !/^[A-Za-z]$/.test(signupMI) ? "Middle initial must be one letter." : "",
     lastName: signupLastName.trim().length === 1 ? "Last name must be at least 2 characters." : signupLastName.length > 15 ? "Last name must be 15 characters or fewer." : signupLastName && !/^[\p{L}\p{M}][\p{L}\p{M} '\u2019-]*$/u.test(signupLastName) ? "Use letters, spaces, apostrophes, or hyphens only." : "",
     username: signupUsername && !/^[a-zA-Z0-9_]{4,20}$/.test(signupUsername) ? "Use 4–20 letters, numbers, or underscores." : "",
     email: signupEmail && (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(signupEmail.trim()) || signupEmail.trim().length > 150) ? "Enter a valid email address (maximum 150 characters)." : "",
-    password: signupPassword.length > 20 ? "Password must be 20 characters or fewer." : /\s/.test(signupPassword) ? "Password cannot contain spaces." : signupPassword.length > 0 && signupPassword.length < 8 ? "Password must be at least 8 characters." : signupRole === "user" && signupPassword && [signupFirstName, signupMI, signupLastName, signupUsername].flatMap((part) => part.trim().split(/[\s.'’_-]+/)).filter((part) => part.length >= 2).some((part) => signupPassword.toLowerCase().includes(part.toLowerCase())) ? "Password cannot contain your name or username." : "",
+    password: signupPassword.length > 20 ? "Password must be 20 characters or fewer." : /\s/.test(signupPassword) ? "Password cannot contain spaces." : nameOrUsernameUsed ? "Password cannot contain your name or username." : signupPassword.length > 0 && strengthScore < 5 ? "Please satisfy all password requirements." : passwordStrength === "Weak" ? "Password is weak. Please choose a stronger one." : "",
     confirm: signupConfirm && signupConfirm !== signupPassword ? "Passwords do not match." : "",
   };
   const organizerNameError = !signupName.trim()
@@ -311,18 +323,6 @@ export default function LoginPage() {
     })();
   };
 
-  const passwordChecks = [
-    { label: "8 or more characters", met: signupPassword.length >= 8 },
-    { label: "Uppercase letter", met: /[A-Z]/.test(signupPassword) },
-    { label: "Lowercase letter", met: /[a-z]/.test(signupPassword) },
-    { label: "Number", met: /[0-9]/.test(signupPassword) },
-    { label: "Special character", met: /[^A-Za-z0-9]/.test(signupPassword) },
-  ];
-  const strengthScore = passwordChecks.filter((check) => check.met).length;
-  const hasCommonWeakPattern = /^(password|qwerty|letmein|welcome|admin|123456|12345678|abcdef)|(.)\2{3,}/i.test(signupPassword);
-  const personalPassword = Boolean(fieldErrors.password.includes("name or username"));
-  const passwordStrength = signupPassword.length === 0 ? "Neutral" : hasCommonWeakPattern || personalPassword || strengthScore <= 2 ? "Weak" : strengthScore <= 4 ? "Medium" : "Strong";
-
   return (
     <div className="min-h-[calc(100vh-72px)] flex items-center justify-center px-4 py-12 bg-[#faf8f3]">
       <div className="w-full max-w-lg">
@@ -449,7 +449,7 @@ export default function LoginPage() {
                     <button
                       key={role}
                       type="button"
-                      onClick={() => { setSignupRole(role); setSignupTouched({}); setServerFieldErrors({}); setAuthError(null); }}
+                      onClick={() => { setSignupRole(role); setSignupTouched({}); setServerFieldErrors({}); setAuthError(null); setSignupPassword(""); setSignupConfirm(""); setSignupEmail(""); setSignupName(""); setSignupFirstName(""); setSignupMI(""); setSignupLastName(""); setSignupUsername(""); }}
                       className={`py-2.5 px-2 rounded-xl text-xs font-bold transition-all capitalize cursor-pointer border ${
                         signupRole === role
                           ? "bg-[#171717] text-white border-[#ff6b35] ring-1 ring-[#ff6b35]"
