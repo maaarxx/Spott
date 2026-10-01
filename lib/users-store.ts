@@ -436,7 +436,9 @@ export async function deleteAdminUser(user: { id: string; email: string; name?: 
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ user_id: user.id, email: user.email }),
     });
-    if (!response.ok) return false;
+    // A stale local row may outlive a profile already removed from Supabase.
+    // Treat 404 as success so the browser tombstone can clear that old row.
+    if (!response.ok && response.status !== 404) return false;
 
     // 1. Add to deleted set (ids + emails + names)
     const delRaw = localStorage.getItem(DELETED_USERS_KEY);
