@@ -29,11 +29,11 @@ import { checkEventForModeration, loadModerationConfig } from "@/lib/moderation-
 import { fetchWithSupabaseSession } from "@/lib/audit-log-client";
 
 const eventSchema = z.object({
-  title: z.string().min(1, "Event title is required"),
+  title: z.string().min(10, "Event title must be between 10 to 100 characters").max(100, "Event title must be between 10 to 100 characters"),
   description: z.string().min(1, "Event description is required"),
   date: z.string().min(1, "Please enter an event date"),
   time: z.string().min(1, "Please enter an event time"),
-  location: z.string().min(1, "Location is required"),
+  location: z.string().min(1, "Please input or pin a location").max(200, "Location name is too long"),
   price: z.coerce.number().min(0, "Price cannot be negative"),
   isFree: z.boolean(),
   category: z.string().min(1, "Please select a category"),
@@ -80,9 +80,11 @@ export default function CreateEventPage() {
     watch,
     setValue,
     reset,
-    formState: { errors },
+    getValues,
+    formState: { errors, isValid },
   } = useForm<EventFormValues>({
     resolver: zodResolver(eventSchema),
+    mode: "onChange",
     defaultValues: {
       price: 0,
       isFree: true,
@@ -99,35 +101,23 @@ export default function CreateEventPage() {
   });
 
   const isFreeWatched = watch("isFree");
-  const formValues = watch();
+  const locationWatched = watch("location");
+  const hasCapacityLimitWatched = watch("hasCapacityLimit");
 
   // Validate that all required fields are filled before enabling the publish button.
   // Optional fields: Cover image, Capacity & Approval checkboxes.
   const isFormComplete = useMemo(() => {
-    const hasTitle = Boolean(formValues.title && formValues.title.trim().length > 0);
-    const hasDesc = Boolean(formValues.description && formValues.description.trim().length > 0);
-    const hasDate = Boolean(formValues.date && formValues.date.trim().length > 0);
-    const hasTime = Boolean(formValues.time && formValues.time.trim().length > 0);
-    const hasLocation = Boolean(formValues.location && formValues.location.trim().length > 0);
     const hasCategory = isCustomCategory
       ? Boolean(customCategoryInput && customCategoryInput.trim().length > 0)
-      : Boolean(formValues.category && formValues.category.trim().length > 0);
-    const hasPrice = formValues.isFree || (formValues.price !== undefined && Number(formValues.price) >= 0);
-    const hasValidCapacity = !formValues.hasCapacityLimit || (Number(formValues.capacity) > 0);
+      : true; // isValid already checks if category is valid if not custom
     const hasCoordinates = Boolean(pinnedLat && pinnedLng);
 
     return (
-      hasTitle &&
-      hasDesc &&
-      hasDate &&
-      hasTime &&
-      hasLocation &&
+      isValid &&
       hasCategory &&
-      hasPrice &&
-      hasValidCapacity &&
       hasCoordinates
     );
-  }, [formValues, pinnedLat, pinnedLng, isCustomCategory, customCategoryInput]);
+  }, [isValid, pinnedLat, pinnedLng, isCustomCategory, customCategoryInput]);
 
   const handleFreeToggle = (checked: boolean) => {
     setValue("isFree", checked);
@@ -199,7 +189,7 @@ export default function CreateEventPage() {
 
   const onSaveDraft = () => {
     try {
-      localStorage.setItem("spott_event_draft", JSON.stringify({ ...formValues, coverImage }));
+      localStorage.setItem("spott_event_draft", JSON.stringify({ title: watch("title"), description: watch("description"), location: watch("location"), date: watch("date"), time: watch("time"), isFree: watch("isFree"), price: watch("price"), category: watch("category"), hasCapacityLimit: watch("hasCapacityLimit"), capacity: watch("capacity"), requireApproval: watch("requireApproval"), coverImage }));
       setDraftSaved(true);
       setTimeout(() => setDraftSaved(false), 3500);
     } catch {
@@ -570,7 +560,7 @@ export default function CreateEventPage() {
               <label className="block text-xs sm:text-sm font-bold text-[#171717] mb-1.5 flex flex-wrap items-center justify-between gap-2">
                 <span className="flex items-center gap-2">
                   <span>Location / Venue</span>
-                  {watch("location")?.trim() ? (
+                  {locationWatched?.trim() ? (
                     <span className="text-[11px] font-bold text-emerald-700 bg-emerald-50 border border-emerald-300 px-2.5 py-0.5 rounded-full inline-flex items-center gap-1 shadow-2xs">
                       <Check className="w-3 h-3 text-emerald-600" /> Pinned ({pinnedLat.toFixed(4)}, {pinnedLng.toFixed(4)})
                     </span>
@@ -600,7 +590,7 @@ export default function CreateEventPage() {
 
             {/* Pin Location on Map */}
             <LocationPicker
-              locationValue={watch("location") || ""}
+              locationValue={locationWatched || ""}
               onLocationChange={(val) => setValue("location", val, { shouldValidate: true })}
               lat={pinnedLat}
               lng={pinnedLng}
@@ -737,7 +727,7 @@ export default function CreateEventPage() {
                 </div>
               </label>
 
-              {watch("hasCapacityLimit") && (
+              {hasCapacityLimitWatched && (
                 <div className="pl-6 pt-1">
                   <label className="block text-xs font-bold text-[#171717] mb-1">
                     Maximum Capacity / Available Seats
@@ -863,10 +853,10 @@ export default function CreateEventPage() {
               {/* Event meta at bottom of image */}
               <div className="relative z-10 p-5 pb-4">
                 <span className="px-2.5 py-1 rounded-full bg-white/20 backdrop-blur-md text-[11px] font-bold uppercase tracking-wider">
-                  {formValues.category || "School Event"}
+                  {getValues("category") || "School Event"}
                 </span>
                 <h3 className="text-xl font-black mt-2 leading-tight drop-shadow">
-                  {formValues.title || "Untitled Event"}
+                  {getValues("title") || "Untitled Event"}
                 </h3>
               </div>
             </div>
@@ -876,17 +866,17 @@ export default function CreateEventPage() {
                 <div className="flex items-center gap-2">
                   <Calendar className="w-4 h-4 text-[#ff6b35]" />
                   <span className="font-semibold text-[#171717]">
-                    {formValues.date || "Date TBA"} at {formValues.time || "Time TBA"}
+                    {getValues("date") || "Date TBA"} at {getValues("time") || "Time TBA"}
                   </span>
                 </div>
                 <div className="flex items-center gap-2">
                   <MapPin className="w-4 h-4 text-[#ff6b35]" />
-                  <span>{formValues.location || "Location TBA"}</span>
+                  <span>{getValues("location") || "Location TBA"}</span>
                 </div>
                 <div className="flex items-center gap-2">
                   <span className="font-black text-[#ff6b35]">₱</span>
                   <span className="font-bold text-[#171717]">
-                    {formValues.isFree ? "Free Entry" : `₱${formValues.price || "0.00"}`}
+                    {getValues("isFree") ? "Free Entry" : `₱${getValues("price") || "0.00"}`}
                   </span>
                 </div>
               </div>
@@ -894,7 +884,7 @@ export default function CreateEventPage() {
               <div className="pt-2 border-t border-gray-100">
                 <h4 className="text-xs font-bold text-gray-700 mb-1">About This Event</h4>
                 <p className="text-xs text-[#666666] leading-relaxed line-clamp-3">
-                  {formValues.description || "No description provided yet."}
+                  {getValues("description") || "No description provided yet."}
                 </p>
               </div>
 
