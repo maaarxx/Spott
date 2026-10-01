@@ -5,8 +5,22 @@ import { createAdminClient } from '@/lib/supabase-server';
 const disposable = new Set(['mailinator.com','tempmail.com','10minutemail.com','guerrillamail.com','yopmail.com','throwawaymail.com','trashmail.com','fakeinbox.com']);
 export async function POST(request: Request) {
   try {
-    const { email, username, password, firstName, mi, lastName } = await request.json();
+    const body = await request.json();
+    const { email, username, password, firstName, mi, lastName } = body;
     const normalizedEmail = String(email || '').trim().toLowerCase();
+    if (body.checkEmailOnly === true) {
+      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedEmail) || normalizedEmail.length > 150) {
+        return NextResponse.json({ error: 'Enter a valid email address (maximum 150 characters).' }, { status: 400 });
+      }
+      const { data: existingEmail, error: emailLookupError } = await createAdminClient()
+        .from('users').select('user_id').ilike('email', normalizedEmail).maybeSingle();
+      if (emailLookupError) {
+        console.error('Signup email availability check failed', { code: emailLookupError.code });
+        return NextResponse.json({ error: 'Unable to check this email right now.' }, { status: 503 });
+      }
+      if (existingEmail) return NextResponse.json({ error: 'Email is already in use.' }, { status: 409 });
+      return NextResponse.json({ available: true });
+    }
     const normalizedUsername = String(username || '').trim().toLowerCase();
     const normalizedFirstName = String(firstName || '').trim();
     const normalizedMi = String(mi || '').trim();
@@ -32,7 +46,7 @@ export async function POST(request: Request) {
     ]);
     if (usernameRow) return NextResponse.json({ error: 'Username already in use.' }, { status: 409 });
     const { data: emailRow } = await db.from('users').select('user_id').ilike('email', normalizedEmail).maybeSingle();
-    if (emailRow || authList?.users.some((user) => user.email?.toLowerCase() === normalizedEmail)) return NextResponse.json({ error: 'Email already in use' }, { status: 409 });
+    if (emailRow || authList?.users.some((user) => user.email?.toLowerCase() === normalizedEmail)) return NextResponse.json({ error: 'Email is already in use.' }, { status: 409 });
     return NextResponse.json({ valid: true });
   } catch { return NextResponse.json({ error: 'Unable to validate your details right now.' }, { status: 500 }); }
 }

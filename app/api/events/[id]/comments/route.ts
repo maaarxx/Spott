@@ -22,6 +22,7 @@ export async function GET(request: Request, { params }: { params: Promise<{ id: 
   } catch (error) {
     const message = error instanceof Error ? error.message : '';
     const migration = /event_comments|schema cache/i.test(message);
+    console.error('Event comments read failed', { migration, errorType: error instanceof Error ? error.name : 'unknown' });
     return NextResponse.json({ error: migration ? 'Comments are not enabled yet. Apply the latest Supabase migration.' : 'Unable to load comments. Please refresh and try again.' }, { status: 500 });
   }
 }
@@ -42,7 +43,8 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
   } catch (error) {
     const message = error instanceof Error ? error.message : '';
     const migration = /event_comments|schema cache/i.test(message);
-    return NextResponse.json({ error: migration ? 'Comments are not enabled yet. Apply the latest Supabase migrations.' : `Supabase rejected the comment: ${message || 'unknown database error'}` }, { status: 500 });
+    console.error('Event comment write failed', { migration, errorType: error instanceof Error ? error.name : 'unknown' });
+    return NextResponse.json({ error: migration ? 'Comments are not enabled yet. Apply the latest Supabase migrations.' : 'Unable to post this comment. Please try again.' }, { status: 500 });
   }
 }
 

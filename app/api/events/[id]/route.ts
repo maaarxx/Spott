@@ -1,6 +1,5 @@
 import { NextResponse } from 'next/server';
 import { createAdminClient, getAuthenticatedRole } from '@/lib/supabase-server';
-import { errorMessage } from '@/lib/error-message';
 import { writeAuditEntry } from '@/lib/audit-log-server';
 
 type Relation<T> = T | T[] | null | undefined;
@@ -72,7 +71,7 @@ export async function GET(
 
     if (error) {
       if (error.code === 'PGRST116') return NextResponse.json({ error: 'Event not found' }, { status: 404 });
-      console.error('Failed to load event from Supabase', error.message);
+      console.error('Failed to load event from Supabase', { code: error.code });
       return NextResponse.json({ error: 'Could not load event from the database.' }, { status: 503 });
     }
 
@@ -383,7 +382,8 @@ export async function PATCH(
       notification: createdNotification,
     });
   } catch (error: unknown) {
-    return NextResponse.json({ error: errorMessage(error) }, { status: 500 });
+    console.error('Event update request failed', { errorType: error instanceof Error ? error.name : 'unknown' });
+    return NextResponse.json({ error: 'Unable to update this event.' }, { status: 500 });
   }
 }
 
@@ -467,6 +467,7 @@ export async function DELETE(
 
     return NextResponse.json({ success: true, message: 'Event deleted' });
   } catch (error: unknown) {
-    return NextResponse.json({ error: errorMessage(error) }, { status: 500 });
+    console.error('Event deletion request failed', { errorType: error instanceof Error ? error.name : 'unknown' });
+    return NextResponse.json({ error: 'Unable to delete this event.' }, { status: 500 });
   }
 }

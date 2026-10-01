@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
@@ -42,6 +42,8 @@ export default function LoginPage() {
   // Sign-in fields
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [signinTouched, setSigninTouched] = useState<Record<string, boolean>>({});
+  const [signinFieldErrors, setSigninFieldErrors] = useState<Record<string, string>>({});
 
   // Sign-up fields
   const [signupName, setSignupName] = useState("");
@@ -55,6 +57,7 @@ export default function LoginPage() {
   const [showSignupPassword, setShowSignupPassword] = useState(false);
   const [showSignupConfirm, setShowSignupConfirm] = useState(false);
   const [signupEmail, setSignupEmail] = useState("");
+  const [emailChecking, setEmailChecking] = useState(false);
   const [signupPassword, setSignupPassword] = useState("");
   const [signupConfirm, setSignupConfirm] = useState("");
 
@@ -63,7 +66,7 @@ export default function LoginPage() {
   const [authError, setAuthError] = useState<string | null>(null);
   const router = useRouter();
 
-  const clearErrors = () => { setAuthError(null); setNotice(null); setServerFieldErrors({}); };
+  const clearErrors = () => { setAuthError(null); setNotice(null); setServerFieldErrors({}); setSigninFieldErrors({}); setSigninTouched({}); };
 
   const fullName = [signupFirstName.trim(), signupMI.trim() ? `${signupMI.trim()}.` : "", signupLastName.trim()]
     .filter(Boolean).join(" ");
@@ -76,13 +79,56 @@ export default function LoginPage() {
     password: signupPassword.length > 20 ? "Password must be 20 characters or fewer." : /\s/.test(signupPassword) ? "Password cannot contain spaces." : signupPassword.length > 0 && signupPassword.length < 8 ? "Password must be at least 8 characters." : signupPassword && [signupFirstName, signupMI, signupLastName, signupUsername].flatMap((part) => part.trim().split(/[\s.'’_-]+/)).filter((part) => part.length >= 2).some((part) => signupPassword.toLowerCase().includes(part.toLowerCase())) ? "Password cannot contain your name or username." : "",
     confirm: signupConfirm && signupConfirm !== signupPassword ? "Passwords do not match." : "",
   };
+  const signInFieldValidation = {
+    email: email.length > 0 && (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim()) || email.trim().length > 254) ? "Enter a valid email address." : "",
+    password: password.length === 0 ? "Password is required." : "",
+  };
   const touch = (key: string) => setSignupTouched((current) => ({ ...current, [key]: true }));
+
+  useEffect(() => {
+    if (mode !== "signup" || signupRole !== "user" || !signupTouched.email) return;
+    const normalizedEmail = signupEmail.trim().toLowerCase();
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedEmail) || normalizedEmail.length > 150) return;
+
+    const controller = new AbortController();
+    let cancelled = false;
+    const timeout = window.setTimeout(() => {
+      void (async () => {
+        setEmailChecking(true);
+        try {
+          const response = await fetch("/api/register-check", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ email: normalizedEmail, checkEmailOnly: true }),
+            signal: controller.signal,
+          });
+          const result = await response.json().catch(() => ({}));
+          if (cancelled) return;
+          setServerFieldErrors((current) => ({
+            ...current,
+            email: response.status === 409 ? "Email is already in use." : response.ok ? "" : result.error || "Unable to check this email right now.",
+          }));
+        } catch {
+          if (!cancelled && !controller.signal.aborted) {
+            setServerFieldErrors((current) => ({ ...current, email: "Unable to check this email right now." }));
+          }
+        } finally {
+          if (!cancelled) setEmailChecking(false);
+        }
+      })();
+    }, 450);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timeout);
+      controller.abort();
+    };
+  }, [mode, signupRole, signupEmail, signupTouched.email]);
 
   const switchMode = (m: "signin" | "signup") => {
     setMode(m);
     clearErrors();
     if (m === "signin") {
-      setEmail(""); setPassword("");
+      setEmail(""); setPassword(""); setSigninTouched({}); setSigninFieldErrors({});
     } else {
       setSignupName(""); setSignupFirstName(""); setSignupMI(""); setSignupLastName(""); setSignupEmail(""); setSignupPassword(""); setSignupConfirm(""); setSignupTouched({});
     }
@@ -116,6 +162,13 @@ export default function LoginPage() {
   const handleSignIn = (e: React.FormEvent) => {
     e.preventDefault();
     clearErrors();
+    const nextErrors = {
+      email: !email.trim() ? "Email is required." : signInFieldValidation.email,
+      password: !password ? "Password is required." : "",
+    };
+    setSigninTouched({ email: true, password: true });
+    setSigninFieldErrors(nextErrors);
+    if (nextErrors.email || nextErrors.password) return;
     setLoading(true);
     void (async () => {
       try {
@@ -154,7 +207,13 @@ export default function LoginPage() {
         throw new Error(error.message);
       } catch (error) {
         setLoading(false);
-        setAuthError(error instanceof Error ? error.message : 'Unable to sign in.');
+        const message = error instanceof Error ? error.message : 'Unable to sign in.';
+        if (/invalid login credentials/i.test(message)) {
+          setSigninTouched({ email: true, password: true });
+          setSigninFieldErrors({ password: 'Email or password is incorrect.' });
+          return;
+        }
+        setAuthError(message);
       }
     })();
   };
@@ -226,7 +285,13 @@ export default function LoginPage() {
         }
         setSignupName(''); setSignupFirstName(''); setSignupMI(''); setSignupLastName(''); setSignupUsername(''); setSignupEmail(''); setSignupPassword(''); setSignupConfirm(''); setSignupRole('user');
       } catch (error) {
-        setAuthError(error instanceof Error ? error.message : 'Unable to create account.');
+        const message = error instanceof Error ? error.message : 'Unable to create account.';
+        if (/already (registered|exists|in use)|user_already_exists/i.test(message)) {
+          setSignupTouched((current) => ({ ...current, email: true }));
+          setServerFieldErrors((current) => ({ ...current, email: 'Email is already in use.' }));
+        } else {
+          setAuthError(message);
+        }
       } finally { setLoading(false); }
     })();
   };
@@ -312,7 +377,7 @@ export default function LoginPage() {
           </p>
 
           {mode === "signin" ? (
-            <form onSubmit={handleSignIn} className="space-y-4">
+            <form noValidate onSubmit={handleSignIn} className="space-y-4">
               <div>
                 <label className="block text-[11px] font-black uppercase tracking-wider text-[#666666] mb-1.5">
                   Email Address <span className="text-rose-600">*</span>
@@ -320,14 +385,15 @@ export default function LoginPage() {
                 <input
                   type="email"
                   value={email}
-                  onChange={(e) => { setEmail(e.target.value); setAuthError(null); }}
+                  onChange={(e) => { setSigninTouched((current) => ({ ...current, email: true })); setSigninFieldErrors((current) => ({ ...current, email: "" })); setEmail(e.target.value); setAuthError(null); }}
                   className={`w-full border rounded-xl px-4 py-3 text-sm font-semibold text-[#171717] focus:outline-none transition-colors ${
-                    authError ? "border-rose-400 focus:border-rose-500 bg-rose-50/30" : "border-[#e6e1d8] focus:border-[#ff6b35]"
+                    (signinFieldErrors.email || signInFieldValidation.email || (signinTouched.email && !email.trim())) ? "border-rose-400 focus:border-rose-500 bg-rose-50/30" : "border-[#e6e1d8] focus:border-[#ff6b35]"
                   }`}
                   required
                   autoComplete="email"
                   placeholder="you@spott.ph"
                 />
+                {signinTouched.email && (signinFieldErrors.email || signInFieldValidation.email || (!email.trim() ? "Email is required." : "")) && <p role="alert" className="mt-1 text-xs text-rose-700">{signinFieldErrors.email || signInFieldValidation.email || "Email is required."}</p>}
               </div>
               <div>
                 <label className="block text-[11px] font-black uppercase tracking-wider text-[#666666] mb-1.5">
@@ -336,14 +402,15 @@ export default function LoginPage() {
                 <input
                   type={showSignInPassword ? "text" : "password"}
                   value={password}
-                  onChange={(e) => { setPassword(e.target.value); setAuthError(null); }}
+                  onChange={(e) => { setSigninTouched((current) => ({ ...current, password: true })); setSigninFieldErrors((current) => ({ ...current, password: "" })); setPassword(e.target.value); setAuthError(null); }}
                   className={`w-full border rounded-xl px-4 py-3 text-sm font-semibold text-[#171717] focus:outline-none transition-colors ${
-                    authError ? "border-rose-400 focus:border-rose-500 bg-rose-50/30" : "border-[#e6e1d8] focus:border-[#ff6b35]"
+                    (signinFieldErrors.password || signInFieldValidation.password) && signinTouched.password ? "border-rose-400 focus:border-rose-500 bg-rose-50/30" : "border-[#e6e1d8] focus:border-[#ff6b35]"
                   }`}
                   required
                   autoComplete="current-password"
                   placeholder="••••••••"
                 />
+                {signinTouched.password && (signinFieldErrors.password || signInFieldValidation.password) && <p role="alert" className="mt-1 text-xs text-rose-700">{signinFieldErrors.password || signInFieldValidation.password}</p>}
                 <button type="button" aria-label={showSignInPassword ? "Hide password" : "Show password"} onClick={() => setShowSignInPassword((shown) => !shown)} className="mt-1 inline-flex items-center gap-1 text-xs font-semibold text-[#666]">{showSignInPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}{showSignInPassword ? "Hide password" : "Show password"}</button>
               </div>
               <button
@@ -430,6 +497,7 @@ export default function LoginPage() {
                   autoComplete="email"
                 />
                 {signupTouched.email && (serverFieldErrors.email || fieldErrors.email) && <p role="alert" className="mt-1 text-xs text-rose-700">{serverFieldErrors.email || fieldErrors.email}</p>}
+                {signupTouched.email && emailChecking && !serverFieldErrors.email && !fieldErrors.email && <p aria-live="polite" className="mt-1 text-xs text-[#666]">Checking email…</p>}
               </div>
               <div>
                 <label className="block text-[11px] font-black uppercase tracking-wider text-[#666666] mb-1.5">

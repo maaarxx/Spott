@@ -1,6 +1,5 @@
 import { NextResponse } from 'next/server';
 import { createAdminClient, getAuthenticatedRole } from '@/lib/supabase-server';
-import { errorMessage } from '@/lib/error-message';
 
 export async function GET(request: Request) {
   try {
@@ -44,8 +43,8 @@ export async function GET(request: Request) {
       return NextResponse.json({ unreadCount: formatted.filter((item) => !item.isRead).length });
     }
     return NextResponse.json({ notifications: formatted });
-  } catch (err: unknown) {
-    return NextResponse.json({ error: errorMessage(err) }, { status: 500 });
+  } catch {
+    return NextResponse.json({ error: 'Unable to load notifications.' }, { status: 500 });
   }
 }
 
@@ -107,8 +106,8 @@ export async function POST(request: Request) {
       if (error) throw error;
     }
     return NextResponse.json({ success: true, delivered: uniqueRecipients.length }, { status: 201 });
-  } catch (err: unknown) {
-    return NextResponse.json({ error: errorMessage(err) }, { status: 500 });
+  } catch {
+    return NextResponse.json({ error: 'Unable to create notification.' }, { status: 500 });
   }
 }
 
@@ -121,8 +120,8 @@ export async function PATCH(request: Request) {
     const { error } = await createAdminClient().from('notifications').update({ is_read: true }).eq('user_id', account.userId).eq('is_read', false);
     if (error) return NextResponse.json({ error: 'Unable to update notifications.' }, { status: 500 });
     return NextResponse.json({ success: true });
-  } catch (err: unknown) {
-    return NextResponse.json({ error: errorMessage(err) }, { status: 500 });
+  } catch {
+    return NextResponse.json({ error: 'Unable to update notifications.' }, { status: 500 });
   }
 }
 
@@ -149,7 +148,7 @@ export async function DELETE(request: Request) {
     const { error } = await query;
     if (error) return NextResponse.json({ error: 'Unable to clear notifications.' }, { status: 500 });
     return NextResponse.json({ success: true });
-  } catch (err: unknown) {
-    return NextResponse.json({ error: errorMessage(err) }, { status: 500 });
+  } catch {
+    return NextResponse.json({ error: 'Unable to clear notifications.' }, { status: 500 });
   }
 }

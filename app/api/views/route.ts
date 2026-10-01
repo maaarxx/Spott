@@ -1,6 +1,5 @@
 import { NextResponse } from 'next/server';
 import { createAdminClient, getAuthenticatedRole } from '@/lib/supabase-server';
-import { errorMessage } from '@/lib/error-message';
 
 const BOT_PATTERNS =
   /bot|spider|crawl|slurp|googlebot|bingbot|yandex|baiduspider|duckduckbot|facebookexternalhit|whatsapp|twitterbot|pinterest|discordbot|slackbot|curl|wget|python|postman|insomnia|headless/i;
@@ -107,8 +106,9 @@ export async function POST(request: Request) {
       { status: 201 }
     );
   } catch (error: unknown) {
+    console.error('Listing view request failed', { errorType: error instanceof Error ? error.name : 'unknown' });
     return NextResponse.json(
-      { error: errorMessage(error) },
+      { error: 'Unable to record this view.' },
       { status: 500 }
     );
   }
@@ -182,8 +182,9 @@ export async function GET(request: Request) {
       uniqueViews: allUniqueVisitors.size,
     });
   } catch (error: unknown) {
+    console.error('Listing view statistics request failed', { errorType: error instanceof Error ? error.name : 'unknown' });
     return NextResponse.json(
-      { error: errorMessage(error, 'Failed to fetch views') },
+      { error: 'Unable to load view statistics.' },
       { status: 500 }
     );
   }
