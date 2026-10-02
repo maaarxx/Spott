@@ -75,12 +75,12 @@ export async function GET(
       return NextResponse.json({ error: 'Could not load event from the database.' }, { status: 503 });
     }
 
-    // Get registration count
-    const { count } = await supabase
-      .from('registrations')
-      .select('*', { count: 'exact', head: true })
-      .eq('event_id', id)
-      .in('status', ['confirmed', 'registered', 'approved']);
+    // Count active RSVPs and saves for the public activity signal.
+    const [{ count: registrationCount }, { count: saveCount }] = await Promise.all([
+      supabase.from('registrations').select('*', { count: 'exact', head: true })
+        .eq('event_id', id).in('status', ['confirmed', 'registered', 'approved']),
+      supabase.from('saved_events').select('*', { count: 'exact', head: true }).eq('event_id', id),
+    ]);
 
     const eventData = data as unknown as EventDetailRow;
     const organizer = Array.isArray(eventData.organizers) ? eventData.organizers[0] : eventData.organizers;
@@ -126,7 +126,8 @@ export async function GET(
         const category = Array.isArray(entry.categories) ? entry.categories[0] : entry.categories;
         return category?.category_name;
       }).filter((category): category is string => Boolean(category)),
-      registrations: count || 0,
+      registrations: eventData.status === 'cancelled' ? 0 : (registrationCount || 0),
+      saves: saveCount || 0,
       confirmedAt: eventData.is_still_happening_confirmed_at,
       capacity,
       requireApproval: eventData.require_approval ?? false,

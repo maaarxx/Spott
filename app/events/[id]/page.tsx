@@ -32,7 +32,7 @@ import {
 } from "@/lib/auth-store";
 import { loadSavedEventIds, removeSavedEvent, toggleSavedEvent } from "@/lib/saved-events-client";
 
-type EventDetail = EventData & { confirmations?: number };
+type EventDetail = EventData & { confirmations?: number; saves?: number };
 export default function EventDetailsPage({
   params,
 }: {
@@ -100,7 +100,6 @@ export default function EventDetailsPage({
       const savedIdsPromise = loadSavedEventIds().then((savedIds) => {
         const hasSaved = savedIds.includes(id);
         setIsSaved(hasSaved);
-        setSavedCount(hasSaved ? 1 : 0);
         return savedIds;
       }).catch(() => { setIsSaved(false); setSavedCount(0); return [] as string[]; });
       void fetchWithSupabaseSession('/api/my-registrations', { cache: 'no-store' })
@@ -144,8 +143,9 @@ export default function EventDetailsPage({
         if (data && data.title) {
           setEvent(data);
           saveStoredEvent(data);
-          setRsvpCount(data.registrations || 0);
-          setConfirmationsCount(data.confirmations || (data.confirmedAt ? 3 : 0));
+          setRsvpCount(data.status?.toLowerCase() === "cancelled" ? 0 : (data.registrations || 0));
+          setSavedCount(Number(data.saves) || 0);
+          setConfirmationsCount(data.confirmations || 0);
           if (!hasTrackedView.current) {
             hasTrackedView.current = true;
             recordEventView(id, { organizer: data.organizer });
@@ -919,7 +919,7 @@ export default function EventDetailsPage({
 
               <hr className="border-line m-0" />
 
-              {/* Activity Signal - numbers blurred for anonymous users */}
+              {/* Activity Signal */}
               <div className="space-y-2">
                 <div className="flex items-center justify-between mb-3">
                   <h4 className="font-bold text-xs uppercase tracking-wider text-muted m-0">
@@ -937,33 +937,11 @@ export default function EventDetailsPage({
                 </div>
                 <div className="flex justify-between items-center text-xs py-1">
                   <span className="text-muted">RSVPs</span>
-                  {!currentUser ? (
-                    <span className="font-bold text-ink filter blur-[5px] select-none opacity-60">
-                      {rsvpCount > 0 ? rsvpCount : 12}
-                    </span>
-                  ) : (
-                    <span className="font-bold text-ink">{rsvpCount}</span>
-                  )}
+                  <span className="font-bold text-ink">{event?.status?.toLowerCase() === "cancelled" ? 0 : rsvpCount}</span>
                 </div>
                 <div className="flex justify-between items-center text-xs py-1">
                   <span className="text-muted">Saves</span>
-                  {!currentUser ? (
-                    <span className="font-bold text-ink filter blur-[5px] select-none opacity-60">
-                      {savedCount > 0 ? savedCount : 8}
-                    </span>
-                  ) : (
-                    <span className="font-bold text-ink">{savedCount}</span>
-                  )}
-                </div>
-                <div className="flex justify-between items-center text-xs py-1">
-                  <span className="text-muted">Confirmations</span>
-                  {!currentUser ? (
-                    <span className="font-bold text-ink filter blur-[5px] select-none opacity-60">
-                      {confirmationsCount > 0 ? confirmationsCount : 5}
-                    </span>
-                  ) : (
-                    <span className="font-bold text-ink">{confirmationsCount}</span>
-                  )}
+                  <span className="font-bold text-ink">{savedCount}</span>
                 </div>
               </div>
 
