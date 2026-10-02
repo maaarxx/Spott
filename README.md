@@ -61,7 +61,7 @@ Current limits are 30 signup checks per IP per 15 minutes; 30 RSVP submissions/c
 
 Sign-in and sign-up themselves call Supabase Auth directly from the browser, so these API limits do not wrap those Auth requests. Keep Supabase Auth's provider-side rate limits enabled and configure them in the Supabase project settings.
 
-Some demo account and app state flows are stored in browser `localStorage`. Server API operations that access protected Supabase data require Supabase credentials and an authenticated role.
+Some demo UI preferences (like themes, dismissed notifications, or draft events) are stored in browser `localStorage`. Real app data, including authenticated sessions, events, registrations, and user profiles, is stored exclusively in Supabase. Server API operations that access protected Supabase data require Supabase credentials and an authenticated role.
 
 ## Local Development
 

@@ -65,11 +65,7 @@ export default function Navbar() {
         setUser(user);
         if (user) await refreshCurrentUserFromDatabase();
         else {
-          const cached = getCurrentUser();
-          const isLocalDemo = typeof window !== 'undefined'
-            && ['localhost', '127.0.0.1'].includes(window.location.hostname)
-            && cached && Object.values(SPOTT_ACCOUNTS).some((account) => account.email === cached.email);
-          if (!isLocalDemo) clearLocalAuthState();
+          clearLocalAuthState();
         }
         syncState();
         const current = getCurrentUser();
@@ -92,11 +88,7 @@ export default function Navbar() {
         });
       }, 0);
       else {
-        const cached = getCurrentUser();
-        const isLocalDemo = typeof window !== 'undefined'
-          && ['localhost', '127.0.0.1'].includes(window.location.hostname)
-          && cached && Object.values(SPOTT_ACCOUNTS).some((account) => account.email === cached.email);
-        if (!isLocalDemo) clearLocalAuthState();
+        clearLocalAuthState();
       }
       syncState();
     });

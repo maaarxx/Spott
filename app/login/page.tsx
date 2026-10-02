@@ -19,6 +19,7 @@ import {
 } from "@/lib/auth-store";
 import { createClient as createSupabaseBrowserClient } from "@/lib/supabase-browser";
 import { fetchWithSupabaseSession } from "@/lib/audit-log-client";
+import { validateName, validateMI, validateOrganizerName, normalizeName } from "@/lib/validators/name";
 
 function findAccount(email: string, password: string): SpottAccount | null {
   const emailLower = email.trim().toLowerCase();
@@ -68,7 +69,12 @@ export default function LoginPage() {
 
   const clearErrors = () => { setAuthError(null); setNotice(null); setServerFieldErrors({}); setSigninFieldErrors({}); setSigninTouched({}); };
 
-  const fullName = [signupFirstName.trim(), signupMI.trim() ? `${signupMI.trim()}.` : "", signupLastName.trim()]
+  const normalizedFirstName = normalizeName(signupFirstName);
+  const normalizedMI = signupMI.trim().toUpperCase();
+  const normalizedLastName = normalizeName(signupLastName);
+  const normalizedOrganizerName = normalizeName(signupName);
+  
+  const fullName = [normalizedFirstName, normalizedMI ? `${normalizedMI}.` : "", normalizedLastName]
     .filter(Boolean).join(" ");
   const passwordChecks = [
     { label: "8 or more characters", met: signupPassword.length >= 8 },
@@ -83,9 +89,9 @@ export default function LoginPage() {
   const passwordStrength = signupPassword.length === 0 ? "Neutral" : hasCommonWeakPattern || nameOrUsernameUsed || strengthScore <= 2 ? "Weak" : strengthScore <= 4 ? "Medium" : "Strong";
 
   const fieldErrors = {
-    firstName: signupFirstName.trim().length === 1 ? "First name must be at least 2 characters." : signupFirstName.length > 15 ? "First name must be 15 characters or fewer." : signupFirstName && !/^[\p{L}\p{M}][\p{L}\p{M} '\u2019-]*$/u.test(signupFirstName) ? "Use letters, spaces, apostrophes, or hyphens only." : "",
-    mi: !signupMI.trim() ? "Middle initial is required." : !/^[A-Za-z]$/.test(signupMI) ? "Middle initial must be one letter." : "",
-    lastName: signupLastName.trim().length === 1 ? "Last name must be at least 2 characters." : signupLastName.length > 15 ? "Last name must be 15 characters or fewer." : signupLastName && !/^[\p{L}\p{M}][\p{L}\p{M} '\u2019-]*$/u.test(signupLastName) ? "Use letters, spaces, apostrophes, or hyphens only." : "",
+    firstName: validateName(signupFirstName, { label: "First name" }) || (signupFirstName.length > 15 ? "First name must be 15 characters or fewer." : ""),
+    mi: validateMI(signupMI) || "",
+    lastName: validateName(signupLastName, { label: "Last name" }) || (signupLastName.length > 15 ? "Last name must be 15 characters or fewer." : ""),
     username: signupUsername && !/^[a-zA-Z0-9_]{4,20}$/.test(signupUsername) ? "Use 4–20 letters, numbers, or underscores." : "",
     email: signupEmail && (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(signupEmail.trim()) || signupEmail.trim().length > 150) ? "Enter a valid email address (maximum 150 characters)." : "",
     password: signupPassword.length > 20 ? "Password must be 20 characters or fewer." : /\s/.test(signupPassword) ? "Password cannot contain spaces." : nameOrUsernameUsed ? "Password cannot contain your name or username." : signupPassword.length > 0 && strengthScore < 5 ? "Please satisfy all password requirements." : passwordStrength === "Weak" ? "Password is weak. Please choose a stronger one." : "",
@@ -93,9 +99,9 @@ export default function LoginPage() {
   };
   const organizerNameError = !signupName.trim()
     ? "Organizer name is required."
-    : signupName.replace(/\s/g, "").length < 25
+    : validateOrganizerName(signupName) || (signupName.replace(/\s/g, "").length < 25
       ? "Organizer name must have at least 25 characters, excluding spaces."
-      : "";
+      : "");
   const signInFieldValidation = {
     email: email.length > 0 && (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim()) || email.trim().length > 254) ? "Enter a valid email address." : "",
     password: password.length === 0 ? "Password is required." : "",
@@ -230,7 +236,7 @@ export default function LoginPage() {
     e.preventDefault();
     clearErrors();
 
-    const formattedName = signupRole === "user" ? fullName : signupName.trim();
+    const formattedName = signupRole === "user" ? fullName : normalizedOrganizerName;
     const allTouched = {
       organizerName: true, firstName: true, mi: true, lastName: true,
       username: true, email: true, password: true, confirm: true,
@@ -260,8 +266,8 @@ export default function LoginPage() {
     void (async () => {
       try {
         const validationPayload = signupRole === "organizer"
-          ? { role: "organizer", organizerName: signupName.trim(), email: signupEmail, password: signupPassword }
-          : { email: signupEmail, username: signupUsername, password: signupPassword, firstName: signupFirstName.trim(), mi: signupMI.trim(), lastName: signupLastName.trim() };
+          ? { role: "organizer", organizerName: normalizedOrganizerName, email: signupEmail, password: signupPassword }
+          : { email: signupEmail, username: signupUsername, password: signupPassword, firstName: normalizedFirstName, mi: normalizedMI, lastName: normalizedLastName };
         const checked = await fetch("/api/register-check", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -282,7 +288,7 @@ export default function LoginPage() {
         const supabase = createSupabaseBrowserClient();
         const { data, error } = await supabase.auth.signUp({
           email: signupEmail.trim().toLowerCase(), password: signupPassword,
-          options: { data: { name: formattedName, first_name: signupRole === "user" ? signupFirstName.trim() : "", middle_initial: signupRole === "user" ? signupMI.trim() : "", last_name: signupRole === "user" ? signupLastName.trim() : "", username: signupUsername.trim(), role: signupRole } },
+          options: { data: { name: formattedName, first_name: signupRole === "user" ? normalizedFirstName : "", middle_initial: signupRole === "user" ? normalizedMI : "", last_name: signupRole === "user" ? normalizedLastName : "", username: signupUsername.trim(), role: signupRole } },
         });
         if (error) throw error;
         if (data.session) {
@@ -294,7 +300,7 @@ export default function LoginPage() {
         const account: SpottAccount = {
           email: signupEmail.trim().toLowerCase(), password: signupPassword, name: formattedName,
           role: signupRole, destination: signupRole === 'organizer' ? '/organizer' : '/',
-          ...(signupRole === 'organizer' ? { organization: signupName.trim() } : {}),
+          ...(signupRole === 'organizer' ? { organization: normalizedOrganizerName } : {}),
         };
         if (signupRole === 'organizer') {
           setNotice(data.session ? 'Organizer application submitted. Please verify your email; admin approval is required before access.' : 'Organizer application submitted. Check your email to confirm the account; admin approval is required before access.');
@@ -416,8 +422,9 @@ export default function LoginPage() {
                 </label>
                 <input
                   type={showSignInPassword ? "text" : "password"}
+                  maxLength={30}
                   value={password}
-                  onChange={(e) => { setSigninTouched((current) => ({ ...current, password: true })); setSigninFieldErrors((current) => ({ ...current, password: "" })); setPassword(e.target.value); setAuthError(null); }}
+                  onChange={(e) => { setSigninTouched((current) => ({ ...current, password: true })); setSigninFieldErrors((current) => ({ ...current, password: "" })); setPassword(e.target.value.slice(0, 30)); setAuthError(null); }}
                   className={`w-full border rounded-xl px-4 py-3 text-sm font-semibold text-[#171717] focus:outline-none transition-colors ${
                     (signinFieldErrors.password || signInFieldValidation.password) && signinTouched.password ? "border-rose-400 focus:border-rose-500 bg-rose-50/30" : "border-[#e6e1d8] focus:border-[#ff6b35]"
                   }`}

@@ -99,11 +99,7 @@ function AdminNavContent({ children }: { children: React.ReactNode }) {
     const syncAuth = async () => {
       if (redirecting) return;
       const cachedUser = getCurrentUser();
-      if (typeof window !== 'undefined' && ['localhost', '127.0.0.1'].includes(window.location.hostname) && cachedUser?.role === 'admin') {
-        setCurrentUser2(cachedUser);
-        setAuthorized(true);
-        return;
-      }
+
       setAuthorized(false);
       try {
         const response = await fetchWithSupabaseSession('/api/account', { cache: 'no-store' });

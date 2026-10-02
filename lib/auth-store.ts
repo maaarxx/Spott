@@ -102,11 +102,7 @@ export async function refreshCurrentUserFromDatabase(): Promise<SpottAccount | n
   try {
     const response = await fetchWithSupabaseSession('/api/account', { cache: 'no-store' });
     if (response.status === 401) {
-      const isLocal = ['localhost', '127.0.0.1'].includes(window.location.hostname);
-      const cached = getCurrentUser();
-      if (!(isLocal && cached && Object.values(SPOTT_ACCOUNTS).some((account) => account.email === cached.email))) {
-        clearLocalAuthState();
-      }
+      clearLocalAuthState();
       return null;
     }
     if (!response.ok) return getCurrentUser();

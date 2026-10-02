@@ -102,12 +102,7 @@ function OrganizerNavContent({ children }: { children: React.ReactNode }) {
     const syncAuth = async () => {
       if (redirecting) return;
       const cachedUser = getCurrentUser();
-      // Local demo credentials are intentionally unavailable in production.
-      if (typeof window !== "undefined" && ["localhost", "127.0.0.1"].includes(window.location.hostname) && cachedUser?.role === "organizer") {
-        setCurrentUser2(cachedUser);
-        setAuthorized(true);
-        return;
-      }
+
 
       setAuthorized(false);
       try {
