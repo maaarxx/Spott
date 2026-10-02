@@ -431,7 +431,8 @@ export async function DELETE(
       }
     }
 
-    // Delete rule: Allow delete ONLY for Draft events or events with 0 RSVPs
+    // Cancelled events have already released their attendee slots, so allow
+    // deletion. Draft events may also be deleted regardless of RSVP history.
     let rsvpCount = 0;
     let eventStatus = '';
     let existingEventTitle = id;
@@ -463,7 +464,7 @@ export async function DELETE(
     if (!eventStatus) {
       return NextResponse.json({ error: 'Event not found' }, { status: 404 });
     }
-    if (eventStatus !== 'draft' && rsvpCount > 0) {
+    if (!['draft', 'cancelled'].includes(eventStatus) && rsvpCount > 0) {
       return NextResponse.json(
         {
           error:
@@ -473,6 +474,14 @@ export async function DELETE(
         { status: 400 }
       );
     }
+
+    // Release any remaining attendee slots before deleting the event.
+    const { error: releaseError } = await supabase
+      .from('registrations')
+      .update({ status: 'cancelled' })
+      .eq('event_id', id)
+      .neq('status', 'cancelled');
+    if (releaseError) return NextResponse.json({ error: 'Unable to release event RSVPs before deletion.' }, { status: 500 });
 
     // Delete from Supabase
     const { error: deleteError } = await supabase.from('events').delete().eq('event_id', id);

@@ -370,8 +370,8 @@ export async function GET(request: Request) {
           const category = Array.isArray(entry.categories) ? entry.categories[0] : entry.categories;
           return category?.category_name;
         }).filter((name): name is string => Boolean(name)),
-        registrations: regCounts[event.event_id] || 0,
-        pendingRegistrations: pendingRegCounts[event.event_id] || 0,
+        registrations: event.status === 'cancelled' ? 0 : (regCounts[event.event_id] || 0),
+        pendingRegistrations: event.status === 'cancelled' ? 0 : (pendingRegCounts[event.event_id] || 0),
         confirmedAt: event.is_still_happening_confirmed_at,
         capacity,
         requireApproval: event.require_approval,
