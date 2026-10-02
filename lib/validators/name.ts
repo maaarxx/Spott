@@ -94,6 +94,38 @@ export function validateOrganizerName(value: string): string | null {
   return null;
 }
 
+export function validateEventTitle(value: string): string | null {
+  const normalized = value.trim().replace(/\s+/g, ' ');
+  
+  if (normalized.length < 10) {
+    return "Event title must be between 10 to 100 characters.";
+  }
+  
+  if (normalized.length > 100) {
+    return "Event title must be between 10 to 100 characters.";
+  }
+
+  const lower = normalized.toLowerCase();
+  
+  if (BLOCKLIST.has(lower.replace(/[\s'.\-&,]/g, ''))) {
+    return "Please enter a valid event title.";
+  }
+  
+  if (/(.)\1{4,}/i.test(lower)) {
+    return "Event title contains too many repeating characters.";
+  }
+  
+  if (/^(.{3,})\1{2,}$/i.test(lower.replace(/[\s'.\-&,]/g, ''))) {
+    return "Event title appears to be a repeating pattern.";
+  }
+  
+  if (hasKeyboardMashing(lower.replace(/[\s'.\-&,]/g, ''))) {
+    return "Event title appears to be gibberish.";
+  }
+  
+  return null;
+}
+
 export function normalizeName(value: string): string {
   return value
     .trim()

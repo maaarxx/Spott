@@ -46,6 +46,11 @@ export async function POST(request: Request) {
     }
 
     const userClient = await createClient();
+    const { validateEventTitle } = await import('@/lib/validators/name');
+    if (validateEventTitle(title)) {
+      return NextResponse.json({ error: 'Event title is invalid or gibberish.' }, { status: 400 });
+    }
+    
     let organizerId: string | null = null;
     if (account.role === 'admin') {
       organizerId = typeof body.organizer_id === 'string' ? body.organizer_id : null;

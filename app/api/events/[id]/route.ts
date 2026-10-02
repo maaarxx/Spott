@@ -160,6 +160,14 @@ export async function PATCH(
     ) {
       return NextResponse.json({ error: 'Invalid event update' }, { status: 400 });
     }
+
+    if (body.title !== undefined) {
+      const { validateEventTitle } = await import('@/lib/validators/name');
+      if (validateEventTitle(body.title)) {
+        return NextResponse.json({ error: 'Event title is invalid or gibberish.' }, { status: 400 });
+      }
+    }
+    
     const supabase = createAdminClient();
 
     if (account.role !== 'admin') {

@@ -28,8 +28,15 @@ import { getAllCategories, DEFAULT_APP_CATEGORIES, syncCategoriesFromDatabase } 
 import { checkEventForModeration, loadModerationConfig } from "@/lib/moderation-store";
 import { fetchWithSupabaseSession } from "@/lib/audit-log-client";
 
+import { validateEventTitle } from "@/lib/validators/name";
+
 const eventSchema = z.object({
-  title: z.string().min(10, "Event title must be between 10 to 100 characters").max(100, "Event title must be between 10 to 100 characters"),
+  title: z.string().superRefine((val, ctx) => {
+    const error = validateEventTitle(val);
+    if (error) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: error });
+    }
+  }),
   description: z.string().min(1, "Event description is required"),
   date: z.string().min(1, "Please enter an event date"),
   time: z.string().min(1, "Please enter an event time"),
