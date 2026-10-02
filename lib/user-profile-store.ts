@@ -4,6 +4,8 @@ import { fetchWithSupabaseSession } from '@/lib/audit-log-client';
 
 export interface UserProfile {
   email: string;
+  username?: string;
+  usernameUpdatedAt?: string;
   displayName?: string;   // custom username / display name
   avatarUrl?: string;     // base64 data URL or remote URL
   phone?: string;

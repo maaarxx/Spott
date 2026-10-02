@@ -311,6 +311,7 @@ export default function LoginPage() {
           setNotice('Account created. Check your email to confirm your account, then sign in.');
         }
         setSignupName(''); setSignupFirstName(''); setSignupMI(''); setSignupLastName(''); setSignupUsername(''); setSignupEmail(''); setSignupPassword(''); setSignupConfirm(''); setSignupRole('user');
+        setSignupTouched({}); setServerFieldErrors({});
       } catch (error) {
         const message = error instanceof Error ? error.message : 'Unable to create account.';
         if (/already (registered|exists|in use)|user_already_exists/i.test(message)) {
@@ -372,22 +373,8 @@ export default function LoginPage() {
           </button>
         </div>
 
-        {/* Notices */}
-        {notice && (
-          <div className="mb-5 p-3 bg-emerald-50 border border-emerald-200 rounded-2xl text-xs font-bold text-emerald-800 flex items-center gap-2 shadow-xs">
-            <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
-            <span>{notice}</span>
-          </div>
-        )}
-        {authError && (
-          <div className="mb-5 p-3 bg-rose-50 border border-rose-200 rounded-2xl text-xs font-bold text-rose-800 flex items-center gap-2 shadow-xs">
-            <span className="w-4 h-4 shrink-0 text-rose-600 text-base leading-none font-black">✕</span>
-            <span>{authError}</span>
-          </div>
-        )}
-
         {/* ── Main Auth Card ── */}
-        <div className="bg-white border border-[#e6e1d8] rounded-3xl p-6 sm:p-8 shadow-sm">
+        <div className="bg-white border border-[#e6e1d8] rounded-3xl p-6 sm:p-8 shadow-sm mb-5">
           <h2 className="text-lg font-black text-[#171717] mb-1">
             {mode === "signin" ? "Sign In" : "Create Account"}
           </h2>
@@ -613,6 +600,20 @@ export default function LoginPage() {
             </form>
           )}
         </div>
+
+        {/* Notices (Moved Below Card) */}
+        {notice && (
+          <div className="mt-5 p-3 bg-emerald-50 border border-emerald-200 rounded-2xl text-xs font-bold text-emerald-800 flex items-center gap-2 shadow-xs">
+            <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+            <span>{notice}</span>
+          </div>
+        )}
+        {authError && (
+          <div className="mt-5 p-3 bg-rose-50 border border-rose-200 rounded-2xl text-xs font-bold text-rose-800 flex items-center gap-2 shadow-xs">
+            <span className="w-4 h-4 shrink-0 text-rose-600 text-base leading-none font-black">✕</span>
+            <span>{authError}</span>
+          </div>
+        )}
       </div>
     </div>
   );

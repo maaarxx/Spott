@@ -41,12 +41,16 @@ export default function ProfilePage() {
 
   // Form fields
   const [displayName, setDisplayName] = useState(profile?.displayName || user?.name || "");
+  const [username, setUsername] = useState(profile?.username || "");
   const [phone, setPhone] = useState(profile?.phone || "");
   const [address, setAddress] = useState(profile?.address || "");
   const [bio, setBio] = useState(profile?.bio || "");
   const [avatarPreview, setAvatarPreview] = useState<string>(profile?.avatarUrl || "");
   const [avatarFile, setAvatarFile] = useState<File | null>(null);
   const [avatarRemoved, setAvatarRemoved] = useState(false);
+
+  const [phoneError, setPhoneError] = useState("");
+  const [addressError, setAddressError] = useState("");
 
   // UI state
   const [saving, setSaving] = useState(false);
@@ -63,6 +67,7 @@ export default function ProfilePage() {
       if (!active) return;
       setProfile(loaded);
       setDisplayName(loaded.displayName || user.name);
+      setUsername(loaded.username || "");
       setPhone(loaded.phone || "");
       setAddress(loaded.address || "");
       setBio(loaded.bio || "");
@@ -103,12 +108,13 @@ export default function ProfilePage() {
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!user) return;
+    if (!validateFields()) return;
     setSaving(true);
     setSaveMsg(null);
 
     try {
       const form = new FormData();
-      form.set("display_name", displayName.trim() || user.name);
+      form.set("username", username.trim());
       form.set("phone", phone.trim());
       form.set("address", address.trim());
       form.set("bio", bio.trim());
@@ -122,6 +128,7 @@ export default function ProfilePage() {
       saveUserProfile(updated);
       setProfile(updated);
       setCurrentUser({ ...user, displayName: updated.displayName || user.name });
+      setUsername(updated.username || "");
       setAvatarPreview(updated.avatarUrl || "");
       setAvatarFile(null);
       setAvatarRemoved(false);
@@ -132,6 +139,37 @@ export default function ProfilePage() {
     } finally {
       setSaving(false);
     }
+  };
+
+  const validateFields = () => {
+    let isValid = true;
+    if (phone && !/^09\d{9}$/.test(phone)) {
+      setPhoneError("Phone number must start with 09 and be exactly 11 digits.");
+      isValid = false;
+    } else {
+      setPhoneError("");
+    }
+    
+    if (address) {
+      if (address.replace(/\s/g, '').length < 5) {
+        setAddressError("Address is too short.");
+        isValid = false;
+      } else if (/([a-zA-Z])\1{4,}/.test(address) || /(.)\1{5,}/.test(address)) {
+        setAddressError("Address contains invalid repetitive characters.");
+        isValid = false;
+      } else {
+        setAddressError("");
+      }
+    } else {
+      setAddressError("");
+    }
+    
+    if (username && !/^[a-zA-Z0-9_]{4,20}$/.test(username)) {
+      setSaveMsg({ type: "error", text: "Username must be 4–20 characters, containing only letters, numbers, and underscores." });
+      isValid = false;
+    }
+    
+    return isValid;
   };
 
   const initials = getInitials(displayName || user?.name || "U");
@@ -287,19 +325,39 @@ export default function ProfilePage() {
             {/* Display Name */}
             <div>
               <label className="block text-xs font-black text-[#555] uppercase tracking-wider mb-1.5">
-                Display Name / Username
+                Name
               </label>
               <div className="relative">
                 <User className="w-4 h-4 text-[#aaa] absolute left-3.5 top-1/2 -translate-y-1/2" />
                 <input
                   type="text"
                   value={displayName}
-                  onChange={(e) => setDisplayName(e.target.value)}
-                  placeholder="Your name as shown to others"
-                  maxLength={60}
-                  className="w-full pl-10 pr-4 py-2.5 text-sm border border-[#e6e1d8] rounded-xl focus:outline-none focus:border-[#ff6b35] bg-white text-[#171717] font-bold"
+                  readOnly
+                  disabled
+                  className="w-full pl-10 pr-4 py-2.5 text-sm border border-[#e6e1d8] rounded-xl bg-gray-50 text-gray-500 font-bold cursor-not-allowed"
                 />
               </div>
+            </div>
+
+            {/* Username */}
+            <div>
+              <label className="block text-xs font-black text-[#555] uppercase tracking-wider mb-1.5">
+                Username
+              </label>
+              <div className="relative">
+                <span className="text-[#aaa] font-bold absolute left-4 top-1/2 -translate-y-1/2">@</span>
+                <input
+                  type="text"
+                  value={username}
+                  onChange={(e) => setUsername(e.target.value.toLowerCase().replace(/[^a-z0-9_]/g, ''))}
+                  placeholder="your_username"
+                  maxLength={20}
+                  className="w-full pl-8 pr-4 py-2.5 text-sm border border-[#e6e1d8] rounded-xl focus:outline-none focus:border-[#ff6b35] bg-white text-[#171717] font-bold"
+                />
+              </div>
+              <p className="text-[10px] text-[#888] mt-1.5">
+                Username can only contain letters, numbers, and underscores. You can only change your username once every 30 days.
+              </p>
             </div>
 
             {/* Phone */}
@@ -312,12 +370,13 @@ export default function ProfilePage() {
                 <input
                   type="tel"
                   value={phone}
-                  onChange={(e) => setPhone(e.target.value)}
-                  placeholder="+63 912 345 6789"
-                  maxLength={20}
-                  className="w-full pl-10 pr-4 py-2.5 text-sm border border-[#e6e1d8] rounded-xl focus:outline-none focus:border-[#ff6b35] bg-white text-[#171717] font-bold"
+                  onChange={(e) => { setPhone(e.target.value.replace(/[^0-9]/g, '')); setPhoneError(''); }}
+                  placeholder="09123456789"
+                  maxLength={11}
+                  className={`w-full pl-10 pr-4 py-2.5 text-sm border rounded-xl focus:outline-none focus:border-[#ff6b35] bg-white text-[#171717] font-bold ${phoneError ? 'border-rose-400 bg-rose-50/30' : 'border-[#e6e1d8]'}`}
                 />
               </div>
+              {phoneError && <p className="text-rose-600 text-[10px] mt-1">{phoneError}</p>}
             </div>
 
             {/* Address */}
@@ -329,13 +388,14 @@ export default function ProfilePage() {
                 <MapPin className="w-4 h-4 text-[#aaa] absolute left-3.5 top-3.5" />
                 <textarea
                   value={address}
-                  onChange={(e) => setAddress(e.target.value)}
+                  onChange={(e) => { setAddress(e.target.value); setAddressError(''); }}
                   placeholder="City, Province, Philippines"
                   rows={2}
-                  maxLength={200}
-                  className="w-full pl-10 pr-4 py-2.5 text-sm border border-[#e6e1d8] rounded-xl focus:outline-none focus:border-[#ff6b35] bg-white text-[#171717] font-bold resize-none"
+                  maxLength={100}
+                  className={`w-full pl-10 pr-4 py-2.5 text-sm border rounded-xl focus:outline-none focus:border-[#ff6b35] bg-white text-[#171717] font-bold resize-none ${addressError ? 'border-rose-400 bg-rose-50/30' : 'border-[#e6e1d8]'}`}
                 />
               </div>
+              {addressError && <p className="text-rose-600 text-[10px] mt-1">{addressError}</p>}
             </div>
 
             {/* Bio */}
