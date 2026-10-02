@@ -241,6 +241,16 @@ function OrganizerContent() {
   const handleSaveProfile = async (e: React.FormEvent) => {
     e.preventDefault();
 
+    const isGibberish = (str: string) => {
+      const alpha = str.replace(/[\s'.\-&]/g, '');
+      const unique = new Set(alpha.toLowerCase()).size;
+      if (alpha.length >= 8 && unique <= 3) return true;
+      if (alpha.length >= 12 && unique <= 4) return true;
+      if (/(.)\1{4,}/.test(str)) return true;
+      if (/^(.{2,4})\1{3,}$/i.test(alpha)) return true; // alternating patterns like fgfgfgfg
+      return false;
+    };
+
     // Validation
     const errors = { name: "", address: "", category: "", caption: "", email: "", website: "" };
     let hasError = false;
@@ -248,36 +258,36 @@ function OrganizerContent() {
     // 1. Name
     const nameStr = profileData.name.trim();
     if (nameStr.length > 30) { errors.name = "Organization Name must not exceed 30 characters."; hasError = true; }
-    else if (/(.)\1{4,}/.test(nameStr)) { errors.name = "Please enter a valid, real organization name (gibberish/spam detected)."; hasError = true; }
+    else if (isGibberish(nameStr)) { errors.name = "Please enter a valid, real organization name (gibberish/spam detected)."; hasError = true; }
     else if (/\s{2,}/.test(nameStr)) { errors.name = "Multiple consecutive spaces are not allowed."; hasError = true; }
     else if (/[^a-zA-Z0-9\s-]/.test(nameStr)) { errors.name = "Name can only contain letters, numbers, spaces, and hyphens."; hasError = true; }
 
     // 2. Address
     const addressStr = profileData.address?.trim() || "";
-    if (/(.)\1{4,}/.test(addressStr)) { errors.address = "Please enter a valid, real address (gibberish/spam detected)."; hasError = true; }
+    if (addressStr.length > 0 && isGibberish(addressStr)) { errors.address = "Please enter a valid, real address (gibberish/spam detected)."; hasError = true; }
 
     // 3. Category
     const catStr = profileData.category?.trim() || "";
-    if (isCustomFocus && /(.)\1{4,}/.test(catStr)) { errors.category = "Please enter a valid category (gibberish/spam detected)."; hasError = true; }
+    if (isCustomFocus && catStr.length > 0 && isGibberish(catStr)) { errors.category = "Please enter a valid category (gibberish/spam detected)."; hasError = true; }
 
     // 4. Caption
     const captionStr = profileData.caption?.trim() || "";
     if (captionStr.length > 500) { errors.caption = "Caption must not exceed 500 characters."; hasError = true; }
-    else if (/(.)\1{4,}/.test(captionStr)) { errors.caption = "Please enter a valid description (gibberish/spam detected)."; hasError = true; }
+    else if (captionStr.length > 0 && isGibberish(captionStr)) { errors.caption = "Please enter a valid description (gibberish/spam detected)."; hasError = true; }
     else if (/\s{3,}/.test(captionStr)) { errors.caption = "Multiple consecutive spaces are not allowed."; hasError = true; }
 
     // 5. Email
     const emailStr = profileData.email?.trim() || "";
     if (emailStr) {
       if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(emailStr)) { errors.email = "Please enter a valid email address."; hasError = true; }
-      else if (/(.)\1{4,}/.test(emailStr.split('@')[0])) { errors.email = "Please enter a valid email address (gibberish/spam detected)."; hasError = true; }
+      else if (isGibberish(emailStr.split('@')[0])) { errors.email = "Please enter a valid email address (gibberish/spam detected)."; hasError = true; }
     }
 
     // 6. Website
     const websiteStr = profileData.website?.trim() || "";
     if (websiteStr) {
       if (!/^(https?:\/\/)?(www\.)?[a-zA-Z0-9-]+(\.[a-zA-Z]{2,})+/.test(websiteStr)) { errors.website = "Please enter a valid website URL."; hasError = true; }
-      else if (/(.)\1{4,}/.test(websiteStr)) { errors.website = "Please enter a valid website URL (gibberish/spam detected)."; hasError = true; }
+      else if (isGibberish(websiteStr)) { errors.website = "Please enter a valid website URL (gibberish/spam detected)."; hasError = true; }
     }
 
     setProfileErrors(errors);

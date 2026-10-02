@@ -141,6 +141,16 @@ export default function ProfilePage() {
     }
   };
 
+  const isGibberish = (str: string) => {
+    const alpha = str.replace(/[\s'.\-&]/g, '');
+    const unique = new Set(alpha.toLowerCase()).size;
+    if (alpha.length >= 8 && unique <= 3) return true;
+    if (alpha.length >= 12 && unique <= 4) return true;
+    if (/(.)\1{4,}/.test(str)) return true;
+    if (/^(.{2,4})\1{3,}$/i.test(alpha)) return true;
+    return false;
+  };
+
   const validateFields = () => {
     let isValid = true;
     if (phone && !/^09\d{9}$/.test(phone)) {
@@ -154,8 +164,8 @@ export default function ProfilePage() {
       if (address.trim().length < 5 || !/[a-zA-Z]/.test(address)) {
         setAddressError("Please enter a real address (e.g. Makati City, Philippines).");
         isValid = false;
-      } else if (/([a-zA-Z])\1{4,}/.test(address) || /(.)\1{5,}/.test(address)) {
-        setAddressError("Please enter a real address without repetitive characters.");
+      } else if (isGibberish(address)) {
+        setAddressError("Please enter a valid, real address (gibberish/spam detected).");
         isValid = false;
       } else if (!address.includes(',')) {
         setAddressError("Please enter your address in 'City, Province/Country' format.");
@@ -174,8 +184,8 @@ export default function ProfilePage() {
       } else if (!/[a-zA-Z]/.test(username)) {
         setSaveMsg({ type: "error", text: "Username must contain at least one letter." });
         isValid = false;
-      } else if (/(.)\1{4,}/.test(username)) {
-        setSaveMsg({ type: "error", text: "Username cannot contain 5 consecutive identical characters." });
+      } else if (isGibberish(username)) {
+        setSaveMsg({ type: "error", text: "Username appears to be gibberish or spam. Please choose a valid username." });
         isValid = false;
       }
     }

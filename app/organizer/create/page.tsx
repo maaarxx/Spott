@@ -40,7 +40,15 @@ const eventSchema = z.object({
   description: z.string().min(1, "Event description is required"),
   date: z.string().min(1, "Please enter an event date"),
   time: z.string().min(1, "Please enter an event time"),
-  location: z.string().min(1, "Please input or pin a location").max(200, "Location name is too long").refine(val => !/(.)\1{4,}/.test(val), "Please enter a valid, real venue name (gibberish/spam detected)"),
+  location: z.string().min(1, "Please input or pin a location").max(200, "Location name is too long").refine(val => {
+    const alpha = val.replace(/[\s'.\-&]/g, '');
+    const unique = new Set(alpha.toLowerCase()).size;
+    if (alpha.length >= 8 && unique <= 3) return false;
+    if (alpha.length >= 12 && unique <= 4) return false;
+    if (/(.)\1{4,}/.test(val)) return false;
+    if (/^(.{2,4})\1{3,}$/i.test(alpha)) return false;
+    return true;
+  }, "Please enter a valid, real venue name (gibberish/spam detected)"),
   price: z.coerce.number().min(0, "Price cannot be negative"),
   isFree: z.boolean(),
   category: z.string().min(1, "Please select a category"),
@@ -760,31 +768,9 @@ export default function CreateEventPage() {
               )}
             </div>
 
-            {/* Require Approval Toggle */}
-            <div className="pt-3 border-t border-[#e6e1d8]">
-              {!isFreeWatched ? (
-                <div className="flex items-start gap-2.5 select-none opacity-70">
-                  <input
-                    type="checkbox"
-                    checked
-                    disabled
-                    className="w-4 h-4 mt-0.5 rounded text-[#ff6b35] border-[#e6e1d8] accent-[#ff6b35]"
-                  />
-                  <div>
-                    <div className="flex items-center gap-2 flex-wrap">
-                      <span className="text-xs sm:text-sm font-bold text-[#171717]">
-                        Require Organizer Approval for RSVPs
-                      </span>
-                      <span className="text-[10px] font-black uppercase tracking-wider px-2 py-0.5 rounded-full bg-amber-100 text-amber-800 border border-amber-200">
-                        Screening / Pending
-                      </span>
-                    </div>
-                    <span className="text-xs text-[#666] block mt-0.5">
-                      Paid events automatically require approval to verify payment proof.
-                    </span>
-                  </div>
-                </div>
-              ) : (
+            {/* Require Approval Toggle - Only show if Free */}
+            {isFreeWatched && (
+              <div className="pt-3 border-t border-[#e6e1d8]">
                 <label className="flex items-start gap-2.5 cursor-pointer select-none">
                   <input
                     type="checkbox"
@@ -805,8 +791,8 @@ export default function CreateEventPage() {
                     </span>
                   </div>
                 </label>
-              )}
-            </div>
+              </div>
+            )}
           </div>
 
           {/* Missing fields notice */}

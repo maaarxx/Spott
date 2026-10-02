@@ -114,7 +114,7 @@ export default function NotificationsPage() {
           <button
             onClick={() => {
               void fetchWithSupabaseSession('/api/notifications', { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ markAllRead: true }) })
-                .then((response) => { if (response.ok) { setNotifications((items) => items.map((item) => ({ ...item, isRead: true }))); import('@/lib/fetch-dedupe').then(m => m.invalidateCache('/api/notifications')); } });
+                .then((response) => { if (response.ok) { setNotifications((items) => items.map((item) => ({ ...item, isRead: true }))); import('@/lib/fetch-dedupe').then(m => m.invalidateCache('/api/notifications')); window.dispatchEvent(new Event("spott_notifications_updated")); } });
             }}
             className="text-xs font-bold text-ink hover:text-accent border border-line hover:border-accent/40 bg-white px-3.5 py-1.5 rounded-xl transition-all cursor-pointer shadow-xs"
           >
@@ -124,7 +124,7 @@ export default function NotificationsPage() {
             onClick={() => {
               if (confirm("Are you sure you want to clear all notifications?")) {
                 void fetchWithSupabaseSession('/api/notifications', { method: 'DELETE' })
-                  .then((response) => { if (response.ok) { setNotifications([]); import('@/lib/fetch-dedupe').then(m => m.invalidateCache('/api/notifications')); } });
+                  .then((response) => { if (response.ok) { setNotifications([]); import('@/lib/fetch-dedupe').then(m => m.invalidateCache('/api/notifications')); window.dispatchEvent(new Event("spott_notifications_updated")); } });
               }
             }}
             className="text-xs font-bold text-rose-600 hover:bg-rose-50 border border-rose-200 bg-white px-3.5 py-1.5 rounded-xl transition-all cursor-pointer shadow-xs inline-flex items-center gap-1"
