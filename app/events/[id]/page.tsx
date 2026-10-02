@@ -30,7 +30,7 @@ import {
   getCurrentUser,
   SpottAccount,
 } from "@/lib/auth-store";
-import { loadSavedEventIds, toggleSavedEvent } from "@/lib/saved-events-client";
+import { loadSavedEventIds, removeSavedEvent, toggleSavedEvent } from "@/lib/saved-events-client";
 
 type EventDetail = EventData & { confirmations?: number };
 export default function EventDetailsPage({
@@ -97,11 +97,12 @@ export default function EventDetailsPage({
         setSavedCount(0);
         return;
       }
-      void loadSavedEventIds().then((savedIds) => {
+      const savedIdsPromise = loadSavedEventIds().then((savedIds) => {
         const hasSaved = savedIds.includes(id);
         setIsSaved(hasSaved);
         setSavedCount(hasSaved ? 1 : 0);
-      }).catch(() => { setIsSaved(false); setSavedCount(0); });
+        return savedIds;
+      }).catch(() => { setIsSaved(false); setSavedCount(0); return [] as string[]; });
       void fetchWithSupabaseSession('/api/my-registrations', { cache: 'no-store' })
         .then(async (response) => {
           if (!response.ok) throw new Error('Unable to load RSVP status');
@@ -118,8 +119,9 @@ export default function EventDetailsPage({
           const isRegistered = !cancelled && status !== 'rejected' && status !== 'declined';
           setRsvpd(isRegistered);
           setAttendeeStatus(cancelled ? null : pending ? 'Pending' : 'Confirmed');
+          const savedIds = await savedIdsPromise;
           if (isRegistered && savedIds.includes(id)) {
-            void toggleSavedEvent(id).then(() => {
+            void removeSavedEvent(id).then(() => {
               setIsSaved(false);
               setSavedCount(0);
             }).catch(() => {});
@@ -188,6 +190,10 @@ export default function EventDetailsPage({
   }, [id]);
 
   const handleToggleSave = async () => {
+    if (rsvpd && attendeeStatus === "Confirmed") {
+      showToast("Your RSVP is confirmed; this event is already in My Events.");
+      return;
+    }
     if (!currentUser) {
       showToast("Please log in to save events.");
       router.push(`/login?redirect=/events/${id}`);

@@ -19,3 +19,11 @@ export async function toggleSavedEvent(eventId: string): Promise<boolean> {
   window.dispatchEvent(new Event('spott_saved_updated'));
   return body.saved;
 }
+
+export async function removeSavedEvent(eventId: string): Promise<void> {
+  const response = await fetchWithSupabaseSession(`/api/events/${encodeURIComponent(eventId)}/save`, { method: 'DELETE' });
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(body.message || 'Unable to remove saved event.');
+  import('@/lib/fetch-dedupe').then(m => m.invalidateCache('/api/saved-events'));
+  window.dispatchEvent(new Event('spott_saved_updated'));
+}

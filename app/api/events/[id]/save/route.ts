@@ -49,3 +49,20 @@ export async function POST(
     );
   }
 }
+
+export async function DELETE(
+  request: Request,
+  { params }: { params: Promise<{ id: string }> }
+) {
+  try {
+    const { id } = await params;
+    const account = await getAuthenticatedRole(request);
+    if (!account) return NextResponse.json({ success: false, message: 'Sign in to update saved events.' }, { status: 401 });
+    const { error } = await createAdminClient().from('saved_events')
+      .delete().eq('user_id', account.userId).eq('event_id', id);
+    if (error) throw error;
+    return NextResponse.json({ success: true, saved: false });
+  } catch {
+    return NextResponse.json({ success: false, message: 'Could not remove saved event.' }, { status: 500 });
+  }
+}

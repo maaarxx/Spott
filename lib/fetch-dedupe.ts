@@ -24,6 +24,10 @@ export async function fetchWithDedupe(input: string, init: RequestInit = {}): Pr
   const method = init.method?.toUpperCase() || 'GET';
   
   if (method !== 'GET') {
+    let pathname = input;
+    try { pathname = new URL(input, 'http://localhost').pathname; } catch {}
+    const root = pathname.startsWith('/api/events/') ? '/api/events' : pathname;
+    invalidateCache(root);
     return fetch(input, init);
   }
 
