@@ -115,8 +115,15 @@ export default function EventDetailsPage({
           const status = String(registration.status || '').toLowerCase();
           const cancelled = status === 'cancelled';
           const pending = status.includes('pending') || status === 'rejected' || status === 'declined';
-          setRsvpd(!cancelled && status !== 'rejected' && status !== 'declined');
+          const isRegistered = !cancelled && status !== 'rejected' && status !== 'declined';
+          setRsvpd(isRegistered);
           setAttendeeStatus(cancelled ? null : pending ? 'Pending' : 'Confirmed');
+          if (isRegistered && savedIds.includes(id)) {
+            void toggleSavedEvent(id).then(() => {
+              setIsSaved(false);
+              setSavedCount(0);
+            }).catch(() => {});
+          }
         })
         .catch(() => {
           setRsvpd(false);
@@ -259,6 +266,13 @@ export default function EventDetailsPage({
       const attendeeState = result.attendeeStatus === "Confirmed" ? "Confirmed" : "Pending";
       setRsvpd(true);
       setAttendeeStatus(attendeeState);
+      if (isSaved) {
+        try {
+          await toggleSavedEvent(id);
+          setIsSaved(false);
+          setSavedCount(0);
+        } catch {}
+      }
       setRsvpCount(Number(result.confirmedCount) || 0);
       setEvent((previous) => previous ? { ...previous, registrations: Number(result.confirmedCount) || 0 } : previous);
       setRsvpFormOpen(false);

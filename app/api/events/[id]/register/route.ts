@@ -38,6 +38,8 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
     const attendeeCount = 1;
     const notes = String(form.get('notes') || '').trim();
     const db = createAdminClient();
+    const { data: eventStatus } = await db.from('events').select('status').eq('event_id', id).maybeSingle();
+    if (eventStatus?.status === 'cancelled') return NextResponse.json({ error: 'This event was cancelled and is no longer accepting RSVPs.' }, { status: 409 });
     const { data: profile } = await db.from('users').select('name').eq('user_id', account.userId).maybeSingle();
     if (fullName.trim().toLowerCase() !== (profile?.name || '').trim().toLowerCase()) return NextResponse.json({ error: 'Name must match your profile.', field: 'fullName' }, { status: 400 });
     if (fullName.length < 2 || fullName.length > 25) return NextResponse.json({ error: 'Enter your name (First Name MI Last Name).', field: 'fullName' }, { status: 400 });
@@ -89,6 +91,8 @@ export async function POST(request: Request, { params }: { params: Promise<{ id:
       console.error('RSVP database write failed', { code: error?.code || 'NO_ROW_RETURNED', eventId: id, userId: account.userId });
       return NextResponse.json({ error: 'Could not save RSVP.' }, { status: 500 });
     }
+    // RSVP means the user has committed to attending; remove any bookmark.
+    await db.from('saved_events').delete().eq('user_id', account.userId).eq('event_id', id);
     const [{ data: organizer }, updatedConfirmedCount] = await Promise.all([
       db.from('organizers').select('user_id').eq('organizer_id', event.organizer_id).maybeSingle(),
       getConfirmedAttendeeCount(db, id),
