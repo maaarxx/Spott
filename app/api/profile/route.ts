@@ -54,8 +54,16 @@ export async function PATCH(request: Request) {
     return NextResponse.json({ error: 'One or more profile fields exceed their allowed length.' }, { status: 400 });
   }
 
-  if (username && !/^[a-zA-Z0-9_]{4,20}$/.test(username)) {
-    return NextResponse.json({ error: 'Username must be 4–20 characters, containing only letters, numbers, and underscores.' }, { status: 400 });
+  if (username) {
+    if (!/^[a-zA-Z0-9_]{4,20}$/.test(username)) {
+      return NextResponse.json({ error: 'Username must be 4–20 characters, containing only letters, numbers, and underscores.' }, { status: 400 });
+    }
+    if (!/[a-zA-Z]/.test(username)) {
+      return NextResponse.json({ error: 'Username must contain at least one letter.' }, { status: 400 });
+    }
+    if (/(.)\1{4,}/.test(username)) {
+      return NextResponse.json({ error: 'Username cannot contain 5 consecutive identical characters.' }, { status: 400 });
+    }
   }
 
   if (phone && (!/^09\d{9}$/.test(phone))) {
@@ -63,9 +71,14 @@ export async function PATCH(request: Request) {
   }
 
   if (address) {
-    if (address.replace(/\\s/g, '').length < 5) return NextResponse.json({ error: 'Address is too short.' }, { status: 400 });
-    if (/([a-zA-Z])\\1{4,}/.test(address) || /(.)\\1{5,}/.test(address)) {
-      return NextResponse.json({ error: 'Address contains invalid repetitive characters.' }, { status: 400 });
+    if (address.trim().length < 5 || !/[a-zA-Z]/.test(address)) {
+      return NextResponse.json({ error: 'Please enter a real address (e.g. Makati City, Philippines).' }, { status: 400 });
+    }
+    if (/([a-zA-Z])\1{4,}/.test(address) || /(.)\1{5,}/.test(address)) {
+      return NextResponse.json({ error: 'Please enter a real address without repetitive characters.' }, { status: 400 });
+    }
+    if (!address.includes(',')) {
+      return NextResponse.json({ error: "Please enter your address in 'City, Province/Country' format." }, { status: 400 });
     }
   }
 

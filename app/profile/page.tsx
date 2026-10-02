@@ -151,11 +151,14 @@ export default function ProfilePage() {
     }
     
     if (address) {
-      if (address.replace(/\s/g, '').length < 5) {
-        setAddressError("Address is too short.");
+      if (address.trim().length < 5 || !/[a-zA-Z]/.test(address)) {
+        setAddressError("Please enter a real address (e.g. Makati City, Philippines).");
         isValid = false;
       } else if (/([a-zA-Z])\1{4,}/.test(address) || /(.)\1{5,}/.test(address)) {
-        setAddressError("Address contains invalid repetitive characters.");
+        setAddressError("Please enter a real address without repetitive characters.");
+        isValid = false;
+      } else if (!address.includes(',')) {
+        setAddressError("Please enter your address in 'City, Province/Country' format.");
         isValid = false;
       } else {
         setAddressError("");
@@ -164,9 +167,17 @@ export default function ProfilePage() {
       setAddressError("");
     }
     
-    if (username && !/^[a-zA-Z0-9_]{4,20}$/.test(username)) {
-      setSaveMsg({ type: "error", text: "Username must be 4–20 characters, containing only letters, numbers, and underscores." });
-      isValid = false;
+    if (username) {
+      if (!/^[a-zA-Z0-9_]{4,20}$/.test(username)) {
+        setSaveMsg({ type: "error", text: "Username must be 4–20 characters, containing only letters, numbers, and underscores." });
+        isValid = false;
+      } else if (!/[a-zA-Z]/.test(username)) {
+        setSaveMsg({ type: "error", text: "Username must contain at least one letter." });
+        isValid = false;
+      } else if (/(.)\1{4,}/.test(username)) {
+        setSaveMsg({ type: "error", text: "Username cannot contain 5 consecutive identical characters." });
+        isValid = false;
+      }
     }
     
     return isValid;
