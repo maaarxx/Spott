@@ -118,6 +118,7 @@ export default function ProfilePage() {
       const payload = await response.json().catch(() => ({}));
       if (!response.ok || !payload.profile) throw new Error(payload.error || "Failed to save. Please try again.");
       const updated = payload.profile as UserProfile;
+      import('@/lib/fetch-dedupe').then(m => m.invalidateCache('/api/profile'));
       saveUserProfile(updated);
       setProfile(updated);
       setCurrentUser({ ...user, displayName: updated.displayName || user.name });

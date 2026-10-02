@@ -90,6 +90,7 @@ export function clearLocalAuthState() {
   if (typeof window === "undefined") return;
   try {
     localStorage.removeItem(STORAGE_KEY_AUTH);
+    import('./fetch-dedupe').then(m => m.invalidateCache(/./));
     window.dispatchEvent(new Event("spott_auth_changed"));
   } catch {}
 }

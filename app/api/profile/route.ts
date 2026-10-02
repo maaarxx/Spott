@@ -17,14 +17,21 @@ function toProfile(row: Record<string, unknown>) {
 }
 
 export async function GET(request: Request) {
+  const isDebug = process.env.DEBUG_TIMING === "1";
+  const start = Date.now();
   const account = await getAuthenticatedRole(request);
   if (!account) return NextResponse.json({ error: 'Sign in to load your profile.' }, { status: 401 });
 
+  const queryStart = Date.now();
   const { data, error } = await createAdminClient().from('users')
     .select('email,name,display_name,avatar_url,phone,address,bio')
     .eq('user_id', account.userId).maybeSingle();
+  if (isDebug) console.log(`[Timing] /api/profile main query: ${Date.now() - queryStart}ms`);
+  
   if (error) return NextResponse.json({ error: 'Unable to load your profile.' }, { status: 500 });
   if (!data) return NextResponse.json({ error: 'Account profile not found.' }, { status: 404 });
+  
+  if (isDebug) console.log(`[Timing] /api/profile total: ${Date.now() - start}ms`);
   return NextResponse.json({ profile: toProfile(data) });
 }
 

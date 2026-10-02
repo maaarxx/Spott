@@ -264,6 +264,7 @@ export default function EventDetailsPage({
       setRsvpFormOpen(false);
       setPaymentProof(null);
       showToast(paid ? "Payment submitted. Your RSVP is pending verification." : attendeeState === "Pending" ? "RSVP submitted and is pending organizer review." : "You are registered! Check My Events to view your ticket.");
+      import('@/lib/fetch-dedupe').then(m => m.invalidateCache('/api/my-registrations'));
       window.dispatchEvent(new Event("spott_registered_updated"));
       window.dispatchEvent(new Event("spott_events_updated"));
     } catch {
@@ -287,6 +288,7 @@ export default function EventDetailsPage({
       setRsvpCount(newCount);
       setEvent((prev) => (prev ? { ...prev, registrations: newCount } : null));
       setShowCancelModal(false);
+      import('@/lib/fetch-dedupe').then(m => m.invalidateCache('/api/my-registrations'));
       window.dispatchEvent(new Event("spott_registered_updated"));
       window.dispatchEvent(new Event("spott_events_updated"));
       showToast("RSVP cancelled. Your slot has been released.");

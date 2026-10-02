@@ -67,7 +67,10 @@ export async function loadUserProfileFromDatabase(email: string): Promise<UserPr
           form.set('avatar_action', 'keep');
           const migrated = await fetchWithSupabaseSession('/api/profile', { method: 'PATCH', body: form });
           const migratedPayload = await migrated.json().catch(() => ({}));
-          if (migrated.ok && migratedPayload.profile) profile = migratedPayload.profile as UserProfile;
+          if (migrated.ok && migratedPayload.profile) {
+            import('./fetch-dedupe').then(m => m.invalidateCache('/api/profile'));
+            profile = migratedPayload.profile as UserProfile;
+          }
         }
       }
     } catch {

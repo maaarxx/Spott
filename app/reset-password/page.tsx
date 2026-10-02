@@ -28,7 +28,8 @@ export default function ResetPasswordPage() {
       const supabase = createClient();
       const { error: passwordError } = await supabase.auth.updateUser({ password });
       if (passwordError) throw passwordError;
-      const response = await fetch('/api/account');
+      const { fetchWithDedupe } = await import('@/lib/fetch-dedupe');
+      const response = await fetchWithDedupe('/api/account');
       const result = await response.json();
       if (!response.ok) throw new Error(result.error || 'Unable to load your account.');
       const role = result.account.role as SpottAccount['role'];

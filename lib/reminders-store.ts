@@ -110,6 +110,7 @@ export async function setEventReminder(params: {
     const payload = await response.json().catch(() => ({}));
     if (!response.ok) return { success: false, error: payload.error || "Unable to save reminder." };
     const newReminder = fromDatabase(payload.reminder || {});
+    import('./fetch-dedupe').then(m => m.invalidateCache('/api/reminders'));
     saveAllReminders([newReminder, ...reminderSnapshot.filter((reminder) => reminder.id !== newReminder.id && !(reminder.eventId === newReminder.eventId && reminder.offsetLabel === newReminder.offsetLabel))]);
     return { success: true, reminder: newReminder };
   } catch {
@@ -134,6 +135,7 @@ export async function removeEventReminder(
       }),
     });
     if (!response.ok) return false;
+    import('./fetch-dedupe').then(m => m.invalidateCache('/api/reminders'));
     saveAllReminders(reminderSnapshot.filter((r) => r.eventId !== eventId || (offsetLabel && r.offsetLabel !== offsetLabel)));
     return true;
   } catch {
@@ -159,6 +161,7 @@ export async function recomputeRemindersForEvent(eventId: string, newDateString:
   if (!response.ok) throw new Error("Unable to reschedule reminders.");
   const payload = await response.json();
   const updatedRows = Array.isArray(payload.reminders) ? payload.reminders.map(fromDatabase) : [];
+  import('./fetch-dedupe').then(m => m.invalidateCache('/api/reminders'));
   saveAllReminders([
     ...reminderSnapshot.filter((reminder) => reminder.eventId !== eventId),
     ...updatedRows,

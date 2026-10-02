@@ -3,15 +3,19 @@ import { createAdminClient, getAuthenticatedRole } from '@/lib/supabase-server';
 
 export async function GET(request: Request) {
   try {
+    const isDebug = process.env.DEBUG_TIMING === "1";
+    const start = Date.now();
     const account = await getAuthenticatedRole(request);
     if (!account) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     const supabase = createAdminClient();
 
+    const queryStart = Date.now();
     const { data, error } = await supabase
       .from('notifications')
       .select('*')
       .eq('user_id', account.userId)
       .order('created_at', { ascending: false });
+    if (isDebug) console.log(`[Timing] /api/notifications main query: ${Date.now() - queryStart}ms`);
 
     if (error) throw error;
 
@@ -40,8 +44,10 @@ export async function GET(request: Request) {
     }));
 
     if (new URL(request.url).searchParams.get('count') === 'unread') {
+      if (isDebug) console.log(`[Timing] /api/notifications total: ${Date.now() - start}ms`);
       return NextResponse.json({ unreadCount: formatted.filter((item) => !item.isRead).length });
     }
+    if (isDebug) console.log(`[Timing] /api/notifications total: ${Date.now() - start}ms`);
     return NextResponse.json({ notifications: formatted });
   } catch {
     return NextResponse.json({ error: 'Unable to load notifications.' }, { status: 500 });

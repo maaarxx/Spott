@@ -2,6 +2,8 @@ import { NextResponse } from 'next/server';
 import { createAdminClient, getAuthenticatedRole } from '@/lib/supabase-server';
 
 export async function GET(request: Request) {
+  const isDebug = process.env.DEBUG_TIMING === "1";
+  const start = Date.now();
   const account = await getAuthenticatedRole(request);
   if (!account) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
 
@@ -16,8 +18,13 @@ export async function GET(request: Request) {
   query = query.eq('user_id', account.role === 'admin' && requestedUserId ? requestedUserId : account.userId);
   if (eventId) query = query.eq('event_id', eventId);
 
+  const queryStart = Date.now();
   const { data, error } = await query.order('remind_at', { ascending: true });
+  if (isDebug) console.log(`[Timing] /api/reminders main query: ${Date.now() - queryStart}ms`);
+  
   if (error) return NextResponse.json({ error: 'Unable to load reminders.' }, { status: 500 });
+  
+  if (isDebug) console.log(`[Timing] /api/reminders total: ${Date.now() - start}ms`);
   return NextResponse.json(data || []);
 }
 

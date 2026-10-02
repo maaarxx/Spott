@@ -51,6 +51,8 @@ export async function PATCH(request: Request) {
       .maybeSingle();
     if (error) return NextResponse.json({ error: 'Unable to update user.' }, { status: 500 });
     if (!data) return NextResponse.json({ error: 'User not found.' }, { status: 404 });
+    const { invalidateRoleCache } = await import('@/lib/supabase-server');
+    invalidateRoleCache(userId);
     await writeAuditEntry(account, {
       action: 'user.updated', targetType: 'user', targetId: userId,
       summary: `Updated account details for ${data.name}.`,

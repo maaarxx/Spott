@@ -49,7 +49,10 @@ export default function NotificationsPage() {
   const handleItemClick = async (notification: NotificationItem) => {
     if (!notification.isRead) {
       const response = await fetchWithSupabaseSession(`/api/notifications/${encodeURIComponent(notification.id)}`, { method: 'PATCH' });
-      if (response.ok) setNotifications((items) => items.map((item) => item.id === notification.id ? { ...item, isRead: true } : item));
+      if (response.ok) {
+        setNotifications((items) => items.map((item) => item.id === notification.id ? { ...item, isRead: true } : item));
+        import('@/lib/fetch-dedupe').then(m => m.invalidateCache('/api/notifications'));
+      }
     }
     if (notification.link) {
       router.push(notification.link);
@@ -111,7 +114,7 @@ export default function NotificationsPage() {
           <button
             onClick={() => {
               void fetchWithSupabaseSession('/api/notifications', { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ markAllRead: true }) })
-                .then((response) => { if (response.ok) setNotifications((items) => items.map((item) => ({ ...item, isRead: true }))); });
+                .then((response) => { if (response.ok) { setNotifications((items) => items.map((item) => ({ ...item, isRead: true }))); import('@/lib/fetch-dedupe').then(m => m.invalidateCache('/api/notifications')); } });
             }}
             className="text-xs font-bold text-ink hover:text-accent border border-line hover:border-accent/40 bg-white px-3.5 py-1.5 rounded-xl transition-all cursor-pointer shadow-xs"
           >
@@ -121,7 +124,7 @@ export default function NotificationsPage() {
             onClick={() => {
               if (confirm("Are you sure you want to clear all notifications?")) {
                 void fetchWithSupabaseSession('/api/notifications', { method: 'DELETE' })
-                  .then((response) => { if (response.ok) setNotifications([]); });
+                  .then((response) => { if (response.ok) { setNotifications([]); import('@/lib/fetch-dedupe').then(m => m.invalidateCache('/api/notifications')); } });
               }
             }}
             className="text-xs font-bold text-rose-600 hover:bg-rose-50 border border-rose-200 bg-white px-3.5 py-1.5 rounded-xl transition-all cursor-pointer shadow-xs inline-flex items-center gap-1"
@@ -255,7 +258,7 @@ export default function NotificationsPage() {
                     onClick={(e) => {
                       e.stopPropagation();
                       void fetchWithSupabaseSession(`/api/notifications/${encodeURIComponent(notification.id)}`, { method: 'DELETE' })
-                        .then((response) => { if (response.ok) setNotifications((items) => items.filter((item) => item.id !== notification.id)); });
+                        .then((response) => { if (response.ok) { setNotifications((items) => items.filter((item) => item.id !== notification.id)); import('@/lib/fetch-dedupe').then(m => m.invalidateCache('/api/notifications')); } });
                     }}
                     title="Delete notification"
                     className="p-1 rounded-lg text-gray-400 hover:text-rose-600 hover:bg-rose-50 transition-colors cursor-pointer"

@@ -1,4 +1,5 @@
 import { createClient } from '@/lib/supabase-browser';
+import { fetchWithDedupe } from './fetch-dedupe';
 
 /** Send the current access token explicitly so serverless audit routes can verify
  * the Supabase session even if the browser's SSR auth cookies aren't present. */
@@ -9,5 +10,10 @@ export async function fetchWithSupabaseSession(input: string, init: RequestInit 
   if (data.session?.access_token) {
     headers.set('Authorization', `Bearer ${data.session.access_token}`);
   }
-  return fetch(input, { ...init, headers, cache: 'no-store' });
+  const method = init.method?.toUpperCase() || 'GET';
+  if (method !== 'GET') {
+    return fetch(input, { ...init, headers, cache: 'no-store' });
+  }
+  return fetchWithDedupe(input, { ...init, headers, cache: 'no-store' });
 }
+export { invalidateCache } from './fetch-dedupe';

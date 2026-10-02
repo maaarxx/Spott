@@ -15,6 +15,7 @@ export async function toggleSavedEvent(eventId: string): Promise<boolean> {
   if (!response.ok || typeof body.saved !== 'boolean') {
     throw new Error(body.message || 'Unable to update saved event.');
   }
+  import('@/lib/fetch-dedupe').then(m => m.invalidateCache('/api/saved-events'));
   window.dispatchEvent(new Event('spott_saved_updated'));
   return body.saved;
 }
