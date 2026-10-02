@@ -31,20 +31,24 @@ export async function createClient() {
   );
 }
 
-let adminClientInstance: ReturnType<typeof createSupabaseClient> | null = null;
+function _createAdmin() {
+  const url = process.env.NEXT_PUBLIC_SUPABASE_URL!;
+  const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY!;
+  return createSupabaseClient(url, serviceRoleKey, {
+    auth: { persistSession: false, autoRefreshToken: false },
+  });
+}
+
+let adminClientInstance: ReturnType<typeof _createAdmin> | null = null;
 
 export function createAdminClient() {
-  if (adminClientInstance) return adminClientInstance;
-  
-  const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
-  const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
-  if (!url || !serviceRoleKey) {
+  if (!process.env.NEXT_PUBLIC_SUPABASE_URL || !process.env.SUPABASE_SERVICE_ROLE_KEY) {
     throw new Error('Supabase service role credentials are not configured');
   }
   
-  adminClientInstance = createSupabaseClient(url, serviceRoleKey, {
-    auth: { persistSession: false, autoRefreshToken: false },
-  });
+  if (!adminClientInstance) {
+    adminClientInstance = _createAdmin();
+  }
   
   return adminClientInstance;
 }
