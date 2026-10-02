@@ -95,14 +95,18 @@ export function validateOrganizerName(value: string): string | null {
 }
 
 export function validateEventTitle(value: string): string | null {
+  if (!value || value.trim().length === 0) {
+    return "Event title is required and cannot be just spaces.";
+  }
+
   const normalized = value.trim().replace(/\s+/g, ' ');
   
   if (normalized.length < 10) {
-    return "Event title must be between 10 to 100 characters.";
+    return "Event title must contain at least 10 characters (excluding extra spaces).";
   }
   
   if (normalized.length > 100) {
-    return "Event title must be between 10 to 100 characters.";
+    return "Event title cannot exceed 100 characters.";
   }
 
   const lower = normalized.toLowerCase();
