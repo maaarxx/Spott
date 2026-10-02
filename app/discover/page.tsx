@@ -333,10 +333,15 @@ function DiscoverContent() {
           <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-muted" />
           <input
             type="text"
+            maxLength={50}
             placeholder="Search events, categories..."
             className="w-full pl-10 pr-4 py-2 border border-line rounded-lg text-sm bg-white focus:ring-2 focus:ring-accent focus:border-accent outline-none"
             value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
+            onChange={(e) => {
+              // limit consecutive repeating characters to max 4 to prevent gibberish spam
+              let val = e.target.value.replace(/(.)\1{4,}/g, '$1$1$1$1');
+              setSearchQuery(val);
+            }}
           />
           {searchQuery && (
             <button

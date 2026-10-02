@@ -174,6 +174,14 @@ function OrganizerContent() {
   const [profileAvatarRemoved, setProfileAvatarRemoved] = useState(false);
   const [showProfilePreview, setShowProfilePreview] = useState(false);
   const [currentOrgName, setCurrentOrgName] = useState<string>("Metro Creative Group");
+  const [profileErrors, setProfileErrors] = useState({
+    name: "",
+    address: "",
+    category: "",
+    caption: "",
+    email: "",
+    website: "",
+  });
 
   useEffect(() => {
     let active = true;
@@ -232,6 +240,49 @@ function OrganizerContent() {
 
   const handleSaveProfile = async (e: React.FormEvent) => {
     e.preventDefault();
+
+    // Validation
+    const errors = { name: "", address: "", category: "", caption: "", email: "", website: "" };
+    let hasError = false;
+
+    // 1. Name
+    const nameStr = profileData.name.trim();
+    if (nameStr.length > 30) { errors.name = "Organization Name must not exceed 30 characters."; hasError = true; }
+    else if (/(.)\1{4,}/.test(nameStr)) { errors.name = "Please enter a valid, real organization name (gibberish/spam detected)."; hasError = true; }
+    else if (/\s{2,}/.test(nameStr)) { errors.name = "Multiple consecutive spaces are not allowed."; hasError = true; }
+    else if (/[^a-zA-Z0-9\s-]/.test(nameStr)) { errors.name = "Name can only contain letters, numbers, spaces, and hyphens."; hasError = true; }
+
+    // 2. Address
+    const addressStr = profileData.address?.trim() || "";
+    if (/(.)\1{4,}/.test(addressStr)) { errors.address = "Please enter a valid, real address (gibberish/spam detected)."; hasError = true; }
+
+    // 3. Category
+    const catStr = profileData.category?.trim() || "";
+    if (isCustomFocus && /(.)\1{4,}/.test(catStr)) { errors.category = "Please enter a valid category (gibberish/spam detected)."; hasError = true; }
+
+    // 4. Caption
+    const captionStr = profileData.caption?.trim() || "";
+    if (captionStr.length > 500) { errors.caption = "Caption must not exceed 500 characters."; hasError = true; }
+    else if (/(.)\1{4,}/.test(captionStr)) { errors.caption = "Please enter a valid description (gibberish/spam detected)."; hasError = true; }
+    else if (/\s{3,}/.test(captionStr)) { errors.caption = "Multiple consecutive spaces are not allowed."; hasError = true; }
+
+    // 5. Email
+    const emailStr = profileData.email?.trim() || "";
+    if (emailStr) {
+      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(emailStr)) { errors.email = "Please enter a valid email address."; hasError = true; }
+      else if (/(.)\1{4,}/.test(emailStr.split('@')[0])) { errors.email = "Please enter a valid email address (gibberish/spam detected)."; hasError = true; }
+    }
+
+    // 6. Website
+    const websiteStr = profileData.website?.trim() || "";
+    if (websiteStr) {
+      if (!/^(https?:\/\/)?(www\.)?[a-zA-Z0-9-]+(\.[a-zA-Z]{2,})+/.test(websiteStr)) { errors.website = "Please enter a valid website URL."; hasError = true; }
+      else if (/(.)\1{4,}/.test(websiteStr)) { errors.website = "Please enter a valid website URL (gibberish/spam detected)."; hasError = true; }
+    }
+
+    setProfileErrors(errors);
+    if (hasError) return;
+
     try {
       const saved = await saveOrganizerProfileToDatabase(profileData, profileAvatarFile, profileAvatarRemoved);
       setProfileData(saved);
@@ -1866,8 +1917,9 @@ function OrganizerContent() {
                     onChange={(e) => setProfileData((prev) => ({ ...prev, name: e.target.value }))}
                     required
                     placeholder="e.g. Metro Creative Group"
-                    className="w-full text-xs font-bold border border-[#e6e1d8] rounded-xl p-3 focus:outline-none focus:border-[#ff6b35] text-[#171717]"
+                    className={`w-full text-xs font-bold border rounded-xl p-3 focus:outline-none ${profileErrors.name ? "border-red-400 focus:border-red-500 bg-red-50/30" : "border-[#e6e1d8] focus:border-[#ff6b35]"} text-[#171717]`}
                   />
+                  {profileErrors.name && <p className="text-red-500 text-[10px] mt-1 font-bold">{profileErrors.name}</p>}
                 </div>
 
                 <div>
@@ -1904,12 +1956,16 @@ function OrganizerContent() {
                           setProfileData((prev) => ({ ...prev, category: e.target.value }));
                         }}
                         placeholder="e.g. Esports & Gaming, Indie Art Collective, Tech Incubator..."
-                        className="w-full text-xs font-bold border border-[#ff6b35] rounded-xl p-3 focus:outline-none focus:ring-2 focus:ring-[#ff6b35]/20 text-[#171717] bg-white"
+                        className={`w-full text-xs font-bold border rounded-xl p-3 focus:outline-none focus:ring-2 ${profileErrors.category ? "border-red-400 focus:ring-red-500/20 bg-red-50/30" : "border-[#ff6b35] focus:ring-[#ff6b35]/20 bg-white"} text-[#171717]`}
                         autoFocus
                       />
-                      <p className="text-[11px] text-[#888888]">
-                        Custom focus is shown on your organizer profile and public event badges.
-                      </p>
+                      {profileErrors.category ? (
+                        <p className="text-red-500 text-[10px] mt-1 font-bold">{profileErrors.category}</p>
+                      ) : (
+                        <p className="text-[11px] text-[#888888]">
+                          Custom focus is shown on your organizer profile and public event badges.
+                        </p>
+                      )}
                     </div>
                   ) : (
                     <select
@@ -1950,12 +2006,16 @@ function OrganizerContent() {
                       value={profileData.address || ""}
                       onChange={(e) => setProfileData((prev) => ({ ...prev, address: e.target.value }))}
                       placeholder="e.g. D+A Campus, De La Salle-College of Saint Benilde, Taft Ave, Malate, Manila"
-                      className="w-full text-xs font-bold border border-[#e6e1d8] rounded-xl pl-9 pr-3 py-3 focus:outline-none focus:border-[#ff6b35] text-[#171717]"
+                      className={`w-full text-xs font-bold border rounded-xl pl-9 pr-3 py-3 focus:outline-none ${profileErrors.address ? "border-red-400 focus:border-red-500 bg-red-50/30" : "border-[#e6e1d8] focus:border-[#ff6b35]"} text-[#171717]`}
                     />
                   </div>
-                  <p className="text-[11px] text-[#888888] mt-1">
-                    Helps attendees locate your headquarters, campus venue, or base city.
-                  </p>
+                  {profileErrors.address ? (
+                    <p className="text-red-500 text-[10px] mt-1 font-bold">{profileErrors.address}</p>
+                  ) : (
+                    <p className="text-[11px] text-[#888888] mt-1">
+                      Helps attendees locate your headquarters, campus venue, or base city.
+                    </p>
+                  )}
                 </div>
 
                 <div className="md:col-span-2">
@@ -1967,11 +2027,15 @@ function OrganizerContent() {
                     value={profileData.caption || ""}
                     onChange={(e) => setProfileData((prev) => ({ ...prev, caption: e.target.value }))}
                     placeholder="Describe your organization, events, activities, and community..."
-                    className="w-full text-xs leading-relaxed border border-[#e6e1d8] rounded-xl p-3 focus:outline-none focus:border-[#ff6b35] text-[#171717] resize-none"
+                    className={`w-full text-xs leading-relaxed border rounded-xl p-3 focus:outline-none ${profileErrors.caption ? "border-red-400 focus:border-red-500 bg-red-50/30" : "border-[#e6e1d8] focus:border-[#ff6b35]"} text-[#171717] resize-none`}
                   />
-                  <p className="text-[11px] text-[#888888] mt-1">
-                    This caption is prominently displayed on your public profile header and organizer cards.
-                  </p>
+                  {profileErrors.caption ? (
+                    <p className="text-red-500 text-[10px] mt-1 font-bold">{profileErrors.caption}</p>
+                  ) : (
+                    <p className="text-[11px] text-[#888888] mt-1">
+                      This caption is prominently displayed on your public profile header and organizer cards.
+                    </p>
+                  )}
                 </div>
 
                 <div>
@@ -1983,8 +2047,9 @@ function OrganizerContent() {
                     value={profileData.email || ""}
                     onChange={(e) => setProfileData((prev) => ({ ...prev, email: e.target.value }))}
                     placeholder="contact@yourorg.ph"
-                    className="w-full text-xs font-bold border border-[#e6e1d8] rounded-xl p-3 focus:outline-none focus:border-[#ff6b35] text-[#171717]"
+                    className={`w-full text-xs font-bold border rounded-xl p-3 focus:outline-none ${profileErrors.email ? "border-red-400 focus:border-red-500 bg-red-50/30" : "border-[#e6e1d8] focus:border-[#ff6b35]"} text-[#171717]`}
                   />
+                  {profileErrors.email && <p className="text-red-500 text-[10px] mt-1 font-bold">{profileErrors.email}</p>}
                 </div>
 
                 <div>
@@ -1996,8 +2061,9 @@ function OrganizerContent() {
                     value={profileData.website || ""}
                     onChange={(e) => setProfileData((prev) => ({ ...prev, website: e.target.value }))}
                     placeholder="https://instagram.com/yourorg"
-                    className="w-full text-xs font-bold border border-[#e6e1d8] rounded-xl p-3 focus:outline-none focus:border-[#ff6b35] text-[#171717]"
+                    className={`w-full text-xs font-bold border rounded-xl p-3 focus:outline-none ${profileErrors.website ? "border-red-400 focus:border-red-500 bg-red-50/30" : "border-[#e6e1d8] focus:border-[#ff6b35]"} text-[#171717]`}
                   />
+                  {profileErrors.website && <p className="text-red-500 text-[10px] mt-1 font-bold">{profileErrors.website}</p>}
                 </div>
               </div>
 

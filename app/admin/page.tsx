@@ -170,6 +170,43 @@ function AdminContent() {
   const [tempThreshold, setTempThreshold] = useState<number>(200);
   const [tempSensitivity, setTempSensitivity] = useState<"Strict" | "Standard">("Strict");
 
+  const [auditTabSelected, setAuditTabSelected] = useState<"audit" | "activity">("audit");
+  const [activityLogs, setActivityLogs] = useState<any[]>([]);
+  const [activityTotal, setActivityTotal] = useState(0);
+  const [activityPage, setActivityPage] = useState(1);
+  const [activitySearch, setActivitySearch] = useState("");
+  const [activityAction, setActivityAction] = useState("");
+  const [activityRole, setActivityRole] = useState("");
+  const [activityLoading, setActivityLoading] = useState(false);
+
+  const fetchActivityLogs = async (page = 1) => {
+    setActivityLoading(true);
+    try {
+      const params = new URLSearchParams({ page: page.toString(), limit: '50' });
+      if (activitySearch) params.append('search', activitySearch);
+      if (activityAction) params.append('action', activityAction);
+      if (activityRole) params.append('role', activityRole);
+      
+      const response = await fetchWithSupabaseSession(`/api/activity-events?${params.toString()}`);
+      if (!response.ok) throw new Error('Failed');
+      const { data, count } = await response.json();
+      setActivityLogs(data || []);
+      setActivityTotal(count || 0);
+      setActivityPage(page);
+    } catch (e) {
+      console.error(e);
+    } finally {
+      setActivityLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (currentTab === "audit" && auditTabSelected === "activity") {
+      fetchActivityLogs(1);
+    }
+  }, [currentTab, auditTabSelected]);
+
+
   // Aggregate activity for a selectable calendar month, grouped by week.
   const monthlyActivity: MonthlyData[] = useMemo(() => {
     const [year, month] = analyticsMonth.split("-").map(Number);
@@ -2821,42 +2858,154 @@ function AdminContent() {
         <section className="space-y-5">
           <div className="flex flex-col sm:flex-row sm:items-end sm:justify-between gap-3">
             <div>
-              <h1 className="text-2xl sm:text-3xl font-black text-[#171717]">Admin Audit Log</h1>
-              <p className="mt-1 text-sm text-[#666666]">Recent visitor, user, organizer, and admin activity recorded on the server.</p>
+              <h1 className="text-2xl sm:text-3xl font-black text-[#171717]">Security & Activity Logs</h1>
+              <p className="mt-1 text-sm text-[#666666]">Monitor system actions, security events, and user activity.</p>
             </div>
-            <button type="button" onClick={() => fetchWithSupabaseSession('/api/admin/audit-logs?limit=100').then(async (response) => {
-              const payload = await response.json();
-              if (!response.ok) { setAuditLogsError(payload.error || 'Unable to load audit logs.'); return; }
-              setAuditLogs(payload.logs || []); setAuditLogsError(null);
-            }).catch(() => setAuditLogsError('Unable to connect to the audit log service.'))}
-              className="rounded-xl border border-[#e6e1d8] bg-white px-4 py-2 text-xs font-bold text-[#171717] hover:border-[#ff6b35]">
-              Refresh logs
+          </div>
+
+          <div className="flex border-b border-[#e6e1d8] mb-4">
+            <button
+              onClick={() => setAuditTabSelected("audit")}
+              className={`px-4 py-2 font-bold text-sm border-b-2 ${
+                auditTabSelected === "audit" ? "border-[#ff6b35] text-[#ff6b35]" : "border-transparent text-[#666] hover:text-[#171717]"
+              }`}
+            >
+              Security Audit Log
+            </button>
+            <button
+              onClick={() => setAuditTabSelected("activity")}
+              className={`px-4 py-2 font-bold text-sm border-b-2 ${
+                auditTabSelected === "activity" ? "border-[#ff6b35] text-[#ff6b35]" : "border-transparent text-[#666] hover:text-[#171717]"
+              }`}
+            >
+              Activity Logs (High Volume)
             </button>
           </div>
-          {auditLogsError && <div className="rounded-xl border border-amber-300 bg-amber-50 p-4 text-sm text-amber-900">{auditLogsError}</div>}
-          <div className="overflow-hidden rounded-2xl border border-[#e6e1d8] bg-white shadow-sm">
-            {auditLogs.length === 0 ? (
-              <div className="p-10 text-center text-sm text-[#777777]">{auditLogsError ? 'Audit entries are unavailable until admin access is configured.' : 'No admin actions have been recorded yet.'}</div>
-            ) : (
-              <div className="overflow-x-auto">
-                <table className="w-full min-w-[760px] text-left">
-                  <thead className="bg-[#faf8f3] text-[10px] uppercase tracking-wider text-[#777777]"><tr>
-                    <th className="px-5 py-3">When</th><th className="px-5 py-3">Actor</th><th className="px-5 py-3">Role</th><th className="px-5 py-3">Action</th><th className="px-5 py-3">Target</th><th className="px-5 py-3">Details</th>
-                  </tr></thead>
-                  <tbody className="divide-y divide-[#f0ece5]">
-                    {auditLogs.map((entry) => <tr key={entry.log_id}>
-                      <td className="whitespace-nowrap px-5 py-4 text-xs text-[#666666]">{new Date(entry.created_at).toLocaleString()}</td>
-                      <td className="px-5 py-4 text-xs font-semibold text-[#171717]">{entry.actor_email}</td>
-                      <td className="px-5 py-4 text-xs capitalize text-[#555555]">{String(entry.details?.actor_role || entry.details?.role || (entry.actor_user_id ? 'account' : 'visitor'))}</td>
-                      <td className="px-5 py-4"><span className="rounded-full bg-[#fff2eb] px-2.5 py-1 text-[10px] font-black text-[#d65325]">{entry.action}</span></td>
-                      <td className="px-5 py-4 text-xs text-[#555555]">{entry.target_type}{entry.target_id ? ` · ${entry.target_id}` : ''}</td>
-                      <td className="px-5 py-4 text-xs text-[#555555]">{entry.summary}</td>
-                    </tr>)}
-                  </tbody>
-                </table>
+
+          {auditTabSelected === "audit" && (
+            <>
+              <div className="flex justify-end mb-2">
+                <button type="button" onClick={() => fetchWithSupabaseSession('/api/admin/audit-logs?limit=100').then(async (response) => {
+                  const payload = await response.json();
+                  if (!response.ok) { setAuditLogsError(payload.error || 'Unable to load audit logs.'); return; }
+                  setAuditLogs(payload.logs || []); setAuditLogsError(null);
+                }).catch(() => setAuditLogsError('Unable to connect to the audit log service.'))}
+                  className="rounded-xl border border-[#e6e1d8] bg-white px-4 py-2 text-xs font-bold text-[#171717] hover:border-[#ff6b35]">
+                  Refresh logs
+                </button>
               </div>
-            )}
-          </div>
+              {auditLogsError && <div className="rounded-xl border border-amber-300 bg-amber-50 p-4 text-sm text-amber-900">{auditLogsError}</div>}
+              <div className="overflow-hidden rounded-2xl border border-[#e6e1d8] bg-white shadow-sm">
+                {auditLogs.length === 0 ? (
+                  <div className="p-10 text-center text-sm text-[#777777]">{auditLogsError ? 'Audit entries are unavailable until admin access is configured.' : 'No admin actions have been recorded yet.'}</div>
+                ) : (
+                  <div className="overflow-x-auto">
+                    <table className="w-full min-w-[760px] text-left">
+                      <thead className="bg-[#faf8f3] text-[10px] uppercase tracking-wider text-[#777777]"><tr>
+                        <th className="px-5 py-3">When</th><th className="px-5 py-3">Actor</th><th className="px-5 py-3">Role</th><th className="px-5 py-3">Action</th><th className="px-5 py-3">Target</th><th className="px-5 py-3">Details</th>
+                      </tr></thead>
+                      <tbody className="divide-y divide-[#f0ece5]">
+                        {auditLogs.map((entry) => <tr key={entry.log_id}>
+                          <td className="whitespace-nowrap px-5 py-4 text-xs text-[#666666]">{new Date(entry.created_at).toLocaleString()}</td>
+                          <td className="px-5 py-4 text-xs font-semibold text-[#171717]">{entry.actor_email}</td>
+                          <td className="px-5 py-4 text-xs capitalize text-[#555555]">{String(entry.details?.actor_role || entry.details?.role || (entry.actor_user_id ? 'account' : 'visitor'))}</td>
+                          <td className="px-5 py-4"><span className="rounded-full bg-[#fff2eb] px-2.5 py-1 text-[10px] font-black text-[#d65325]">{entry.action}</span></td>
+                          <td className="px-5 py-4 text-xs text-[#555555]">{entry.target_type}{entry.target_id ? ` · ${entry.target_id}` : ''}</td>
+                          <td className="px-5 py-4 text-xs text-[#555555]">{entry.summary}</td>
+                        </tr>)}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
+            </>
+          )}
+
+          {auditTabSelected === "activity" && (
+            <div className="space-y-4">
+              <div className="flex flex-col sm:flex-row gap-3 bg-white p-4 rounded-xl border border-[#e6e1d8]">
+                <input
+                  type="text"
+                  placeholder="Search target/path..."
+                  value={activitySearch}
+                  onChange={(e) => setActivitySearch(e.target.value)}
+                  className="flex-1 px-3 py-2 text-sm border border-[#e6e1d8] rounded-lg focus:outline-none focus:border-[#ff6b35]"
+                />
+                <select
+                  value={activityAction}
+                  onChange={(e) => setActivityAction(e.target.value)}
+                  className="px-3 py-2 text-sm border border-[#e6e1d8] rounded-lg focus:outline-none focus:border-[#ff6b35]"
+                >
+                  <option value="">All Actions</option>
+                  <option value="event_view">Event View</option>
+                  <option value="nav_click">Nav Click</option>
+                </select>
+                <select
+                  value={activityRole}
+                  onChange={(e) => setActivityRole(e.target.value)}
+                  className="px-3 py-2 text-sm border border-[#e6e1d8] rounded-lg focus:outline-none focus:border-[#ff6b35]"
+                >
+                  <option value="">All Roles</option>
+                  <option value="admin">Admin</option>
+                  <option value="organizer">Organizer</option>
+                  <option value="attendee">Attendee</option>
+                  <option value="user">User</option>
+                  <option value="visitor">Visitor</option>
+                </select>
+                <button
+                  onClick={() => fetchActivityLogs(1)}
+                  className="px-4 py-2 bg-[#171717] text-white text-sm font-bold rounded-lg hover:bg-[#333] transition"
+                >
+                  Filter
+                </button>
+              </div>
+
+              <div className="overflow-hidden rounded-2xl border border-[#e6e1d8] bg-white shadow-sm">
+                <div className="overflow-x-auto relative">
+                  {activityLoading && <div className="absolute inset-0 bg-white/50 flex items-center justify-center z-10"><RefreshCw className="w-6 h-6 animate-spin text-[#ff6b35]" /></div>}
+                  <table className="w-full min-w-[760px] text-left">
+                    <thead className="bg-[#faf8f3] text-[10px] uppercase tracking-wider text-[#777777]"><tr>
+                      <th className="px-5 py-3">When</th><th className="px-5 py-3">Actor</th><th className="px-5 py-3">Role</th><th className="px-5 py-3">Action</th><th className="px-5 py-3">Path</th><th className="px-5 py-3">Target</th>
+                    </tr></thead>
+                    <tbody className="divide-y divide-[#f0ece5]">
+                      {activityLogs.length === 0 ? (
+                        <tr><td colSpan={6} className="px-5 py-10 text-center text-sm text-gray-500">No activity logs found.</td></tr>
+                      ) : (
+                        activityLogs.map((entry) => <tr key={entry.id}>
+                          <td className="whitespace-nowrap px-5 py-4 text-xs text-[#666666]">{new Date(entry.created_at).toLocaleString()}</td>
+                          <td className="px-5 py-4 text-xs font-semibold text-[#171717]" title={entry.actor_user_id || entry.anon_id}>
+                            {entry.users?.email || entry.anon_id?.substring(0, 16) + '...' || 'Unknown'}
+                          </td>
+                          <td className="px-5 py-4 text-xs capitalize text-[#555555]">{entry.actor_role}</td>
+                          <td className="px-5 py-4"><span className="rounded-full bg-blue-50 px-2.5 py-1 text-[10px] font-black text-blue-700">{entry.action}</span></td>
+                          <td className="px-5 py-4 text-xs text-[#555555] max-w-[200px] truncate" title={entry.path}>{entry.path || '-'}</td>
+                          <td className="px-5 py-4 text-xs text-[#555555] max-w-[150px] truncate" title={entry.target_id}>{entry.target_id || '-'}</td>
+                        </tr>)
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+              
+              {activityTotal > 0 && (
+                <div className="flex justify-between items-center text-sm text-gray-600">
+                  <span>Showing {(activityPage - 1) * 50 + 1} to {Math.min(activityPage * 50, activityTotal)} of {activityTotal}</span>
+                  <div className="flex gap-2">
+                    <button 
+                      onClick={() => fetchActivityLogs(activityPage - 1)} 
+                      disabled={activityPage <= 1}
+                      className="px-3 py-1 border border-gray-300 rounded disabled:opacity-50"
+                    >Prev</button>
+                    <button 
+                      onClick={() => fetchActivityLogs(activityPage + 1)} 
+                      disabled={activityPage * 50 >= activityTotal}
+                      className="px-3 py-1 border border-gray-300 rounded disabled:opacity-50"
+                    >Next</button>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
         </section>
       )}
 

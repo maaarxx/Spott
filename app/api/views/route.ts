@@ -1,4 +1,4 @@
-import { NextResponse } from 'next/server';
+import { NextResponse, after } from 'next/server';
 import { createAdminClient, getAuthenticatedRole } from '@/lib/supabase-server';
 import { writeAuditEntry } from '@/lib/audit-log-server';
 import { enforceRateLimit, requestIpIdentifier } from '@/lib/rate-limit';
@@ -102,14 +102,21 @@ export async function POST(request: Request) {
     });
     if (insertError) return NextResponse.json({ error: 'Unable to record view.' }, { status: 500 });
 
-    await writeAuditEntry(account
-      ? { userId: account.userId, email: account.email, role: account.role }
-      : { userId: null, email: 'Anonymous visitor', role: 'visitor' }, {
-      action: 'event.viewed',
-      targetType: 'event',
-      targetId: listing_id,
-      summary: `Viewed event “${eventData.title}”.`,
-      details: { visitor_id: effectiveVisitorId, viewed_at: nowIso },
+    after(async () => {
+      try {
+        await supabase.from('activity_events').insert({
+          actor_user_id: account?.userId || null,
+          actor_role: account?.role || 'visitor',
+          anon_id: account?.userId ? null : effectiveVisitorId,
+          action: 'event_view',
+          target_type: 'event',
+          target_id: listing_id,
+          path: `/events/${listing_id}`.substring(0, 200),
+          metadata: { visitor_id: effectiveVisitorId, title: eventData.title }
+        });
+      } catch (err) {
+        console.error('Failed to log event_view activity', err);
+      }
     });
 
     return NextResponse.json(

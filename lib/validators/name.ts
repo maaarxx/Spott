@@ -58,6 +58,15 @@ export function validateName(value: string, { label }: { label: string }): strin
     return `${label} appears to be gibberish.`;
   }
   
+  const onlyAlpha = lower.replace(/[\s'.\-]/g, '');
+  const uniqueChars = new Set(onlyAlpha).size;
+  if (onlyAlpha.length >= 8 && uniqueChars <= 3) {
+    return `${label} appears to be gibberish (too few unique characters).`;
+  }
+  if (onlyAlpha.length >= 12 && uniqueChars <= 4) {
+    return `${label} appears to be gibberish (too few unique characters).`;
+  }
+  
   return null;
 }
 

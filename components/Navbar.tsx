@@ -10,6 +10,7 @@ import { fetchWithSupabaseSession } from "@/lib/audit-log-client";
 import { getUserProfile, loadUserProfileFromDatabase, getInitials } from "@/lib/user-profile-store";
 import type { User as SupaUser } from "@supabase/supabase-js";
 import { useHydrated } from "@/lib/use-hydrated";
+import { trackActivity } from "@/lib/activity-client";
 
 const navLinks = [
   { href: "/", label: "Home" },
@@ -162,6 +163,7 @@ export default function Navbar() {
             <Link
               key={link.href}
               href={link.href}
+              onClick={() => trackActivity({ action: "nav_click", path: link.href })}
               className={`px-4 py-1.5 text-sm font-bold rounded transition-colors no-underline flex items-center gap-1.5 relative ${
                 isActive
                   ? "bg-dark text-white"
@@ -270,7 +272,10 @@ export default function Navbar() {
                 <Link
                   key={link.href}
                   href={link.href}
-                  onClick={() => setMobileOpen(false)}
+                  onClick={() => {
+                    setMobileOpen(false);
+                    trackActivity({ action: "nav_click", path: link.href });
+                  }}
                   className={`px-4 py-2.5 text-sm font-bold rounded transition-colors no-underline flex items-center justify-between ${
                     isActive
                       ? "bg-dark text-white"

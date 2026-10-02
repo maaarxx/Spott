@@ -81,7 +81,7 @@ export default function LoginPage() {
     { label: "Uppercase letter", met: /[A-Z]/.test(signupPassword) },
     { label: "Lowercase letter", met: /[a-z]/.test(signupPassword) },
     { label: "Number", met: /[0-9]/.test(signupPassword) },
-    { label: "Special character", met: /[^A-Za-z0-9]/.test(signupPassword) },
+    { label: "Special character", met: /[^A-Za-z0-9\s]/.test(signupPassword) },
   ];
   const strengthScore = passwordChecks.filter((check) => check.met).length;
   const hasCommonWeakPattern = /^(password|qwerty|letmein|welcome|admin|123456|12345678|abcdef)|(.)\2{3,}/i.test(signupPassword);
@@ -534,7 +534,7 @@ export default function LoginPage() {
                     signupTouched.password && (fieldErrors.password || serverFieldErrors.password || !signupPassword) ? "border-rose-400 bg-rose-50/30" : "border-[#e6e1d8] focus:border-[#ff6b35]"
                   }`}
                   required
-                  placeholder="8–20 characters"
+                  placeholder="Enter your password"
                   autoComplete="new-password"
                 />
                 {signupTouched.password && (serverFieldErrors.password || fieldErrors.password || !signupPassword) && <p role="alert" className="mt-1 text-xs text-rose-700">{serverFieldErrors.password || fieldErrors.password || "Password is required."}</p>}

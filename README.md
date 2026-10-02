@@ -63,6 +63,8 @@ Sign-in and sign-up themselves call Supabase Auth directly from the browser, so 
 
 Some demo UI preferences (like themes, dismissed notifications, or draft events) are stored in browser `localStorage`. Real app data, including authenticated sessions, events, registrations, and user profiles, is stored exclusively in Supabase. Server API operations that access protected Supabase data require Supabase credentials and an authenticated role.
 
+**Privacy & Data Retention:** High-volume analytics data (like page views and navigation clicks) are stored in the `activity_events` table for admin auditing and traffic analysis. To comply with data minimalism, IP addresses and User-Agent strings are NOT stored. A cleanup script (`docs/cleanup_activity_events.sql`) is provided to permanently delete activity data older than 90 days.
+
 ## Local Development
 
 Requirements: Node.js and npm.
