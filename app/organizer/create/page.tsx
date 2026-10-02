@@ -54,7 +54,7 @@ const eventSchema = z.object({
   category: z.string().min(1, "Please select a category"),
   hasCapacityLimit: z.boolean(),
   capacity: z.coerce.number().min(1, "Capacity must be at least 1").optional().nullable(),
-  requireApproval: z.boolean(),
+  requireApproval: z.boolean().optional(),
 });
 
 type EventFormValues = z.infer<typeof eventSchema>;
@@ -233,7 +233,8 @@ export default function CreateEventPage() {
     const orgName = user?.organization || user?.name || "Metro Creative Group";
 
     const parsedCapacity = data.hasCapacityLimit && data.capacity ? Number(data.capacity) : null;
-    const requireApproval = !data.isFree ? true : Boolean(data.requireApproval);
+    // Legacy: always false for new events
+    const requireApproval = false;
 
     const finalCategory = isCustomCategory
       ? customCategoryInput.trim()
@@ -768,31 +769,7 @@ export default function CreateEventPage() {
               )}
             </div>
 
-            {/* Require Approval Toggle - Only show if Free */}
-            {isFreeWatched && (
-              <div className="pt-3 border-t border-[#e6e1d8]">
-                <label className="flex items-start gap-2.5 cursor-pointer select-none">
-                  <input
-                    type="checkbox"
-                    {...register("requireApproval")}
-                    className="w-4 h-4 mt-0.5 rounded text-[#ff6b35] focus:ring-[#ff6b35] border-[#e6e1d8] accent-[#ff6b35]"
-                  />
-                  <div>
-                    <div className="flex items-center gap-2 flex-wrap">
-                      <span className="text-xs sm:text-sm font-bold text-[#171717]">
-                        Require Organizer Approval for RSVPs
-                      </span>
-                      <span className="text-[10px] font-black uppercase tracking-wider px-2 py-0.5 rounded-full bg-amber-100 text-amber-800 border border-amber-200">
-                        Screening / Pending
-                      </span>
-                    </div>
-                    <span className="text-xs text-[#666] block mt-0.5">
-                      When enabled, new attendees will enter a <strong>&quot;Pending&quot;</strong> queue in your RSVP Management dashboard until you click Approve.
-                    </span>
-                  </div>
-                </label>
-              </div>
-            )}
+            {/* Legacy Require Approval toggle removed */}
           </div>
 
           {/* Missing fields notice */}

@@ -11,7 +11,7 @@ type ActivityEvent = {
 const QUEUE_MAX_SIZE = 50;
 const FLUSH_INTERVAL_MS = 5000;
 
-let activityQueue: ActivityEvent[] = [];
+const activityQueue: ActivityEvent[] = [];
 let flushTimeout: ReturnType<typeof setTimeout> | null = null;
 let initialized = false;
 

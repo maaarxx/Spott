@@ -27,6 +27,8 @@ import {
   UserProfile,
   getInitials,
 } from "@/lib/user-profile-store";
+import ProfileAddressFields, { type AddressValue } from "@/components/ProfileAddressFields";
+import { isGibberishText, normalizeProfileText, validatePhonePH, validatePersonOrOrgText, validateUsername } from "@/lib/validators/name";
 
 export default function ProfilePage() {
   const router = useRouter();
@@ -44,6 +46,7 @@ export default function ProfilePage() {
   const [username, setUsername] = useState(profile?.username || "");
   const [phone, setPhone] = useState(profile?.phone || "");
   const [address, setAddress] = useState(profile?.address || "");
+  const [addressValue, setAddressValue] = useState<AddressValue>({ country: "PH", provinceOrRegionCode: "", province: "", cityCode: "", city: "", region: "", street: "" });
   const [bio, setBio] = useState(profile?.bio || "");
   const [avatarPreview, setAvatarPreview] = useState<string>(profile?.avatarUrl || "");
   const [avatarFile, setAvatarFile] = useState<File | null>(null);
@@ -51,6 +54,9 @@ export default function ProfilePage() {
 
   const [phoneError, setPhoneError] = useState("");
   const [addressError, setAddressError] = useState("");
+  const [usernameError, setUsernameError] = useState("");
+  const [bioError, setBioError] = useState("");
+  const [availability, setAvailability] = useState<"checking" | "available" | "taken" | "">("");
 
   // UI state
   const [saving, setSaving] = useState(false);
@@ -70,6 +76,17 @@ export default function ProfilePage() {
       setUsername(loaded.username || "");
       setPhone(loaded.phone || "");
       setAddress(loaded.address || "");
+      if (loaded.address) void import("@/lib/psgc").then(({ findPHLocation, getPSGCData }) => {
+        const parsed = findPHLocation(loaded.address || "");
+        if (!parsed) { setAddressValue((current) => ({ ...current, street: loaded.address || "" })); setAddressError("Please re-select your country, province/region, and city to update this legacy address."); return; }
+        const data = getPSGCData();
+        const city = data.cities.find((item) => item.code === parsed.cityCode);
+        const province = data.provinces.find((item) => item.code === parsed.provinceOrRegionCode);
+        const region = data.regions.find((item) => item.code === parsed.provinceOrRegionCode);
+        const parts = loaded.address!.split(",").map((part) => part.trim());
+        setAddressValue({ country: "PH", provinceOrRegionCode: parsed.provinceOrRegionCode, province: province?.name || (region?.code === "130000000" ? "Metro Manila (NCR)" : region?.name || ""), cityCode: parsed.cityCode, city: city?.name || "", region: "", street: parts.slice(0, Math.max(0, parts.length - 3)).join(", ") });
+        void region;
+      });
       setBio(loaded.bio || "");
       setAvatarPreview(loaded.avatarUrl || "");
     }).catch((error) => {
@@ -77,6 +94,22 @@ export default function ProfilePage() {
     });
     return () => { active = false; };
   }, [router, user]);
+
+  useEffect(() => {
+    const problem = username ? validateUsername(username) : null;
+    if (problem || !username || username.toLowerCase() === (profile?.username || "").toLowerCase()) return;
+    let cancelled = false;
+    const timeout = window.setTimeout(() => {
+      if (!cancelled) setAvailability("checking");
+      void fetchWithSupabaseSession(`/api/username-available?u=${encodeURIComponent(username)}`).then(async (response) => {
+        const result = await response.json();
+        if (cancelled) return;
+        setAvailability(result.available ? "available" : "taken");
+        if (!result.available) setUsernameError("That username is already taken.");
+      }).catch(() => setAvailability(""));
+    }, 400);
+    return () => { cancelled = true; window.clearTimeout(timeout); };
+  }, [username, profile?.username]);
 
   if (!mounted) return null;
 
@@ -116,13 +149,25 @@ export default function ProfilePage() {
       const form = new FormData();
       form.set("username", username.trim());
       form.set("phone", phone.trim());
-      form.set("address", address.trim());
-      form.set("bio", bio.trim());
+      const composedAddress = addressValue.country === "PH"
+        ? [addressValue.street.trim(), addressValue.city, addressValue.province, "Philippines"].filter(Boolean).join(", ")
+        : [addressValue.street.trim(), addressValue.city.trim(), addressValue.region.trim(), addressValue.country].filter(Boolean).join(", ");
+      form.set("address", composedAddress || address.trim());
+      form.set("country", addressValue.country);
+      form.set("province_or_region_code", addressValue.provinceOrRegionCode);
+      form.set("city_code", addressValue.cityCode);
+      form.set("city", addressValue.city);
+      form.set("region", addressValue.region);
+      form.set("street", addressValue.street);
+      form.set("bio", normalizeProfileText(bio));
       form.set("avatar_action", avatarRemoved ? "remove" : "keep");
       if (avatarFile) form.set("avatar", avatarFile);
       const response = await fetchWithSupabaseSession("/api/profile", { method: "PATCH", body: form });
       const payload = await response.json().catch(() => ({}));
-      if (!response.ok || !payload.profile) throw new Error(payload.error || "Failed to save. Please try again.");
+      if (!response.ok || !payload.profile) {
+        if (payload.fieldErrors) { setUsernameError(payload.fieldErrors.username || ""); setPhoneError(payload.fieldErrors.phone || ""); setAddressError(payload.fieldErrors.address || ""); setBioError(payload.fieldErrors.bio || ""); }
+        throw new Error(payload.error || "Failed to save. Please try again.");
+      }
       const updated = payload.profile as UserProfile;
       import('@/lib/fetch-dedupe').then(m => m.invalidateCache('/api/profile'));
       saveUserProfile(updated);
@@ -141,54 +186,25 @@ export default function ProfilePage() {
     }
   };
 
-  const isGibberish = (str: string) => {
-    const alpha = str.replace(/[\s'.\-&]/g, '');
-    const unique = new Set(alpha.toLowerCase()).size;
-    if (alpha.length >= 8 && unique <= 3) return true;
-    if (alpha.length >= 12 && unique <= 4) return true;
-    if (/(.)\1{4,}/.test(str)) return true;
-    if (/^(.{2,4})\1{3,}$/i.test(alpha)) return true;
-    return false;
-  };
-
   const validateFields = () => {
     let isValid = true;
-    if (phone && !/^09\d{9}$/.test(phone)) {
-      setPhoneError("Phone number must start with 09 and be exactly 11 digits.");
+    const phoneProblem = phone ? validatePhonePH(phone) : null;
+    if (phoneProblem) {
+      setPhoneError(phoneProblem);
       isValid = false;
     } else {
       setPhoneError("");
     }
     
-    if (address) {
-      if (address.trim().length < 5 || !/[a-zA-Z]/.test(address)) {
-        setAddressError("Please enter a real address (e.g. Makati City, Philippines).");
-        isValid = false;
-      } else if (isGibberish(address)) {
-        setAddressError("Please enter a valid, real address (gibberish/spam detected).");
-        isValid = false;
-      } else if (!address.includes(',')) {
-        setAddressError("Please enter your address in 'City, Province/Country' format.");
-        isValid = false;
-      } else {
-        setAddressError("");
-      }
-    } else {
-      setAddressError("");
-    }
+    const addressStarted = Boolean(addressValue.street || addressValue.cityCode || addressValue.city || addressValue.region || addressValue.provinceOrRegionCode);
+    let addressProblem = !addressStarted ? "" : addressValue.country === "PH" ? (addressValue.cityCode && addressValue.provinceOrRegionCode ? "" : "Please select a valid city in the selected province or region.") : (addressValue.city && addressValue.region ? (isGibberishText(`${addressValue.city} ${addressValue.region}`) ? "Enter a real city and region/state." : "") : "Please enter a city and region/state.");
+    if (!addressProblem && addressValue.street) addressProblem = validatePersonOrOrgText(addressValue.street, { label: "Street / Barangay", allowDigits: true, maxLen: 150 }) || "";
+    setAddressError(addressProblem); if (addressProblem) isValid = false;
     
     if (username) {
-      if (!/^[a-zA-Z0-9_]{4,20}$/.test(username)) {
-        setSaveMsg({ type: "error", text: "Username must be 4–20 characters, containing only letters, numbers, and underscores." });
-        isValid = false;
-      } else if (!/[a-zA-Z]/.test(username)) {
-        setSaveMsg({ type: "error", text: "Username must contain at least one letter." });
-        isValid = false;
-      } else if (isGibberish(username)) {
-        setSaveMsg({ type: "error", text: "Username appears to be gibberish or spam. Please choose a valid username." });
-        isValid = false;
-      }
+      const problem = validateUsername(username); setUsernameError(problem || ""); if (problem || availability === "taken") isValid = false;
     }
+    const bioProblem = bio ? validatePersonOrOrgText(bio, { label: "Bio", allowDigits: true, maxLen: 300 }) : null; setBioError(bioProblem || ""); if (bioProblem) isValid = false;
     
     return isValid;
   };
@@ -207,6 +223,10 @@ export default function ProfilePage() {
       : user?.role === "organizer"
       ? "bg-[#fff0e8] text-[#ff6b35]"
       : "bg-gray-100 text-gray-700";
+
+  const visibleUsernameError = usernameError || (username ? (validateUsername(username) || "") : "");
+  const visiblePhoneError = phoneError || (phone ? (validatePhonePH(phone) || "") : "");
+  const visibleBioError = bioError || (bio ? (validatePersonOrOrgText(bio, { label: "Bio", allowDigits: true, maxLen: 300 }) || "") : "");
 
   return (
     <div className="min-h-screen bg-[#faf8f3]">
@@ -370,12 +390,16 @@ export default function ProfilePage() {
                 <input
                   type="text"
                   value={username}
-                  onChange={(e) => setUsername(e.target.value.toLowerCase().replace(/[^a-z0-9_]/g, ''))}
+                  onChange={(e) => { const value = e.target.value; setUsername(value); setUsernameError(value ? (validateUsername(value) || "") : ""); setAvailability(""); }}
+                  onBlur={() => setUsernameError(username ? (validateUsername(username) || "") : "")}
                   placeholder="your_username"
                   maxLength={20}
-                  className="w-full pl-8 pr-4 py-2.5 text-sm border border-[#e6e1d8] rounded-xl focus:outline-none focus:border-[#ff6b35] bg-white text-[#171717] font-bold"
+                  className={`w-full pl-8 pr-4 py-2.5 text-sm border rounded-xl focus:outline-none focus:border-[#ff6b35] bg-white text-[#171717] font-bold ${visibleUsernameError ? "border-rose-400 bg-rose-50/30" : "border-[#e6e1d8]"}`}
                 />
               </div>
+              {visibleUsernameError && <p className="text-rose-600 text-[10px] mt-1">{visibleUsernameError}</p>}
+              {!usernameError && availability === "available" && <p className="text-emerald-600 text-[10px] mt-1">Available</p>}
+              {!usernameError && availability === "checking" && <p className="text-[#888] text-[10px] mt-1">Checking availability…</p>}
               <p className="text-[10px] text-[#888] mt-1.5">
                 Username can only contain letters, numbers, and underscores. You can only change your username once every 30 days.
               </p>
@@ -391,25 +415,18 @@ export default function ProfilePage() {
                 <input
                   type="tel"
                   value={phone}
+                  onBlur={() => setPhoneError(phone ? (validatePhonePH(phone) || "") : "")}
                   onChange={(e) => {
-                    let val = e.target.value.replace(/[^0-9]/g, '');
+                    const val = e.target.value.replace(/[^0-9+]/g, '');
                     setPhone(val);
-                    if (val.length > 0 && !val.startsWith('0')) {
-                      setPhoneError("Phone number must start with 09");
-                    } else if (val.length > 1 && !val.startsWith('09')) {
-                      setPhoneError("Phone number must start with 09");
-                    } else if (val.length === 11 && !/^09\d{9}$/.test(val)) {
-                      setPhoneError("Phone number must be exactly 11 digits.");
-                    } else {
-                      setPhoneError('');
-                    }
+                    setPhoneError(val && val.length >= 11 ? (validatePhonePH(val) || "") : "");
                   }}
                   placeholder="09123456789"
-                  maxLength={11}
-                  className={`w-full pl-10 pr-4 py-2.5 text-sm border rounded-xl focus:outline-none focus:border-[#ff6b35] bg-white text-[#171717] font-bold ${phoneError ? 'border-rose-400 bg-rose-50/30' : 'border-[#e6e1d8]'}`}
+                  maxLength={13}
+                  className={`w-full pl-10 pr-4 py-2.5 text-sm border rounded-xl focus:outline-none focus:border-[#ff6b35] bg-white text-[#171717] font-bold ${visiblePhoneError ? 'border-rose-400 bg-rose-50/30' : 'border-[#e6e1d8]'}`}
                 />
               </div>
-              {phoneError && <p className="text-rose-600 text-[10px] mt-1">{phoneError}</p>}
+              {visiblePhoneError && <p className="text-rose-600 text-[10px] mt-1">{visiblePhoneError}</p>}
             </div>
 
             {/* Address */}
@@ -417,18 +434,11 @@ export default function ProfilePage() {
               <label className="block text-xs font-black text-[#555] uppercase tracking-wider mb-1.5">
                 Address
               </label>
-              <div className="relative">
-                <MapPin className="w-4 h-4 text-[#aaa] absolute left-3.5 top-3.5" />
-                <textarea
-                  value={address}
-                  onChange={(e) => { setAddress(e.target.value); setAddressError(''); }}
-                  placeholder="City, Province, Philippines"
-                  rows={2}
-                  maxLength={100}
-                  className={`w-full pl-10 pr-4 py-2.5 text-sm border rounded-xl focus:outline-none focus:border-[#ff6b35] bg-white text-[#171717] font-bold resize-none ${addressError ? 'border-rose-400 bg-rose-50/30' : 'border-[#e6e1d8]'}`}
-                />
-              </div>
-              {addressError && <p className="text-rose-600 text-[10px] mt-1">{addressError}</p>}
+              <ProfileAddressFields value={addressValue} onChange={(value) => { setAddressValue(value); setAddressError(""); }} error={addressError} onBlur={() => {
+                const started = Boolean(addressValue.street || addressValue.cityCode || addressValue.city || addressValue.region || addressValue.provinceOrRegionCode);
+                const problem = !started ? "" : addressValue.country === "PH" ? (addressValue.cityCode && addressValue.provinceOrRegionCode ? "" : "Please select a valid city in the selected province or region.") : !addressValue.city || !addressValue.region ? "Please enter a city and region/state." : isGibberishText(`${addressValue.city} ${addressValue.region}`) ? "Enter a real city and region/state." : "";
+                setAddressError(problem || (addressValue.street ? (validatePersonOrOrgText(addressValue.street, { label: "Street / Barangay", allowDigits: true, maxLen: 150 }) || "") : ""));
+              }} />
             </div>
 
             {/* Bio */}
@@ -439,11 +449,13 @@ export default function ProfilePage() {
               <textarea
                 value={bio}
                 onChange={(e) => setBio(e.target.value)}
+                onBlur={() => setBioError(bio ? (validatePersonOrOrgText(bio, { label: "Bio", allowDigits: true, maxLen: 300 }) || "") : "")}
                 placeholder="Tell us a bit about yourself..."
                 rows={3}
                 maxLength={300}
-                className="w-full px-4 py-2.5 text-sm border border-[#e6e1d8] rounded-xl focus:outline-none focus:border-[#ff6b35] bg-white text-[#171717] font-medium resize-none"
+                className={`w-full px-4 py-2.5 text-sm border rounded-xl focus:outline-none focus:border-[#ff6b35] bg-white text-[#171717] font-medium resize-none ${visibleBioError ? 'border-rose-400 bg-rose-50/30' : 'border-[#e6e1d8]'}`}
               />
+              {visibleBioError && <p className="text-rose-600 text-[10px] mt-1">{visibleBioError}</p>}
               <p className="text-right text-[11px] text-[#aaa] mt-1">{bio.length}/300</p>
             </div>
           </div>
@@ -451,7 +463,7 @@ export default function ProfilePage() {
           {/* Save Button */}
           <button
             type="submit"
-            disabled={saving}
+            disabled={saving || Boolean(visibleUsernameError || visiblePhoneError || visibleBioError || addressError || availability === "taken")}
             className="w-full py-3.5 bg-[#ff6b35] hover:bg-[#e0531f] disabled:opacity-60 text-white rounded-2xl text-sm font-black transition-colors shadow-sm cursor-pointer flex items-center justify-center gap-2"
           >
             <Save className="w-4 h-4" />

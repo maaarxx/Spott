@@ -3,6 +3,7 @@ import { resolveMx } from 'node:dns/promises';
 import { createAdminClient } from '@/lib/supabase-server';
 import { enforceRateLimit, requestIpIdentifier } from '@/lib/rate-limit';
 import { validateName, validateMI, validateOrganizerName } from '@/lib/validators/name';
+import { validateUsername } from '@/lib/validators/name';
 
 const disposable = new Set(['mailinator.com','tempmail.com','10minutemail.com','guerrillamail.com','yopmail.com','throwawaymail.com','trashmail.com','fakeinbox.com']);
 export async function POST(request: Request) {
@@ -77,7 +78,8 @@ export async function POST(request: Request) {
     if (nameParts.some((part) => passLower.includes(part))) return NextResponse.json({ error: 'Password cannot contain any part of your first or last name.' }, { status: 400 });
     if (normalizedUsername && passLower.includes(normalizedUsername)) return NextResponse.json({ error: 'Password cannot contain your username.' }, { status: 400 });
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalizedEmail) || normalizedEmail.length > 150) return NextResponse.json({ error: 'Enter a valid email address (max 150 characters).' }, { status: 400 });
-    if (!/^[a-z0-9_]{4,20}$/.test(normalizedUsername)) return NextResponse.json({ error: 'Username must be 4–20 letters, numbers, or underscores.' }, { status: 400 });
+    const usernameError = validateUsername(normalizedUsername);
+    if (usernameError) return NextResponse.json({ error: usernameError }, { status: 400 });
     const domain = normalizedEmail.split('@')[1];
     if (disposable.has(domain)) return NextResponse.json({ error: 'Please use a non-disposable email address.' }, { status: 400 });
     try { if (!(await resolveMx(domain)).length) throw new Error(); } catch { return NextResponse.json({ error: 'That email domain cannot receive mail.' }, { status: 400 }); }

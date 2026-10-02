@@ -339,7 +339,7 @@ function DiscoverContent() {
             value={searchQuery}
             onChange={(e) => {
               // limit consecutive repeating characters to max 4 to prevent gibberish spam
-              let val = e.target.value.replace(/(.)\1{4,}/g, '$1$1$1$1');
+              const val = e.target.value.replace(/(.)\1{4,}/g, '$1$1$1$1');
               setSearchQuery(val);
             }}
           />

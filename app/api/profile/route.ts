@@ -1,5 +1,7 @@
 import { NextResponse } from 'next/server';
 import { createAdminClient, getAuthenticatedRole } from '@/lib/supabase-server';
+import { isGibberishText, normalizeProfileText, normalizeUsername, validatePhonePH, validatePersonOrOrgText, validateUsername } from '@/lib/validators/name';
+import { validatePHLocation } from '@/lib/psgc';
 
 const BUCKET = 'profile-avatars';
 const MAX_AVATAR_BYTES = 2 * 1024 * 1024;
@@ -45,42 +47,38 @@ export async function PATCH(request: Request) {
   if (!form) return NextResponse.json({ error: 'Invalid profile update.' }, { status: 400 });
   
   // Name is now locked, but we keep reading it just in case, though we will ignore changes.
-  const username = form.get('username') !== null ? String(form.get('username')).trim() : undefined;
-  const phone = String(form.get('phone') || '').trim();
-  const address = String(form.get('address') || '').trim();
-  const bio = String(form.get('bio') || '').trim();
-
-  if (phone.length > 30 || address.length > 200 || bio.length > 300 || (username && username.length > 20)) {
-    return NextResponse.json({ error: 'One or more profile fields exceed their allowed length.' }, { status: 400 });
+  const username = form.get('username') !== null ? normalizeUsername(String(form.get('username'))) : undefined;
+  const phone = String(form.get('phone') || '').trim().replace(/[\s()-]/g, '');
+  let address = String(form.get('address') || '').trim();
+  const bio = normalizeProfileText(String(form.get('bio') || ''));
+  const errors: Record<string, string> = {};
+  if (username) errors.username = validateUsername(username) || '';
+  if (phone) errors.phone = validatePhonePH(phone) || '';
+  const country = String(form.get('country') || '').trim().toUpperCase();
+  const provinceOrRegionCode = String(form.get('province_or_region_code') || '').trim();
+  const cityCode = String(form.get('city_code') || '').trim();
+  const street = normalizeProfileText(String(form.get('street') || ''));
+  if (address || provinceOrRegionCode || cityCode || street || String(form.get('city') || '').trim() || String(form.get('region') || '').trim()) {
+    if (country === 'PH') {
+      const location = validatePHLocation(provinceOrRegionCode, cityCode);
+      if ('error' in location) errors.address = location.error || 'Invalid location';
+      else address = [street, location.city, location.province, 'Philippines'].filter(Boolean).join(', ');
+    } else if (!country || new Intl.DisplayNames(['en'], { type: 'region' }).of(country) === country || !String(form.get('city') || '').trim() || !String(form.get('region') || '').trim()) errors.address = 'Select a valid country and enter a valid city and region/state.';
+    else if (isGibberishText(String(form.get('city')) + ' ' + String(form.get('region')))) errors.address = 'City and region/state must be real place names.';
+    else address = [street, normalizeProfileText(String(form.get('city'))), normalizeProfileText(String(form.get('region'))), new Intl.DisplayNames(['en'], { type: 'region' }).of(country)].filter(Boolean).join(', ');
+    if (street && validatePersonOrOrgText(street, { label: 'Street / Barangay', allowDigits: true, maxLen: 150 })) errors.address = validatePersonOrOrgText(street, { label: 'Street / Barangay', allowDigits: true, maxLen: 150 })!;
   }
+  if (bio && validatePersonOrOrgText(bio, { label: 'Bio', allowDigits: true, maxLen: 300 })) errors.bio = validatePersonOrOrgText(bio, { label: 'Bio', allowDigits: true, maxLen: 300 })!;
+  for (const key of Object.keys(errors)) if (!errors[key]) delete errors[key];
+  if (Object.keys(errors).length) return NextResponse.json({ error: 'Please correct the highlighted fields.', fieldErrors: errors }, { status: 400 });
+
+  if (address.length > 200) return NextResponse.json({ error: 'Please correct the highlighted fields.', fieldErrors: { address: 'Address must be 200 characters or fewer.' } }, { status: 400 });
 
   if (username) {
-    if (!/^[a-zA-Z0-9_]{4,20}$/.test(username)) {
-      return NextResponse.json({ error: 'Username must be 4–20 characters, containing only letters, numbers, and underscores.' }, { status: 400 });
-    }
-    if (!/[a-zA-Z]/.test(username)) {
-      return NextResponse.json({ error: 'Username must contain at least one letter.' }, { status: 400 });
-    }
-    if (/(.)\1{4,}/.test(username)) {
-      return NextResponse.json({ error: 'Username cannot contain 5 consecutive identical characters.' }, { status: 400 });
-    }
+    const usernameError = validateUsername(username);
+    if (usernameError) return NextResponse.json({ error: 'Please correct the highlighted fields.', fieldErrors: { username: usernameError } }, { status: 400 });
   }
 
-  if (phone && (!/^09\d{9}$/.test(phone))) {
-    return NextResponse.json({ error: 'Phone number must start with 09 and be exactly 11 digits long.' }, { status: 400 });
-  }
-
-  if (address) {
-    if (address.trim().length < 5 || !/[a-zA-Z]/.test(address)) {
-      return NextResponse.json({ error: 'Please enter a real address (e.g. Makati City, Philippines).' }, { status: 400 });
-    }
-    if (/([a-zA-Z])\1{4,}/.test(address) || /(.)\1{5,}/.test(address)) {
-      return NextResponse.json({ error: 'Please enter a real address without repetitive characters.' }, { status: 400 });
-    }
-    if (!address.includes(',')) {
-      return NextResponse.json({ error: "Please enter your address in 'City, Province/Country' format." }, { status: 400 });
-    }
-  }
 
   const db = createAdminClient();
   const migrationMode = form.get('migration_mode') === 'true';
@@ -92,8 +90,9 @@ export async function PATCH(request: Request) {
   // Enforce username cooldown logic
   if (username !== undefined && username.toLowerCase() !== (current.username || '').toLowerCase()) {
     // Check if the username is already taken
-    const { data: existingUser } = await db.from('users').select('user_id').eq('username', username).neq('user_id', account.userId).maybeSingle();
-    if (existingUser) return NextResponse.json({ error: 'Username is already taken.' }, { status: 409 });
+    const escapedUsername = username.replace(/[\\%_]/g, '\\$&');
+    const { data: existingUser } = await db.from('users').select('user_id').ilike('username', escapedUsername).neq('user_id', account.userId).maybeSingle();
+    if (existingUser) return NextResponse.json({ error: 'Please correct the highlighted fields.', fieldErrors: { username: 'That username is already taken.' } }, { status: 400 });
 
     if (current.username_updated_at) {
       const lastUpdate = new Date(current.username_updated_at);
@@ -141,6 +140,7 @@ export async function PATCH(request: Request) {
     .eq('user_id', account.userId)
     .select('email,username,username_updated_at,name,display_name,avatar_url,phone,address,bio')
     .maybeSingle();
+  if (error?.code === '23505' && (error.message || '').includes('users_username_unique_ci')) return NextResponse.json({ error: 'Please correct the highlighted fields.', fieldErrors: { username: 'That username is already taken.' } }, { status: 400 });
   if (error) return NextResponse.json({ error: 'Unable to save your profile.' }, { status: 500 });
   if (!data) return NextResponse.json({ error: 'Account profile not found.' }, { status: 404 });
   return NextResponse.json({ success: true, profile: toProfile(data) });

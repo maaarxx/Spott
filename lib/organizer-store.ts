@@ -5,6 +5,12 @@ import { fetchWithSupabaseSession } from "./audit-log-client";
 import { getStoredEvents } from "./events-store";
 import { DEFAULT_EVENTS } from "./default-events";
 import type { EventData } from "@/components/EventCard";
+import type { AddressValue } from "@/components/ProfileAddressFields";
+
+export class OrganizerProfileSaveError extends Error {
+  fieldErrors?: Record<string, string>;
+  constructor(message: string, fieldErrors?: Record<string, string>) { super(message); this.fieldErrors = fieldErrors; }
+}
 
 export interface OrganizerProfile {
   name: string;
@@ -188,11 +194,20 @@ export async function saveOrganizerProfileToDatabase(
   profile: OrganizerProfile,
   avatarFile?: File | null,
   removeAvatar = false,
+  addressValue?: AddressValue,
 ): Promise<OrganizerProfile> {
   const form = new FormData();
   form.set("organization_name", profile.name);
   form.set("description", profile.caption || "");
   form.set("address", profile.address || "");
+  if (addressValue) {
+    form.set("country", addressValue.country);
+    form.set("province_or_region_code", addressValue.provinceOrRegionCode);
+    form.set("city_code", addressValue.cityCode);
+    form.set("city", addressValue.city);
+    form.set("region", addressValue.region);
+    form.set("street", addressValue.street);
+  }
   form.set("public_email", profile.email || "");
   form.set("website", profile.website || "");
   form.set("category", profile.category || "");
@@ -200,7 +215,7 @@ export async function saveOrganizerProfileToDatabase(
   if (avatarFile) form.set("avatar", avatarFile);
   const response = await fetchWithSupabaseSession("/api/organizer/profile", { method: "PATCH", body: form });
   const payload = await response.json().catch(() => ({}));
-  if (!response.ok || !payload.profile) throw new Error(payload.error || "Unable to save organizer profile.");
+  if (!response.ok || !payload.profile) throw new OrganizerProfileSaveError(payload.error || "Unable to save organizer profile.", payload.fieldErrors);
   return saveOrganizerProfile(mapDatabaseProfile(payload.profile));
 }
 

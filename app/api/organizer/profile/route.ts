@@ -1,5 +1,7 @@
 import { NextResponse } from 'next/server';
 import { createAdminClient, getAuthenticatedRole } from '@/lib/supabase-server';
+import { isGibberishText, normalizeProfileText, validateEmail, validatePersonOrOrgText, validateWebsite, normalizeWebsite } from '@/lib/validators/name';
+import { validatePHLocation } from '@/lib/psgc';
 
 const BUCKET = 'profile-avatars';
 const MAX_IMAGE_BYTES = 2 * 1024 * 1024;
@@ -41,16 +43,37 @@ export async function PATCH(request: Request) {
   const form = await request.formData().catch(() => null);
   if (!form) return NextResponse.json({ error: 'Invalid organizer profile update.' }, { status: 400 });
 
-  const name = String(form.get('organization_name') || '').trim();
-  const description = String(form.get('description') || '').trim();
-  const address = String(form.get('address') || '').trim();
-  const email = String(form.get('public_email') || '').trim();
-  const website = String(form.get('website') || '').trim();
-  const category = String(form.get('category') || '').trim();
+  const name = normalizeProfileText(String(form.get('organization_name') || ''));
+  const description = normalizeProfileText(String(form.get('description') || ''));
+  let address = String(form.get('address') || '').trim();
+  const email = String(form.get('public_email') || '').trim().toLowerCase();
+  let website = String(form.get('website') || '').trim();
+  const category = normalizeProfileText(String(form.get('category') || ''));
   const migrationMode = form.get('migration_mode') === 'true';
-  if (!name || name.length > 150 || description.length > 5000 || address.length > 500 || email.length > 254 || website.length > 500 || category.length > 100) {
-    return NextResponse.json({ error: 'Check the required organization name and field lengths.' }, { status: 400 });
+  const fieldErrors: Record<string, string> = {};
+  const nameError = validatePersonOrOrgText(name, { label: 'Organization name', allowDigits: true, maxLen: 150 }); if (nameError) fieldErrors.name = nameError;
+  const categoryError = category ? validatePersonOrOrgText(category, { label: 'Category / Focus', allowDigits: true, maxLen: 100 }) : null; if (categoryError) fieldErrors.category = categoryError;
+  const captionError = description ? validatePersonOrOrgText(description, { label: 'Caption / About description', allowDigits: true, maxLen: 500 }) : null; if (captionError) fieldErrors.caption = captionError;
+  const emailError = validateEmail(email); if (emailError) fieldErrors.email = emailError;
+  const websiteError = validateWebsite(website); if (websiteError) fieldErrors.website = websiteError;
+  const country = String(form.get('country') || '').trim().toUpperCase();
+  const provinceCode = String(form.get('province_or_region_code') || '').trim();
+  const cityCode = String(form.get('city_code') || '').trim();
+  const cityText = normalizeProfileText(String(form.get('city') || ''));
+  const regionText = normalizeProfileText(String(form.get('region') || ''));
+  const street = normalizeProfileText(String(form.get('street') || ''));
+  if (address || country || cityCode || cityText) {
+    if (country === 'PH') {
+      const location = validatePHLocation(provinceCode, cityCode);
+      if ('error' in location) fieldErrors.address = location.error || 'Invalid location';
+      else address = [street, location.city, location.province, 'Philippines'].filter(Boolean).join(', ');
+    } else if (!country || !cityText || !regionText || cityText.length > 150 || regionText.length > 150 || new Intl.DisplayNames(['en'], { type: 'region' }).of(country) === country || isGibberishText(`${cityText} ${regionText}`)) fieldErrors.address = 'Enter a valid city and region/state for the selected country.';
+    else address = [street, cityText, regionText, new Intl.DisplayNames(['en'], { type: 'region' }).of(country)].filter(Boolean).join(', ');
+    if (street && validatePersonOrOrgText(street, { label: 'Street / Campus', allowDigits: true, maxLen: 150 })) fieldErrors.address = validatePersonOrOrgText(street, { label: 'Street / Campus', allowDigits: true, maxLen: 150 })!;
   }
+  if (address.length > 500) fieldErrors.address = 'Address must be 500 characters or fewer.';
+  if (website) website = normalizeWebsite(website);
+  if (Object.keys(fieldErrors).length) return NextResponse.json({ error: 'Please correct the highlighted fields.', fieldErrors }, { status: 400 });
 
   const db = createAdminClient();
   const { data: owner, error: ownerError } = await db.from('organizers').select('organizer_id,organization_name,description,avatar_url,address,public_email,website,category')

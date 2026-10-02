@@ -53,6 +53,10 @@ Spott is a local event discovery app for finding concerts, workshops, markets, s
 - Leaflet and Google Maps integrations
 - React Hook Form and Zod are available for form handling and validation
 
+## Profile address validation
+
+Philippine profile addresses use the bundled PSGC dataset in `data/psgc.json`. For countries outside the Philippines, City and Region/State are free-text fields checked for gibberish; they are not verified against an international locality database.
+
 ## Shared API rate limits
 
 Rate limiting for signup availability checks, RSVPs, RSVP cancellation, event reports, and event comments uses Upstash Redis so limits are shared across Vercel serverless instances. Install/configure the Upstash Redis integration, copy the values from `.env.example` to `.env.local`, and add `UPSTASH_REDIS_REST_URL` and `UPSTASH_REDIS_REST_TOKEN` to the Vercel project environment for each deployment environment. Redeploy after changing Vercel environment variables.

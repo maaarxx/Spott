@@ -20,6 +20,7 @@ import {
 import { createClient as createSupabaseBrowserClient } from "@/lib/supabase-browser";
 import { fetchWithSupabaseSession } from "@/lib/audit-log-client";
 import { validateName, validateMI, validateOrganizerName, normalizeName } from "@/lib/validators/name";
+import { validateUsername } from "@/lib/validators/name";
 
 function findAccount(email: string, password: string): SpottAccount | null {
   const emailLower = email.trim().toLowerCase();
@@ -88,21 +89,11 @@ export default function LoginPage() {
   const nameOrUsernameUsed = Boolean(signupRole === "user" && signupPassword && [signupFirstName, signupMI, signupLastName, signupUsername].flatMap((part) => part.trim().split(/[\s.'’_-]+/)).filter((part) => part.length >= 2).some((part) => signupPassword.toLowerCase().includes(part.toLowerCase())));
   const passwordStrength = signupPassword.length === 0 ? "Neutral" : hasCommonWeakPattern || nameOrUsernameUsed || strengthScore <= 2 ? "Weak" : strengthScore <= 4 ? "Medium" : "Strong";
 
-  const isGibberish = (str: string) => {
-    const alpha = str.replace(/[\s'.\-&]/g, '');
-    const unique = new Set(alpha.toLowerCase()).size;
-    if (alpha.length >= 8 && unique <= 3) return true;
-    if (alpha.length >= 12 && unique <= 4) return true;
-    if (/(.)\1{4,}/.test(str)) return true;
-    if (/^(.{2,4})\1{3,}$/i.test(alpha)) return true;
-    return false;
-  };
-
   const fieldErrors = {
     firstName: validateName(signupFirstName, { label: "First name" }) || (signupFirstName.length > 15 ? "First name must be 15 characters or fewer." : ""),
     mi: validateMI(signupMI) || "",
     lastName: validateName(signupLastName, { label: "Last name" }) || (signupLastName.length > 15 ? "Last name must be 15 characters or fewer." : ""),
-    username: signupUsername && !/^[a-zA-Z0-9_]{4,20}$/.test(signupUsername) ? "Use 4–20 letters, numbers, or underscores." : signupUsername && isGibberish(signupUsername) ? "Username appears to be gibberish or spam." : "",
+    username: signupUsername ? (validateUsername(signupUsername) || "") : "",
     email: signupEmail && (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(signupEmail.trim()) || signupEmail.trim().length > 150) ? "Enter a valid email address." : "",
     password: signupPassword.length > 20 ? "Password must be 20 characters or fewer." : /\s/.test(signupPassword) ? "Password cannot contain spaces." : nameOrUsernameUsed ? "Password cannot contain your name or username." : signupPassword.length > 0 && strengthScore < 5 ? "Please satisfy all password requirements." : passwordStrength === "Weak" ? "Password is weak. Please choose a stronger one." : "",
     confirm: signupConfirm && signupConfirm !== signupPassword ? "Passwords do not match." : "",

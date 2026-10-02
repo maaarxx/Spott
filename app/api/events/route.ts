@@ -104,7 +104,8 @@ export async function POST(request: Request) {
           start_datetime: `${date} ${time}:00`,
           price: numericPrice,
           capacity: body.capacity === undefined ? null : Number(body.capacity),
-          require_approval: body.requireApproval === true,
+          // Legacy: require_approval is being deprecated. We force it to false for all new events.
+          require_approval: false,
           status: eventStatus,
         })
         .select('event_id')

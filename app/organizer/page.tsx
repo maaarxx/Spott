@@ -74,6 +74,8 @@ import {
 } from "@/lib/organizer-store";
 import { getAllCategories, matchesCategory, syncCategoriesFromDatabase } from "@/lib/categories";
 import { recomputeRemindersForEvent } from "@/lib/reminders-store";
+import ProfileAddressFields, { type AddressValue } from "@/components/ProfileAddressFields";
+import { isGibberishText, normalizeProfileText, validateEmail, validatePersonOrOrgText, validateWebsite } from "@/lib/validators/name";
 
 export const DEFAULT_FOCUS_PRESETS = [
   "Creative Arts & Design",
@@ -170,6 +172,7 @@ function OrganizerContent() {
   const [isCustomFocus, setIsCustomFocus] = useState(false);
   const [customFocusText, setCustomFocusText] = useState("");
   const [profileSaved, setProfileSaved] = useState(false);
+  const [orgAddressValue, setOrgAddressValue] = useState<AddressValue>({ country: "PH", provinceOrRegionCode: "", province: "", cityCode: "", city: "", region: "", street: "" });
   const [profileAvatarFile, setProfileAvatarFile] = useState<File | null>(null);
   const [profileAvatarRemoved, setProfileAvatarRemoved] = useState(false);
   const [showProfilePreview, setShowProfilePreview] = useState(false);
@@ -193,6 +196,22 @@ function OrganizerContent() {
       void loadOrganizerProfileFromDatabase(orgName).then((prof) => {
         if (!active) return;
         setProfileData(prof);
+        const loadedErrors = {
+          name: validatePersonOrOrgText(prof.name, { label: "Organization name", allowDigits: true, maxLen: 150 }) || "",
+          address: "",
+          category: prof.category ? (validatePersonOrOrgText(prof.category, { label: "Category / Focus", allowDigits: true, maxLen: 100 }) || "") : "",
+          caption: prof.caption ? (validatePersonOrOrgText(prof.caption, { label: "Caption / About description", allowDigits: true, maxLen: 500 }) || "") : "",
+          email: validateEmail(prof.email || "") || "",
+          website: validateWebsite(prof.website || "") || "",
+        };
+        setProfileErrors(loadedErrors);
+        if (prof.address) void import("@/lib/psgc").then(({ findPHLocation, getPSGCData }) => {
+          const parsed = findPHLocation(prof.address || "");
+          if (!parsed) { setOrgAddressValue((current) => ({ ...current, street: prof.address || "" })); setProfileErrors((current) => ({ ...current, address: "Please re-select your country, province/region, and city to fix this saved address." })); return; }
+          const data = getPSGCData(); const city = data.cities.find((item) => item.code === parsed.cityCode); const province = data.provinces.find((item) => item.code === parsed.provinceOrRegionCode); const region = data.regions.find((item) => item.code === parsed.provinceOrRegionCode);
+          const parts = (prof.address || "").split(",").map((part) => part.trim());
+          setOrgAddressValue({ country: "PH", provinceOrRegionCode: parsed.provinceOrRegionCode, province: province?.name || (region?.code === "130000000" ? "Metro Manila (NCR)" : region?.name || ""), cityCode: parsed.cityCode, city: city?.name || "", region: "", street: parts.slice(0, Math.max(0, parts.length - 3)).join(", ") });
+        });
         setIsCustomFocus(Boolean(prof.category && !DEFAULT_FOCUS_PRESETS.includes(prof.category)));
         setCustomFocusText(prof.category || "");
       }).catch(() => {});
@@ -241,60 +260,45 @@ function OrganizerContent() {
   const handleSaveProfile = async (e: React.FormEvent) => {
     e.preventDefault();
 
-    const isGibberish = (str: string) => {
-      const alpha = str.replace(/[\s'.\-&]/g, '');
-      const unique = new Set(alpha.toLowerCase()).size;
-      if (alpha.length >= 8 && unique <= 3) return true;
-      if (alpha.length >= 12 && unique <= 4) return true;
-      if (/(.)\1{4,}/.test(str)) return true;
-      if (/^(.{2,4})\1{3,}$/i.test(alpha)) return true; // alternating patterns like fgfgfgfg
-      return false;
-    };
-
     // Validation
     const errors = { name: "", address: "", category: "", caption: "", email: "", website: "" };
     let hasError = false;
 
     // 1. Name
     const nameStr = profileData.name.trim();
-    if (nameStr.length > 30) { errors.name = "Organization Name must not exceed 30 characters."; hasError = true; }
-    else if (isGibberish(nameStr)) { errors.name = "Please enter a valid, real organization name (gibberish/spam detected)."; hasError = true; }
-    else if (/\s{2,}/.test(nameStr)) { errors.name = "Multiple consecutive spaces are not allowed."; hasError = true; }
-    else if (/[^a-zA-Z0-9\s-]/.test(nameStr)) { errors.name = "Name can only contain letters, numbers, spaces, and hyphens."; hasError = true; }
+    errors.name = validatePersonOrOrgText(nameStr, { label: "Organization name", allowDigits: true, maxLen: 150 }) || ""; if (errors.name) hasError = true;
 
     // 2. Address
-    const addressStr = profileData.address?.trim() || "";
-    if (addressStr.length > 0 && isGibberish(addressStr)) { errors.address = "Please enter a valid, real address (gibberish/spam detected)."; hasError = true; }
+    const addressStarted = Boolean(orgAddressValue.street || orgAddressValue.cityCode || orgAddressValue.city || orgAddressValue.region || orgAddressValue.provinceOrRegionCode);
+    if (addressStarted && (orgAddressValue.country === "PH" ? !orgAddressValue.cityCode : (!orgAddressValue.city || !orgAddressValue.region || orgAddressValue.city.length > 150 || orgAddressValue.region.length > 150 || isGibberishText(`${orgAddressValue.city} ${orgAddressValue.region}`)))) { errors.address = "Please select a valid city in the selected province or region."; hasError = true; }
+    if (!errors.address && orgAddressValue.street) errors.address = validatePersonOrOrgText(orgAddressValue.street, { label: "Street / Campus", allowDigits: true, maxLen: 150 }) || ""; if (errors.address) hasError = true;
 
     // 3. Category
     const catStr = profileData.category?.trim() || "";
-    if (isCustomFocus && catStr.length > 0 && isGibberish(catStr)) { errors.category = "Please enter a valid category (gibberish/spam detected)."; hasError = true; }
+    if (catStr) errors.category = validatePersonOrOrgText(catStr, { label: "Category / Focus", allowDigits: true, maxLen: 100 }) || ""; if (errors.category) hasError = true;
 
     // 4. Caption
     const captionStr = profileData.caption?.trim() || "";
-    if (captionStr.length > 500) { errors.caption = "Caption must not exceed 500 characters."; hasError = true; }
-    else if (captionStr.length > 0 && isGibberish(captionStr)) { errors.caption = "Please enter a valid description (gibberish/spam detected)."; hasError = true; }
-    else if (/\s{3,}/.test(captionStr)) { errors.caption = "Multiple consecutive spaces are not allowed."; hasError = true; }
+    if (captionStr) errors.caption = validatePersonOrOrgText(captionStr, { label: "Caption / About description", allowDigits: true, maxLen: 500 }) || ""; if (errors.caption) hasError = true;
 
     // 5. Email
     const emailStr = profileData.email?.trim() || "";
     if (emailStr) {
-      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(emailStr)) { errors.email = "Please enter a valid email address."; hasError = true; }
-      else if (isGibberish(emailStr.split('@')[0])) { errors.email = "Please enter a valid email address (gibberish/spam detected)."; hasError = true; }
+      errors.email = validateEmail(emailStr) || ""; if (errors.email) hasError = true;
     }
 
     // 6. Website
     const websiteStr = profileData.website?.trim() || "";
     if (websiteStr) {
-      if (!/^(https?:\/\/)?(www\.)?[a-zA-Z0-9-]+(\.[a-zA-Z]{2,})+/.test(websiteStr)) { errors.website = "Please enter a valid website URL."; hasError = true; }
-      else if (isGibberish(websiteStr)) { errors.website = "Please enter a valid website URL (gibberish/spam detected)."; hasError = true; }
+      errors.website = validateWebsite(websiteStr) || ""; if (errors.website) hasError = true;
     }
 
     setProfileErrors(errors);
     if (hasError) return;
 
     try {
-      const saved = await saveOrganizerProfileToDatabase(profileData, profileAvatarFile, profileAvatarRemoved);
+      const address = orgAddressValue.country === "PH" ? [orgAddressValue.street.trim(), orgAddressValue.city, orgAddressValue.province, "Philippines"].filter(Boolean).join(", ") : [orgAddressValue.street.trim(), orgAddressValue.city.trim(), orgAddressValue.region.trim(), orgAddressValue.country].filter(Boolean).join(", ");
+      const saved = await saveOrganizerProfileToDatabase({ ...profileData, name: normalizeProfileText(profileData.name), caption: normalizeProfileText(profileData.caption || ""), category: normalizeProfileText(profileData.category || ""), email: (profileData.email || "").trim().toLowerCase(), address }, profileAvatarFile, profileAvatarRemoved, orgAddressValue);
       setProfileData(saved);
       setCurrentOrgName(saved.name);
       await refreshCurrentUserFromDatabase();
@@ -304,6 +308,7 @@ function OrganizerContent() {
       showAlert("Profile changes saved! Public organizer page has been updated.");
       setTimeout(() => setProfileSaved(false), 3000);
     } catch (error) {
+      if (error && typeof error === "object" && "fieldErrors" in error) setProfileErrors((current) => ({ ...current, ...(error as { fieldErrors?: Partial<typeof current> }).fieldErrors }));
       showAlert(error instanceof Error ? error.message : "Unable to save organizer profile.");
     }
   };
@@ -1924,7 +1929,8 @@ function OrganizerContent() {
                   <input
                     type="text"
                     value={profileData.name}
-                    onChange={(e) => setProfileData((prev) => ({ ...prev, name: e.target.value }))}
+                    onChange={(e) => { setProfileData((prev) => ({ ...prev, name: e.target.value })); setProfileErrors((current) => ({ ...current, name: "" })); }}
+                    onBlur={() => setProfileErrors((current) => ({ ...current, name: validatePersonOrOrgText(profileData.name, { label: "Organization name", allowDigits: true, maxLen: 150 }) || "" }))}
                     required
                     placeholder="e.g. Metro Creative Group"
                     className={`w-full text-xs font-bold border rounded-xl p-3 focus:outline-none ${profileErrors.name ? "border-red-400 focus:border-red-500 bg-red-50/30" : "border-[#e6e1d8] focus:border-[#ff6b35]"} text-[#171717]`}
@@ -1964,7 +1970,9 @@ function OrganizerContent() {
                         onChange={(e) => {
                           setCustomFocusText(e.target.value);
                           setProfileData((prev) => ({ ...prev, category: e.target.value }));
+                          setProfileErrors((current) => ({ ...current, category: "" }));
                         }}
+                        onBlur={() => setProfileErrors((current) => ({ ...current, category: profileData.category ? (validatePersonOrOrgText(profileData.category, { label: "Category / Focus", allowDigits: true, maxLen: 100 }) || "") : "" }))}
                         placeholder="e.g. Esports & Gaming, Indie Art Collective, Tech Incubator..."
                         className={`w-full text-xs font-bold border rounded-xl p-3 focus:outline-none focus:ring-2 ${profileErrors.category ? "border-red-400 focus:ring-red-500/20 bg-red-50/30" : "border-[#ff6b35] focus:ring-[#ff6b35]/20 bg-white"} text-[#171717]`}
                         autoFocus
@@ -2009,23 +2017,11 @@ function OrganizerContent() {
                   <label className="block text-xs font-black text-[#171717] mb-1.5 uppercase tracking-wide">
                     Address / Campus Location
                   </label>
-                  <div className="relative">
-                    <MapPin className="w-4 h-4 text-[#ff6b35] absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
-                    <input
-                      type="text"
-                      value={profileData.address || ""}
-                      onChange={(e) => setProfileData((prev) => ({ ...prev, address: e.target.value }))}
-                      placeholder="e.g. D+A Campus, De La Salle-College of Saint Benilde, Taft Ave, Malate, Manila"
-                      className={`w-full text-xs font-bold border rounded-xl pl-9 pr-3 py-3 focus:outline-none ${profileErrors.address ? "border-red-400 focus:border-red-500 bg-red-50/30" : "border-[#e6e1d8] focus:border-[#ff6b35]"} text-[#171717]`}
-                    />
-                  </div>
-                  {profileErrors.address ? (
-                    <p className="text-red-500 text-[10px] mt-1 font-bold">{profileErrors.address}</p>
-                  ) : (
-                    <p className="text-[11px] text-[#888888] mt-1">
-                      Helps attendees locate your headquarters, campus venue, or base city.
-                    </p>
-                  )}
+                  <ProfileAddressFields value={orgAddressValue} onChange={(value) => { setOrgAddressValue(value); setProfileErrors((current) => ({ ...current, address: "" })); }} error={profileErrors.address} label="Address / Campus Location" onBlur={() => {
+                    const started = Boolean(orgAddressValue.street || orgAddressValue.cityCode || orgAddressValue.city || orgAddressValue.region || orgAddressValue.provinceOrRegionCode);
+                    const problem = !started ? "" : orgAddressValue.country === "PH" ? (orgAddressValue.cityCode && orgAddressValue.provinceOrRegionCode ? "" : "Please select a valid city in the selected province or region.") : !orgAddressValue.city || !orgAddressValue.region || isGibberishText(`${orgAddressValue.city} ${orgAddressValue.region}`) ? "Enter a valid city and region/state." : "";
+                    setProfileErrors((current) => ({ ...current, address: problem || (orgAddressValue.street ? (validatePersonOrOrgText(orgAddressValue.street, { label: "Street / Campus", allowDigits: true, maxLen: 150 }) || "") : "") }));
+                  }} />
                 </div>
 
                 <div className="md:col-span-2">
@@ -2034,8 +2030,10 @@ function OrganizerContent() {
                   </label>
                   <textarea
                     rows={4}
+                    maxLength={500}
                     value={profileData.caption || ""}
-                    onChange={(e) => setProfileData((prev) => ({ ...prev, caption: e.target.value }))}
+                    onChange={(e) => { setProfileData((prev) => ({ ...prev, caption: e.target.value })); setProfileErrors((current) => ({ ...current, caption: "" })); }}
+                    onBlur={() => setProfileErrors((current) => ({ ...current, caption: profileData.caption ? (validatePersonOrOrgText(profileData.caption, { label: "Caption / About description", allowDigits: true, maxLen: 500 }) || "") : "" }))}
                     placeholder="Describe your organization, events, activities, and community..."
                     className={`w-full text-xs leading-relaxed border rounded-xl p-3 focus:outline-none ${profileErrors.caption ? "border-red-400 focus:border-red-500 bg-red-50/30" : "border-[#e6e1d8] focus:border-[#ff6b35]"} text-[#171717] resize-none`}
                   />
@@ -2055,7 +2053,8 @@ function OrganizerContent() {
                   <input
                     type="email"
                     value={profileData.email || ""}
-                    onChange={(e) => setProfileData((prev) => ({ ...prev, email: e.target.value }))}
+                    onChange={(e) => { setProfileData((prev) => ({ ...prev, email: e.target.value })); setProfileErrors((current) => ({ ...current, email: "" })); }}
+                    onBlur={() => setProfileErrors((current) => ({ ...current, email: validateEmail(profileData.email || "") || "" }))}
                     placeholder="contact@yourorg.ph"
                     className={`w-full text-xs font-bold border rounded-xl p-3 focus:outline-none ${profileErrors.email ? "border-red-400 focus:border-red-500 bg-red-50/30" : "border-[#e6e1d8] focus:border-[#ff6b35]"} text-[#171717]`}
                   />
@@ -2067,9 +2066,10 @@ function OrganizerContent() {
                     Website or Social Link (Optional)
                   </label>
                   <input
-                    type="url"
+                    type="text"
                     value={profileData.website || ""}
-                    onChange={(e) => setProfileData((prev) => ({ ...prev, website: e.target.value }))}
+                    onChange={(e) => { setProfileData((prev) => ({ ...prev, website: e.target.value })); setProfileErrors((current) => ({ ...current, website: "" })); }}
+                    onBlur={() => setProfileErrors((current) => ({ ...current, website: validateWebsite(profileData.website || "") || "" }))}
                     placeholder="https://instagram.com/yourorg"
                     className={`w-full text-xs font-bold border rounded-xl p-3 focus:outline-none ${profileErrors.website ? "border-red-400 focus:border-red-500 bg-red-50/30" : "border-[#e6e1d8] focus:border-[#ff6b35]"} text-[#171717]`}
                   />
@@ -2089,8 +2089,9 @@ function OrganizerContent() {
                   )}
                 </span>
 
-                <button
-                  type="submit"
+                  <button
+                    type="submit"
+                    disabled={Object.values(profileErrors).some(Boolean)}
                   className="px-6 py-2.5 rounded-xl bg-[#ff6b35] text-white text-xs font-bold hover:bg-[#e0531f] transition-all shadow-md cursor-pointer inline-flex items-center gap-2"
                 >
                   <Check className="w-3.5 h-3.5" />

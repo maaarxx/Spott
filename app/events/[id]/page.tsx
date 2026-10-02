@@ -792,9 +792,9 @@ export default function EventDetailsPage({
                     {isFull ? (
                       <span>Join Waitlist (RSVP Pending)</span>
                     ) : event?.requireApproval ? (
-                      <span>Request RSVP</span>
+                      <span>Request to Join</span>
                     ) : (
-                      <span>RSVP / Register</span>
+                      <span>RSVP Now</span>
                     )}
                   </button>
                 );
