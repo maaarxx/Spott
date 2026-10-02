@@ -253,6 +253,18 @@ export async function PATCH(
           .maybeSingle();
       if (updateError || !updatedEvent) return NextResponse.json({ error: 'Could not cancel event in the database.' }, { status: 500 });
 
+      // Release every attendee's slot immediately while keeping the RSVP rows
+      // available for the cancellation announcement and attendee history.
+      const { error: releaseError } = await supabase
+        .from('registrations')
+        .update({ status: 'cancelled' })
+        .eq('event_id', id)
+        .neq('status', 'cancelled');
+      if (releaseError) {
+        console.error('Could not release registrations for cancelled event', { eventId: id, code: releaseError.code });
+        return NextResponse.json({ error: 'Event was cancelled, but attendee registrations could not be released.' }, { status: 500 });
+      }
+
       await writeAuditEntry(account, {
         action: 'event.cancelled', targetType: 'event', targetId: id,
         summary: `Cancelled event “${currentTitle}”.`, details: { reason: cancelReason },

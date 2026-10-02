@@ -801,7 +801,7 @@ export default function EventDetailsPage({
               })()}
 
               {/* Subtle 'n spots left' indicator under RSVP button, above share button on lower right */}
-              {(() => {
+              {event?.status?.toLowerCase() !== "cancelled" && (() => {
                 const rawCap = event?.capacity;
                 const capacity = typeof rawCap === "number" ? rawCap : (rawCap ? Number(rawCap) : 100);
                 if (capacity <= 0) return null;
