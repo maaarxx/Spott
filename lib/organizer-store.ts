@@ -206,7 +206,6 @@ export async function saveOrganizerProfileToDatabase(
     form.set("city_code", addressValue.cityCode);
     form.set("city", addressValue.city);
     form.set("region", addressValue.region);
-    form.set("street", addressValue.street);
   }
   form.set("public_email", profile.email || "");
   form.set("website", profile.website || "");

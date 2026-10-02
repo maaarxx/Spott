@@ -172,7 +172,7 @@ function OrganizerContent() {
   const [isCustomFocus, setIsCustomFocus] = useState(false);
   const [customFocusText, setCustomFocusText] = useState("");
   const [profileSaved, setProfileSaved] = useState(false);
-  const [orgAddressValue, setOrgAddressValue] = useState<AddressValue>({ country: "PH", provinceOrRegionCode: "", province: "", cityCode: "", city: "", region: "", street: "" });
+  const [orgAddressValue, setOrgAddressValue] = useState<AddressValue>({ country: "PH", provinceOrRegionCode: "", province: "", cityCode: "", city: "", region: "" });
   const [profileAvatarFile, setProfileAvatarFile] = useState<File | null>(null);
   const [profileAvatarRemoved, setProfileAvatarRemoved] = useState(false);
   const [showProfilePreview, setShowProfilePreview] = useState(false);
@@ -207,10 +207,9 @@ function OrganizerContent() {
         setProfileErrors(loadedErrors);
         if (prof.address) void import("@/lib/psgc").then(({ findPHLocation, getPSGCData }) => {
           const parsed = findPHLocation(prof.address || "");
-          if (!parsed) { setOrgAddressValue((current) => ({ ...current, street: prof.address || "" })); setProfileErrors((current) => ({ ...current, address: "Please re-select your country, province/region, and city to fix this saved address." })); return; }
+          if (!parsed) { setOrgAddressValue({ country: "PH", provinceOrRegionCode: "", province: "", cityCode: "", city: "", region: "" }); setProfileErrors((current) => ({ ...current, address: "Please re-select your country, province/region, and city to fix this saved address." })); return; }
           const data = getPSGCData(); const city = data.cities.find((item) => item.code === parsed.cityCode); const province = data.provinces.find((item) => item.code === parsed.provinceOrRegionCode); const region = data.regions.find((item) => item.code === parsed.provinceOrRegionCode);
-          const parts = (prof.address || "").split(",").map((part) => part.trim());
-          setOrgAddressValue({ country: "PH", provinceOrRegionCode: parsed.provinceOrRegionCode, province: province?.name || (region?.code === "130000000" ? "Metro Manila (NCR)" : region?.name || ""), cityCode: parsed.cityCode, city: city?.name || "", region: "", street: parts.slice(0, Math.max(0, parts.length - 3)).join(", ") });
+          setOrgAddressValue({ country: "PH", provinceOrRegionCode: parsed.provinceOrRegionCode, province: province?.name || (region?.code === "130000000" ? "Metro Manila (NCR)" : region?.name || ""), cityCode: parsed.cityCode, city: city?.name || "", region: "" });
         });
         setIsCustomFocus(Boolean(prof.category && !DEFAULT_FOCUS_PRESETS.includes(prof.category)));
         setCustomFocusText(prof.category || "");
@@ -269,9 +268,9 @@ function OrganizerContent() {
     errors.name = validatePersonOrOrgText(nameStr, { label: "Organization name", allowDigits: true, maxLen: 150 }) || ""; if (errors.name) hasError = true;
 
     // 2. Address
-    const addressStarted = Boolean(orgAddressValue.street || orgAddressValue.cityCode || orgAddressValue.city || orgAddressValue.region || orgAddressValue.provinceOrRegionCode);
+    const addressStarted = Boolean(orgAddressValue.cityCode || orgAddressValue.city || orgAddressValue.region || orgAddressValue.provinceOrRegionCode);
     if (addressStarted && (orgAddressValue.country === "PH" ? !orgAddressValue.cityCode : (!orgAddressValue.city || !orgAddressValue.region || orgAddressValue.city.length > 150 || orgAddressValue.region.length > 150 || isGibberishText(`${orgAddressValue.city} ${orgAddressValue.region}`)))) { errors.address = "Please select a valid city in the selected province or region."; hasError = true; }
-    if (!errors.address && orgAddressValue.street) errors.address = validatePersonOrOrgText(orgAddressValue.street, { label: "Street / Campus", allowDigits: true, maxLen: 150 }) || ""; if (errors.address) hasError = true;
+    if (errors.address) hasError = true;
 
     // 3. Category
     const catStr = profileData.category?.trim() || "";
@@ -297,7 +296,7 @@ function OrganizerContent() {
     if (hasError) return;
 
     try {
-      const address = orgAddressValue.country === "PH" ? [orgAddressValue.street.trim(), orgAddressValue.city, orgAddressValue.province, "Philippines"].filter(Boolean).join(", ") : [orgAddressValue.street.trim(), orgAddressValue.city.trim(), orgAddressValue.region.trim(), orgAddressValue.country].filter(Boolean).join(", ");
+      const address = orgAddressValue.country === "PH" ? [orgAddressValue.city, orgAddressValue.province, "Philippines"].filter(Boolean).join(", ") : [orgAddressValue.city.trim(), orgAddressValue.region.trim(), orgAddressValue.country].filter(Boolean).join(", ");
       const saved = await saveOrganizerProfileToDatabase({ ...profileData, name: normalizeProfileText(profileData.name), caption: normalizeProfileText(profileData.caption || ""), category: normalizeProfileText(profileData.category || ""), email: (profileData.email || "").trim().toLowerCase(), address }, profileAvatarFile, profileAvatarRemoved, orgAddressValue);
       setProfileData(saved);
       setCurrentOrgName(saved.name);
@@ -2017,10 +2016,10 @@ function OrganizerContent() {
                   <label className="block text-xs font-black text-[#171717] mb-1.5 uppercase tracking-wide">
                     Address / Campus Location
                   </label>
-                  <ProfileAddressFields value={orgAddressValue} onChange={(value) => { setOrgAddressValue(value); setProfileErrors((current) => ({ ...current, address: "" })); }} error={profileErrors.address} label="Address / Campus Location" onBlur={() => {
-                    const started = Boolean(orgAddressValue.street || orgAddressValue.cityCode || orgAddressValue.city || orgAddressValue.region || orgAddressValue.provinceOrRegionCode);
+                  <ProfileAddressFields value={orgAddressValue} onChange={(value) => { setOrgAddressValue(value); setProfileErrors((current) => ({ ...current, address: "" })); }} error={profileErrors.address} onBlur={() => {
+                    const started = Boolean(orgAddressValue.cityCode || orgAddressValue.city || orgAddressValue.region || orgAddressValue.provinceOrRegionCode);
                     const problem = !started ? "" : orgAddressValue.country === "PH" ? (orgAddressValue.cityCode && orgAddressValue.provinceOrRegionCode ? "" : "Please select a valid city in the selected province or region.") : !orgAddressValue.city || !orgAddressValue.region || isGibberishText(`${orgAddressValue.city} ${orgAddressValue.region}`) ? "Enter a valid city and region/state." : "";
-                    setProfileErrors((current) => ({ ...current, address: problem || (orgAddressValue.street ? (validatePersonOrOrgText(orgAddressValue.street, { label: "Street / Campus", allowDigits: true, maxLen: 150 }) || "") : "") }));
+                    setProfileErrors((current) => ({ ...current, address: problem }));
                   }} />
                 </div>
 

@@ -57,7 +57,7 @@ export async function PATCH(request: Request) {
   const country = String(form.get('country') || '').trim().toUpperCase();
   const provinceOrRegionCode = String(form.get('province_or_region_code') || '').trim();
   const cityCode = String(form.get('city_code') || '').trim();
-  const street = normalizeProfileText(String(form.get('street') || ''));
+  const street = '';
   if (address || provinceOrRegionCode || cityCode || street || String(form.get('city') || '').trim() || String(form.get('region') || '').trim()) {
     if (country === 'PH') {
       const location = validatePHLocation(provinceOrRegionCode, cityCode);

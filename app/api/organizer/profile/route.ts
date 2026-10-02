@@ -61,7 +61,7 @@ export async function PATCH(request: Request) {
   const cityCode = String(form.get('city_code') || '').trim();
   const cityText = normalizeProfileText(String(form.get('city') || ''));
   const regionText = normalizeProfileText(String(form.get('region') || ''));
-  const street = normalizeProfileText(String(form.get('street') || ''));
+  const street = '';
   if (address || country || cityCode || cityText) {
     if (country === 'PH') {
       const location = validatePHLocation(provinceCode, cityCode);
@@ -69,7 +69,6 @@ export async function PATCH(request: Request) {
       else address = [street, location.city, location.province, 'Philippines'].filter(Boolean).join(', ');
     } else if (!country || !cityText || !regionText || cityText.length > 150 || regionText.length > 150 || new Intl.DisplayNames(['en'], { type: 'region' }).of(country) === country || isGibberishText(`${cityText} ${regionText}`)) fieldErrors.address = 'Enter a valid city and region/state for the selected country.';
     else address = [street, cityText, regionText, new Intl.DisplayNames(['en'], { type: 'region' }).of(country)].filter(Boolean).join(', ');
-    if (street && validatePersonOrOrgText(street, { label: 'Street / Campus', allowDigits: true, maxLen: 150 })) fieldErrors.address = validatePersonOrOrgText(street, { label: 'Street / Campus', allowDigits: true, maxLen: 150 })!;
   }
   if (address.length > 500) fieldErrors.address = 'Address must be 500 characters or fewer.';
   if (website) website = normalizeWebsite(website);

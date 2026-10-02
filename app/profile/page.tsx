@@ -46,7 +46,7 @@ export default function ProfilePage() {
   const [username, setUsername] = useState(profile?.username || "");
   const [phone, setPhone] = useState(profile?.phone || "");
   const [address, setAddress] = useState(profile?.address || "");
-  const [addressValue, setAddressValue] = useState<AddressValue>({ country: "PH", provinceOrRegionCode: "", province: "", cityCode: "", city: "", region: "", street: "" });
+  const [addressValue, setAddressValue] = useState<AddressValue>({ country: "PH", provinceOrRegionCode: "", province: "", cityCode: "", city: "", region: "" });
   const [bio, setBio] = useState(profile?.bio || "");
   const [avatarPreview, setAvatarPreview] = useState<string>(profile?.avatarUrl || "");
   const [avatarFile, setAvatarFile] = useState<File | null>(null);
@@ -78,13 +78,12 @@ export default function ProfilePage() {
       setAddress(loaded.address || "");
       if (loaded.address) void import("@/lib/psgc").then(({ findPHLocation, getPSGCData }) => {
         const parsed = findPHLocation(loaded.address || "");
-        if (!parsed) { setAddressValue((current) => ({ ...current, street: loaded.address || "" })); setAddressError("Please re-select your country, province/region, and city to update this legacy address."); return; }
+        if (!parsed) { setAddressValue({ country: "PH", provinceOrRegionCode: "", province: "", cityCode: "", city: "", region: "" }); setAddressError("Please re-select your country, province/region, and city to update this legacy address."); return; }
         const data = getPSGCData();
         const city = data.cities.find((item) => item.code === parsed.cityCode);
         const province = data.provinces.find((item) => item.code === parsed.provinceOrRegionCode);
         const region = data.regions.find((item) => item.code === parsed.provinceOrRegionCode);
-        const parts = loaded.address!.split(",").map((part) => part.trim());
-        setAddressValue({ country: "PH", provinceOrRegionCode: parsed.provinceOrRegionCode, province: province?.name || (region?.code === "130000000" ? "Metro Manila (NCR)" : region?.name || ""), cityCode: parsed.cityCode, city: city?.name || "", region: "", street: parts.slice(0, Math.max(0, parts.length - 3)).join(", ") });
+        setAddressValue({ country: "PH", provinceOrRegionCode: parsed.provinceOrRegionCode, province: province?.name || (region?.code === "130000000" ? "Metro Manila (NCR)" : region?.name || ""), cityCode: parsed.cityCode, city: city?.name || "", region: "" });
         void region;
       });
       setBio(loaded.bio || "");
@@ -150,15 +149,14 @@ export default function ProfilePage() {
       form.set("username", username.trim());
       form.set("phone", phone.trim());
       const composedAddress = addressValue.country === "PH"
-        ? [addressValue.street.trim(), addressValue.city, addressValue.province, "Philippines"].filter(Boolean).join(", ")
-        : [addressValue.street.trim(), addressValue.city.trim(), addressValue.region.trim(), addressValue.country].filter(Boolean).join(", ");
+        ? [addressValue.city, addressValue.province, "Philippines"].filter(Boolean).join(", ")
+        : [addressValue.city.trim(), addressValue.region.trim(), addressValue.country].filter(Boolean).join(", ");
       form.set("address", composedAddress || address.trim());
       form.set("country", addressValue.country);
       form.set("province_or_region_code", addressValue.provinceOrRegionCode);
       form.set("city_code", addressValue.cityCode);
       form.set("city", addressValue.city);
       form.set("region", addressValue.region);
-      form.set("street", addressValue.street);
       form.set("bio", normalizeProfileText(bio));
       form.set("avatar_action", avatarRemoved ? "remove" : "keep");
       if (avatarFile) form.set("avatar", avatarFile);
@@ -196,9 +194,8 @@ export default function ProfilePage() {
       setPhoneError("");
     }
     
-    const addressStarted = Boolean(addressValue.street || addressValue.cityCode || addressValue.city || addressValue.region || addressValue.provinceOrRegionCode);
+    const addressStarted = Boolean(addressValue.cityCode || addressValue.city || addressValue.region || addressValue.provinceOrRegionCode);
     let addressProblem = !addressStarted ? "" : addressValue.country === "PH" ? (addressValue.cityCode && addressValue.provinceOrRegionCode ? "" : "Please select a valid city in the selected province or region.") : (addressValue.city && addressValue.region ? (isGibberishText(`${addressValue.city} ${addressValue.region}`) ? "Enter a real city and region/state." : "") : "Please enter a city and region/state.");
-    if (!addressProblem && addressValue.street) addressProblem = validatePersonOrOrgText(addressValue.street, { label: "Street / Barangay", allowDigits: true, maxLen: 150 }) || "";
     setAddressError(addressProblem); if (addressProblem) isValid = false;
     
     if (username) {
@@ -435,9 +432,9 @@ export default function ProfilePage() {
                 Address
               </label>
               <ProfileAddressFields value={addressValue} onChange={(value) => { setAddressValue(value); setAddressError(""); }} error={addressError} onBlur={() => {
-                const started = Boolean(addressValue.street || addressValue.cityCode || addressValue.city || addressValue.region || addressValue.provinceOrRegionCode);
+                const started = Boolean(addressValue.cityCode || addressValue.city || addressValue.region || addressValue.provinceOrRegionCode);
                 const problem = !started ? "" : addressValue.country === "PH" ? (addressValue.cityCode && addressValue.provinceOrRegionCode ? "" : "Please select a valid city in the selected province or region.") : !addressValue.city || !addressValue.region ? "Please enter a city and region/state." : isGibberishText(`${addressValue.city} ${addressValue.region}`) ? "Enter a real city and region/state." : "";
-                setAddressError(problem || (addressValue.street ? (validatePersonOrOrgText(addressValue.street, { label: "Street / Barangay", allowDigits: true, maxLen: 150 }) || "") : ""));
+                setAddressError(problem);
               }} />
             </div>
 
